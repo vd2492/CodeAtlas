@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeAtlas</title>
+  <style>
+    :root {
+      --bg: #06080d;
+      --bg-soft: #0b0f17;
+      --card: rgba(17, 23, 34, 0.55);
+      --card-solid: rgba(13, 18, 27, 0.9);
+      --border: rgba(148, 163, 184, 0.12);
+      --border-strong: rgba(148, 163, 184, 0.22);
+      --text: #e9eef5;
+      --muted: #8b97a8;
+      --faint: #5b6675;
+      --accent: #2dd4bf;
+      --accent-2: #22d3ee;
+      --accent-soft: rgba(45, 212, 191, 0.12);
+      --danger: #f87171;
+      --radius: 18px;
+      --shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.7);
+      --bg-grad:
+        radial-gradient(900px 500px at 12% -8%, rgba(34, 211, 238, 0.10), transparent 60%),
+        radial-gradient(800px 480px at 100% 0%, rgba(45, 212, 191, 0.08), transparent 55%),
+        radial-gradient(700px 500px at 50% 120%, rgba(56, 189, 248, 0.07), transparent 60%);
+      --title-grad: linear-gradient(100deg, #ffffff, #b7c4d4);
+      --input-bg: rgba(2, 6, 14, 0.5);
+      --pre-bg: rgba(2, 6, 14, 0.6);
+      --answer: #dde5ee;
+      --pill-text: #cbd5e1;
+      --chip-text: #aef2e6;
+      --chip-bg: rgba(45, 212, 191, 0.12);
+      --chip-border: rgba(45, 212, 191, 0.30);
+      --chip-bg-hover: rgba(45, 212, 191, 0.20);
+      --chip-border-hover: rgba(45, 212, 191, 0.55);
+    }
+
+    [data-theme="light"] {
+      --bg: #eef2f8;
+      --bg-soft: #ffffff;
+      --card: rgba(255, 255, 255, 0.72);
+      --card-solid: rgba(255, 255, 255, 0.95);
+      --border: rgba(15, 23, 42, 0.10);
+      --border-strong: rgba(15, 23, 42, 0.16);
+      --text: #14202e;
+      --muted: #54627a;
+      --faint: #8b97a8;
+      --accent: #0d9488;
+      --accent-2: #0891b2;
+      --accent-soft: rgba(13, 148, 136, 0.10);
+      --shadow: 0 20px 45px -24px rgba(15, 23, 42, 0.35);
+      --bg-grad:
+        radial-gradient(900px 500px at 12% -8%, rgba(34, 211, 238, 0.16), transparent 60%),
+        radial-gradient(800px 480px at 100% 0%, rgba(45, 212, 191, 0.14), transparent 55%),
+        radial-gradient(700px 500px at 50% 120%, rgba(56, 189, 248, 0.12), transparent 60%);
+      --title-grad: linear-gradient(100deg, #0f1b2a, #3a4a5e);
+      --input-bg: rgba(255, 255, 255, 0.7);
+      --pre-bg: rgba(15, 23, 42, 0.04);
+      --answer: #243244;
+      --pill-text: #475569;
+      --chip-text: #0b5b52;
+      --chip-bg: rgba(13, 148, 136, 0.14);
+      --chip-border: rgba(13, 148, 136, 0.42);
+      --chip-bg-hover: rgba(13, 148, 136, 0.22);
+      --chip-border-hover: rgba(13, 148, 136, 0.65);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      color: var(--text);
+      background: var(--bg);
+      background-image: var(--bg-grad);
+      background-attachment: fixed;
+      -webkit-font-smoothing: antialiased;
+      line-height: 1.5;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    .container {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 48px 24px 96px;
+    }
+
+    /* ---------- Header ---------- */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 40px;
+    }
+    .header-spacer { flex: 1; }
+
+    .theme-toggle {
+      flex: none;
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      color: var(--muted);
+      background: var(--card);
+      border: 1px solid var(--border-strong);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .theme-toggle:hover { color: var(--accent); border-color: rgba(45, 212, 191, 0.45); }
+    .theme-toggle .icon-moon { display: none; }
+    .theme-toggle .icon-sun { display: block; }
+    [data-theme="light"] .theme-toggle .icon-moon { display: block; }
+    [data-theme="light"] .theme-toggle .icon-sun { display: none; }
+
+    .logo-mark {
+      width: 46px;
+      height: 46px;
+      flex: none;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(140deg, rgba(45, 212, 191, 0.9), rgba(34, 211, 238, 0.7));
+      box-shadow: 0 8px 24px -6px rgba(45, 212, 191, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+      position: relative;
+    }
+    .logo-mark::before {
+      content: "";
+      position: absolute;
+      inset: 11px;
+      border-radius: 6px;
+      border: 2px solid rgba(6, 8, 13, 0.85);
+      border-right-color: transparent;
+      border-bottom-color: transparent;
+      transform: rotate(45deg);
+    }
+
+    .brand { display: flex; flex-direction: column; }
+    .title {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      background: var(--title-grad);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .subtitle { color: var(--muted); font-size: 14px; margin-top: 2px; }
+
+    /* ---------- Hero ask ---------- */
+    .hero { margin-bottom: 36px; }
+    .hero-label {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+
+    .ask-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 10px 10px 18px;
+      background: var(--card);
+      border: 1px solid var(--border-strong);
+      border-radius: 16px;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .ask-box:focus-within {
+      border-color: rgba(45, 212, 191, 0.55);
+      box-shadow: var(--shadow), 0 0 0 4px rgba(45, 212, 191, 0.10);
+    }
+    .ask-icon { color: var(--accent); flex: none; display: grid; place-items: center; }
+
+    #question {
+      flex: 1;
+      min-width: 0;
+      padding: 12px 4px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font-size: 16px;
+      outline: none;
+    }
+    #question::placeholder { color: var(--faint); }
+
+    /* ---------- Buttons ---------- */
+    button {
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--text);
+      background: rgba(148, 163, 184, 0.08);
+      border: 1px solid var(--border-strong);
+      padding: 10px 16px;
+      border-radius: 11px;
+      cursor: pointer;
+      transition: transform 0.12s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    button:hover {
+      background: rgba(148, 163, 184, 0.14);
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+    button:active { transform: translateY(0); }
+
+    .btn-primary {
+      flex: none;
+      color: #04221f;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border: 0;
+      padding: 12px 22px;
+      box-shadow: 0 8px 22px -8px rgba(45, 212, 191, 0.7);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #34e0cc, #38d9f0);
+      box-shadow: 0 10px 28px -8px rgba(45, 212, 191, 0.85);
+    }
+
+    /* ---------- Cards / tools grid ---------- */
+    .tools {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .tools .span-2 { grid-column: 1 / -1; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      box-shadow: var(--shadow);
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .card-title { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+    .card-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent); flex: none;
+      box-shadow: 0 0 10px var(--accent);
+    }
+
+    h2, h3 { margin: 0; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    .search-row { display: flex; gap: 10px; }
+    .search-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 11px 14px;
+      border-radius: 11px;
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.18s ease;
+    }
+    .search-row input:focus { border-color: rgba(45, 212, 191, 0.45); }
+    .search-row input::placeholder { color: var(--faint); }
+
+    .group-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--faint);
+      margin: 14px 0 6px;
+    }
+
+    /* ---------- Result panel ---------- */
+    .result-card { padding: 26px 28px; }
+    #result { font-size: 15px; }
+    #result h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; }
+    #result h3 {
+      font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--muted); margin: 22px 0 10px;
+    }
+    #result p { margin: 8px 0; }
+    #result ul { margin: 8px 0; padding-left: 0; list-style: none; }
+    #result li {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    #result li:last-child { border-bottom: 0; }
+    #result b { color: var(--text); font-weight: 700; }
+
+    .empty-state { color: var(--muted); }
+    .empty-state .eyebrow { color: var(--accent); font-weight: 600; font-size: 13px; }
+
+    .src {
+      color: var(--faint);
+      font-size: 12.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin-top: 4px;
+      word-break: break-word;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--pre-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      overflow: auto;
+      max-height: 520px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .answer { white-space: pre-wrap; line-height: 1.7; color: var(--answer); }
+
+    /* ---------- Pills / chips ---------- */
+    .pill {
+      cursor: default;
+      display: inline-block;
+      padding: 6px 12px;
+      margin: 4px 6px 4px 0;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.08);
+      border: 1px solid var(--border);
+      color: var(--pill-text);
+      font-size: 13px;
+      transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .node-chip {
+      cursor: pointer;
+      user-select: none;
+      background: var(--chip-bg);
+      border: 1px solid var(--chip-border);
+      color: var(--chip-text);
+      font-weight: 600;
+    }
+    .node-chip:hover {
+      background: var(--chip-bg-hover);
+      border-color: var(--chip-border-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px -8px rgba(45, 212, 191, 0.6);
+    }
+    .node-chip:active { transform: translateY(0); }
+
+    /* ---------- Loading ---------- */
+    .loading-steps { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .step {
+      display: flex; align-items: center; gap: 10px;
+      color: var(--muted); font-size: 14px;
+    }
+    .spinner {
+      width: 15px; height: 15px; flex: none;
+      border-radius: 50%;
+      border: 2px solid rgba(45, 212, 191, 0.25);
+      border-top-color: var(--accent);
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .dot-pulse {
+      width: 7px; height: 7px; border-radius: 50%; flex: none;
+      background: var(--accent);
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+    /* ---------- Details / grounded context ---------- */
+    details {
+      margin-top: 20px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--pre-bg);
+      overflow: hidden;
+    }
+    details summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 14px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+    details summary::-webkit-details-marker { display: none; }
+    details summary::after {
+      content: "▾";
+      margin-left: auto;
+      transition: transform 0.2s ease;
+      color: var(--faint);
+    }
+    details[open] summary::after { transform: rotate(180deg); }
+    details summary:hover { color: var(--text); }
+    .details-body { padding: 4px 18px 16px; }
+    .details-body ul { margin: 0; }
+
+    .badge {
+      font-size: 11px; font-weight: 700;
+      padding: 2px 8px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent);
+      border: 1px solid rgba(45, 212, 191, 0.25);
+    }
+
+    .error-box {
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      background: rgba(248, 113, 113, 0.06);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .error-box h2 { color: var(--danger); }
+
+    @media (max-width: 680px) {
+      .container { padding: 32px 16px 72px; }
+      .tools { grid-template-columns: 1fr; }
+      .result-card { padding: 20px; }
+      .title { font-size: 22px; }
+    }
+  </style>
+  <script>
+    // Apply saved theme before paint to avoid a flash of the wrong theme.
+    (function () {
+      try {
+        var saved = localStorage.getItem('codeatlas-theme');
+        if (!saved) {
+          saved = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo-mark" aria-hidden="true"></div>
+      <div class="brand">
+        <div class="title">CodeAtlas</div>
+        <div class="subtitle">Graph-powered codebase intelligence</div>
+      </div>
+      <div class="header-spacer"></div>
+      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle light and dark mode" title="Toggle theme">
+        <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="4"></circle>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+        </svg>
+        <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      </button>
+    </header>
+
+    <!-- Main ask -->
+    <section class="hero">
+      <div class="hero-label">Ask CodeAtlas</div>
+      <div class="ask-box">
+        <span class="ask-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+        </span>
+        <input id="question" placeholder="Ask anything about this codebase…" autocomplete="off" />
+        <button class="btn-primary" onclick="ask()">Ask</button>
+      </div>
+    </section>
+
+    <!-- Secondary tools -->
+    <div class="tools">
+      <section class="card">
+        <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Repo Summary</h2></div>
+        <button onclick="loadSummary()">Load Summary</button>
+        <div id="summary"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Flow Explorer</h2></div>
+        <div class="row">
+          <button onclick="loadFlow('habit')">Habit Flow</button>
+          <button onclick="loadFlow('revision')">Revision Flow</button>
+          <button onclick="loadFlow('login')">Login Flow</button>
+        </div>
+      </section>
+
+      <section class="card span-2">
+        <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Graph Search</h2></div>
+        <div class="search-row">
+          <input id="search" placeholder="Search nodes, screens, methods…" autocomplete="off" />
+          <button onclick="searchGraph()">Search</button>
+        </div>
+        <div id="searchResults"></div>
+      </section>
+    </div>
+
+    <!-- Result -->
+    <section class="card result-card span-2">
+      <div id="result">
+        <div class="empty-state">
+          <div class="eyebrow">Ready</div>
+          <p>Ask a question above, or use a tool to explore the graph. Answers appear here with the grounded context CodeAtlas used.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+      if (isLight) {
+        document.documentElement.removeAttribute('data-theme');
+        try { localStorage.setItem('codeatlas-theme', 'dark'); } catch (e) {}
+      } else {
+        document.documentElement.setAttribute('data-theme', 'light');
+        try { localStorage.setItem('codeatlas-theme', 'light'); } catch (e) {}
+      }
+    }
+
+    function srcLine(item) {
+      const s = `${item.source_file || ''} ${item.source_location || ''}`.trim();
+      return s ? `<div class="src">${s}</div>` : '';
+    }
+
+    function nodeChip(item) {
+      const node = encodeURIComponent(item.node || '');
+      const meta = `${item.source_file || ''} ${item.source_location || ''}`.trim();
+      return `<span class="pill node-chip" data-node="${node}" title="${meta}">${item.name}</span>`;
+    }
+
+    async function loadNode(encodedNodeId) {
+      const res = await fetch(`/repo/nodes/${encodedNodeId}`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        document.getElementById('result').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        return;
+      }
+
+      const links = data.connected_links || [];
+
+      document.getElementById('result').innerHTML = `
+        <h2>${data.name}</h2>
+        <p><b>Node:</b> ${data.node}</p>
+        <div class="src">${data.source_file || ''} ${data.source_location || ''}</div>
+
+        <h3>Connected relations</h3>
+        <ul>
+          ${links.map(link => `
+            <li>
+              <b>${link.source_name || link.source}</b> → <b>${link.target_name || link.target}</b>
+              <div class="src">
+                relation: ${link.relation_label || link.relation || ''} ${link.context ? `(${link.context})` : ''}
+                <br />
+                ${link.source_file || ''} ${link.source_location || ''}
+              </div>
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    }
+
+
+    document.addEventListener('click', async function(event) {
+      const chip = event.target.closest('.node-chip');
+      if (!chip) return;
+
+      const node = chip.getAttribute('data-node');
+      if (!node) return;
+
+      document.getElementById('question').value = '';
+
+      console.log("Clicked CodeAtlas node:", node);
+
+      await loadNode(node);
+
+      document.getElementById('result').scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    });
+
+    async function loadSummary() {
+      const res = await fetch('/repo/summary');
+      const data = await res.json();
+
+      const chip = (item) => {
+        if (typeof item === 'string') {
+          return `<span class="pill">${item}</span>`;
+        }
+        return nodeChip(item);
+      };
+
+      document.getElementById('summary').innerHTML = `
+        <p style="margin-top:14px;"><span class="badge">${data.nodes} nodes</span> &nbsp; <span class="badge">${data.relations} relations</span></p>
+        <div class="group-label">Screens</div><div>${(data.screens || []).map(chip).join('')}</div>
+        <div class="group-label">ViewModels</div><div>${(data.viewmodels || []).map(chip).join('')}</div>
+        <div class="group-label">Repositories</div><div>${(data.repositories || []).map(chip).join('')}</div>
+        <div class="group-label">Managers / Services</div><div>${(data.managers_and_services || []).map(chip).join('')}</div>
+      `;
+
+      renderResult(data);
+    }
+
+    async function loadFlow(topic) {
+      const res = await fetch(`/repo/flows/${topic}`);
+      const data = await res.json();
+      renderResult(data);
+    }
+
+    async function searchGraph() {
+      const q = document.getElementById('search').value.trim();
+      const target = document.getElementById('searchResults');
+      if (!q) { target.innerHTML = ''; return; }
+
+      target.innerHTML = `<div class="step" style="margin-top:14px;"><span class="spinner"></span> Searching graph…</div>`;
+
+      try {
+        const res = await fetch(`/repo/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+
+        if (!res.ok) {
+          target.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+          return;
+        }
+
+        const group = (label, items) => {
+          if (!items || items.length === 0) return '';
+          return `<div class="group-label">${label}</div><div>${items.map(nodeChip).join('')}</div>`;
+        };
+
+        const total = (data.results || []).length;
+        if (total === 0) {
+          target.innerHTML = `<p class="empty-state" style="margin-top:14px;">No matches for “${q}”.</p>`;
+          return;
+        }
+
+        target.innerHTML = `
+          <div style="margin-top:6px;">
+            ${group('Components', data.components)}
+            ${group('Methods', data.methods)}
+            ${group('Other', data.others)}
+          </div>
+        `;
+      } catch (error) {
+        target.innerHTML = `<div class="error-box" style="margin-top:14px;">${error}</div>`;
+      }
+    }
+
+
+    async function ask() {
+      const question = document.getElementById('question').value.trim();
+      if (!question) return;
+
+      const result = document.getElementById('result');
+      result.innerHTML = `
+        <h2>Thinking…</h2>
+        <div class="loading-steps">
+          <div class="step"><span class="spinner"></span> Building graph context…</div>
+          <div class="step"><span class="dot-pulse"></span> Asking the configured LLM…</div>
+        </div>
+      `;
+
+      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      try {
+        const res = await fetch('/repo/ask-llm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          result.innerHTML = `
+            <div class="error-box">
+              <h2>LLM Error</h2>
+              <pre>${JSON.stringify(data, null, 2)}</pre>
+            </div>
+          `;
+          return;
+        }
+
+        const nodes = data.context?.context_nodes || [];
+
+        const contextSection = nodes.length ? `
+          <details open>
+            <summary>Grounded Context Used <span class="badge">${nodes.length}</span></summary>
+            <div class="details-body">
+              <ul>
+                ${nodes.map(item => `
+                  <li>
+                    ${nodeChip(item)}
+                    ${srcLine(item)}
+                  </li>
+                `).join('')}
+              </ul>
+            </div>
+          </details>
+        ` : '';
+
+        result.innerHTML = `
+          <h2>CodeAtlas Answer</h2>
+          <div class="answer">${data.answer}</div>
+          ${contextSection}
+        `;
+      } catch (error) {
+        result.innerHTML = `
+          <div class="error-box">
+            <h2>Request Failed</h2>
+            <pre>${error}</pre>
+          </div>
+        `;
+      }
+    }
+
+    function renderList(title, items) {
+      if (!items || items.length === 0) return '';
+      return `
+        <h3>${title}</h3>
+        <ul>
+          ${items.map(item => `
+            <li>
+              <b>${item.name}</b>
+              ${srcLine(item)}
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    }
+
+    function renderResult(data) {
+      const result = document.getElementById('result');
+
+      if (data.title && data.high_level_flow) {
+        result.innerHTML = `
+          <h2>${data.title}</h2>
+          <p><b>High-level flow:</b> ${data.high_level_flow}</p>
+          ${renderList('Screens', data.screens)}
+          ${renderList('ViewModels', data.viewmodels)}
+          ${renderList('Repositories', data.repositories)}
+          ${renderList('Important Methods / Actions', data.important_methods)}
+        `;
+        return;
+      }
+
+      result.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+    }
+
+
+    // Submit Ask CodeAtlas when Enter is pressed inside the ask input.
+    // Submit Graph Search when Enter is pressed inside the search input.
+    window.addEventListener('DOMContentLoaded', function () {
+      const askInput = document.getElementById('question');
+      if (askInput) {
+        askInput.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            ask();
+          }
+        });
+      }
+
+      const searchInput = document.getElementById('search');
+      if (searchInput) {
+        searchInput.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            searchGraph();
+          }
+        });
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Environment / secrets
+.env
+
+# Runtime data: sqlite db, cloned repos, per-workspace graphs & configs
+data/*
+!data/.gitkeep
+
+# graphify artifacts
+graphify-out/
+
+# OS
+.DS_Store
