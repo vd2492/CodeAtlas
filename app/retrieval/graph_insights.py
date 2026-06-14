@@ -130,8 +130,8 @@ def detect_managers_and_services(nodes, links):
     return sorted(results.values(), key=lambda x: x["name"])
 
 
-def repo_summary_dynamic():
-    nodes, links = load_graph()
+def repo_summary_dynamic(graph_file=None):
+    nodes, links = load_graph(graph_file)
 
     return {
         "nodes": len(nodes),

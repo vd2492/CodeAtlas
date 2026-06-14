@@ -370,6 +370,7 @@ def rank_nodes_for_query(
     nodes: list[dict],
     links: list[dict],
     limit: int = 30,
+    boosts: dict = None,
 ) -> list[dict]:
     """Rank nodes against a multi-word query.
 
@@ -378,6 +379,10 @@ def rank_nodes_for_query(
     or "app". A node that covers several distinct query terms gets a bonus, so
     nodes actually about the question float to the top instead of being crowded
     out by common-substring noise.
+
+    `boosts` is an optional per-workspace {term: multiplier} map (a tunable
+    RetrievalConfig knob); a term's IDF weight is scaled by its multiplier so
+    admins can amplify domain-important words without code changes.
     """
     terms = []
     seen_terms = set()
@@ -389,6 +394,9 @@ def rank_nodes_for_query(
 
     if not terms:
         return []
+
+    # Boost keys are compacted to match how terms are normalized above.
+    boost_by_term = {compact(k): float(v) for k, v in (boosts or {}).items()}
 
     # Pass 1: collect candidates and per-term document frequency.
     candidates = []
@@ -421,7 +429,7 @@ def rank_nodes_for_query(
 
     total = max(1, len(candidates))
     weight = {
-        term: (math.log(1 + total / freq) if freq else 0.0)
+        term: (math.log(1 + total / freq) if freq else 0.0) * boost_by_term.get(term, 1.0)
         for term, freq in doc_freq.items()
     }
 

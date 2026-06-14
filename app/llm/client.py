@@ -46,6 +46,21 @@ Answer requirements:
 """
 
 
+# --- Provider sniffing --------------------------------------------------------
+
+def sniff_provider(api_key: str) -> dict:
+    """Infer sensible {provider, base_url, model} defaults from a key's prefix.
+    For openai_compatible keys the base_url is left blank (the user supplies it)."""
+    key = (api_key or "").strip()
+    if key.startswith("sk-ant-"):
+        return {"provider": "anthropic", "base_url": "https://api.anthropic.com",
+                "model": "claude-sonnet-4-5"}
+    if key.startswith("sk-"):
+        return {"provider": "openai", "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4o-mini"}
+    return {"provider": "openai_compatible", "base_url": "", "model": ""}
+
+
 # --- Provider implementations -------------------------------------------------
 
 def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:

@@ -4,9 +4,10 @@ Used by the admin "add repository" flow (Phase 2). Private repos rely on the
 host's existing git/SSH credentials or `gh auth login`.
 """
 
+import shutil
 import subprocess
 
-from ..config import repo_clone_dir
+from ..config import repo_clone_dir, workspace_dir
 
 CLONE_TIMEOUT = 600
 
@@ -30,3 +31,11 @@ def clone_repo(source_url: str, method: str, workspace: str):
     if result.returncode != 0:
         raise RuntimeError(f"clone failed: {result.stderr.strip() or result.stdout.strip()}")
     return dest
+
+
+def remove_workspace(workspace: str):
+    """Delete a workspace's entire directory (clone + graph + config) from disk.
+    Used by the admin "delete repository" flow; safe if the dir is missing."""
+    target = workspace_dir(workspace)
+    shutil.rmtree(target, ignore_errors=True)
+    return target

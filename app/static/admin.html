@@ -4,24 +4,543 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CodeAtlas · Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-           background: #06080d; color: #e9eef5; margin: 0; }
-    .wrap { max-width: 720px; margin: 0 auto; padding: 64px 24px; }
-    h1 { font-size: 24px; }
-    .muted { color: #8b97a8; line-height: 1.6; }
-    code { background: rgba(148,163,184,0.12); padding: 2px 6px; border-radius: 6px; }
+    :root { --bg:#080a0e; --panel:#0c0f15; --line:rgba(255,255,255,0.10);
+            --fg:#eef2f6; --muted:#9aa4b2; --accent:#5fe39a; --ok:#5fe39a; --warn:#f5a623;
+            --input-bg:#070a10; --dot:rgba(255,255,255,0.022); }
+    [data-theme="light"] { --bg:#f4f7fb; --panel:#ffffff; --line:rgba(15,30,45,0.12);
+            --fg:#10202e; --muted:#51637a; --accent:#0f9d63; --ok:#0f9d63; --warn:#c2871a;
+            --input-bg:#f3f6fa; --dot:rgba(12,30,50,0.05); }
+    * { box-sizing: border-box; }
+    body { font-family: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           background: var(--bg); color: var(--fg); margin: 0;
+           background-image: radial-gradient(var(--dot) 1px, transparent 1px); background-size: 34px 34px;
+           transition: background-color .3s ease, color .3s ease; }
+    a { color: var(--accent); }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 24px 80px; }
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 8px;}
+    h1 { font-size: 22px; margin: 0; }
+    h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 12px; }
+    .muted { color: var(--muted); line-height: 1.6; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 14px; }
+    label { display:block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+    input, select, textarea { width: 100%; background: var(--input-bg); color: var(--fg);
+      border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; font-size: 14px; font-family: inherit; }
+    textarea { min-height: 200px; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+    button { background: var(--accent); color: #04140c; border: 0; border-radius: 8px;
+      padding: 8px 14px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; }
+    /* theme toggle — fixed top-right, below the header (matches the home page) */
+    .theme-fab { position: fixed; top: 74px; right: 24px; z-index: 60; width: 40px; height: 40px;
+      border-radius: 11px; display: grid; place-items: center; cursor: pointer; color: var(--muted);
+      background: var(--panel); border: 1px solid var(--line); box-shadow: 0 6px 20px -10px rgba(0,0,0,0.5);
+      transition: color .18s ease, border-color .18s ease, transform .12s ease; }
+    .theme-fab:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
+    .theme-fab .ic-moon { display: none; } .theme-fab .ic-sun { display: block; }
+    [data-theme="light"] .theme-fab .ic-moon { display: block; }
+    [data-theme="light"] .theme-fab .ic-sun { display: none; }
+    button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
+    button:disabled { opacity: .5; cursor: default; }
+    .row { display:flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+    .row > div { flex: 1; min-width: 140px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; border: 1px solid var(--line); }
+    .pill.published { color: var(--ok); border-color: rgba(62,207,142,.4); }
+    .pill.indexed { color: var(--accent); border-color: rgba(79,140,255,.4); }
+    .pill.cloned, .pill.new { color: var(--warn); border-color: rgba(245,166,35,.4); }
+    /* action buttons: solid primary, filled-neutral secondary, danger */
+    .actions { white-space: nowrap; }
+    .actions button {
+      padding: 6px 13px; font-size: 12px; font-weight: 600; margin: 2px 5px 2px 0;
+      border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .1s ease, box-shadow .15s ease;
+    }
+    /* primary (Index / Publish) */
+    .actions button:not(.ghost):not(.danger) {
+      background: var(--accent); color: #04140c;
+      box-shadow: 0 4px 14px -8px rgba(79,140,255,0.8);
+    }
+    .actions button:not(.ghost):not(.danger):hover { filter: brightness(1.08); transform: translateY(-1px); }
+    /* secondary (Edit / Grant / Members) */
+    .actions button.ghost {
+      background: rgba(148,163,184,0.12); border-color: var(--line); color: var(--fg);
+    }
+    .actions button.ghost:hover {
+      background: rgba(148,163,184,0.2); border-color: var(--accent); color: #cfe0ff; transform: translateY(-1px);
+    }
+    /* danger (Delete) */
+    .actions button.danger {
+      background: rgba(255,80,80,0.10); border-color: rgba(255,90,90,0.35); color: #ff9a9a;
+    }
+    .actions button.danger:hover {
+      background: rgba(255,80,80,0.18); border-color: #ff6b6b; color: #ffb3b3; transform: translateY(-1px);
+    }
+
+    /* on/off toggle switch (Shared LLM) */
+    .switch { position: relative; display: inline-flex; align-items: center; gap: 9px; cursor: pointer; }
+    .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .track { width: 38px; height: 21px; border-radius: 99px; background: rgba(148,163,184,0.28);
+      transition: background .2s ease; flex: none; position: relative; }
+    .track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 15px; height: 15px;
+      border-radius: 50%; background: #e9eef5; transition: transform .2s ease; }
+    .switch input:checked + .track { background: var(--ok); }
+    .switch input:checked + .track::after { transform: translateX(17px); }
+    .switch .swlabel { font-size: 12px; color: var(--muted); min-width: 22px; }
+    .msg { padding: 9px 12px; border-radius: 8px; margin: 10px 0; font-size: 13px; display:none; }
+    .msg.err { background: rgba(255,80,80,.12); color: #ff9a9a; display:block; }
+    .msg.ok { background: rgba(62,207,142,.12); color: var(--ok); display:block; }
+    .hidden { display: none; }
+    pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
+    .mono, code { font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 720px){ .grid2 { grid-template-columns: 1fr; } }
   </style>
+  <script>
+    // Apply saved/system theme before paint to avoid a flash.
+    (function(){ try {
+      var s = localStorage.getItem('codeatlas-theme');
+      if(!s){ s = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark'; }
+      if(s === 'light') document.documentElement.setAttribute('data-theme','light');
+    } catch(e){} })();
+  </script>
 </head>
 <body>
-  <div class="wrap">
-    <h1>CodeAtlas Admin Console</h1>
-    <p class="muted">
-      Placeholder. The admin console (add repository, index, test retrieval,
-      tune the safe retrieval config, publish, and grant user access) lands in
-      Phase 2. The route surface already exists under <code>/admin/repos</code>
-      and <code>/auth</code>. See <code>docs/PLAN.md</code> for the roadmap.
-    </p>
+<button class="theme-fab" onclick="toggleTheme()" title="Toggle light / dark" aria-label="Toggle theme">
+  <svg class="ic-sun" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+  <svg class="ic-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+</button>
+<div class="wrap">
+  <header>
+    <h1>CodeAtlas · Admin</h1>
+    <div id="whoami" class="muted"></div>
+  </header>
+  <div id="globalMsg" class="msg"></div>
+
+  <!-- In-page modal (replaces window.prompt/confirm, which embedded browsers block) -->
+  <div id="modal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
+    <div class="panel" style="width:380px;max-width:92vw;margin:0;">
+      <h2 id="modalTitle" style="margin:0 0 8px;color:var(--fg);">&nbsp;</h2>
+      <p id="modalMsg" class="muted" style="font-size:13px;margin:0 0 6px;"></p>
+      <div id="modalInputWrap"><label id="modalLabel"></label><input id="modalInput" /></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+        <button class="ghost" id="modalCancel">Cancel</button>
+        <button id="modalOk">OK</button>
+      </div>
+    </div>
   </div>
+
+  <!-- AUTH GATE -->
+  <div id="authPanel" class="panel hidden" style="max-width:420px;margin:40px auto;">
+    <h2 id="authTitle">Sign in</h2>
+    <p id="authHint" class="muted"></p>
+    <label>Username</label>
+    <input id="authUser" autocomplete="username" />
+    <label>Password</label>
+    <input id="authPass" type="password" autocomplete="current-password" />
+    <div style="margin-top:14px;"><button id="authBtn">Sign in</button></div>
+  </div>
+
+  <!-- CONSOLE -->
+  <div id="console" class="hidden">
+    <h2>Repositories</h2>
+    <div class="panel">
+      <table id="repoTable"><thead>
+        <tr><th>Name</th><th>Slug</th><th>Status</th><th>Shared LLM</th><th>Actions</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+
+    <!-- Members panel (shown when "Members" is clicked on a repo) -->
+    <div id="memberPanel" class="panel hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <h2 style="margin:0">Members of <span id="memberRepo"></span></h2>
+        <button class="ghost" onclick="document.getElementById('memberPanel').classList.add('hidden')">Close</button>
+      </div>
+      <table id="memberTable"><thead>
+        <tr><th>User</th><th>Role</th><th>Granted</th><th></th></tr>
+      </thead><tbody></tbody></table>
+      <div id="memberEmpty" class="muted" style="font-size:12px;"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h2 style="margin-top:0">Add repository</h2>
+        <div class="row">
+          <div><label>Name</label><input id="newName" placeholder="My Service"/></div>
+          <div><label>Slug</label><input id="newSlug" placeholder="my-service"/></div>
+        </div>
+        <label>Source URL</label>
+        <input id="newUrl" placeholder="https://github.com/org/repo.git or owner/repo"/>
+        <label>Clone method</label>
+        <select id="newMethod">
+          <option value="https">https</option>
+          <option value="ssh">ssh</option>
+          <option value="gh">gh (GitHub CLI)</option>
+        </select>
+        <div style="margin-top:12px;"><button id="addRepoBtn">Clone repository</button></div>
+        <p class="muted" style="font-size:12px">Clone runs synchronously — large repos may take a moment.</p>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin-top:0">Create user</h2>
+        <div class="row">
+          <div><label>Username</label><input id="uName"/></div>
+          <div><label>Password</label><input id="uPass" type="password"/></div>
+        </div>
+        <label>Role</label>
+        <select id="uRole"><option value="user">user</option><option value="admin">admin</option></select>
+        <div style="margin-top:12px;"><button id="addUserBtn">Create user</button></div>
+        <div id="userList" class="muted" style="font-size:12px;margin-top:10px;"></div>
+      </div>
+    </div>
+
+    <!-- TEST PANEL -->
+    <h2>Test retrieval &amp; answers</h2>
+    <div class="panel">
+      <div class="row">
+        <div><label>Repository</label><select id="testRepo"></select></div>
+        <div style="flex:3"><label>Question</label><input id="testQ" placeholder="How does X work?"/></div>
+        <div style="flex:0 0 auto"><button id="testBtn">Ask</button></div>
+      </div>
+      <div id="testOut" class="hidden">
+        <p class="muted" style="font-size:12px">Provider: <span id="testProvider"></span></p>
+        <pre id="testAnswer"></pre>
+      </div>
+    </div>
+
+    <!-- CONFIG EDITOR -->
+    <h2>Retrieval config (per repo)</h2>
+    <div class="panel">
+      <div class="row">
+        <div><label>Repository</label><select id="cfgRepo"></select></div>
+        <div style="flex:0 0 auto"><button id="cfgLoad" class="ghost">Load</button></div>
+        <div style="flex:0 0 auto"><button id="cfgSave">Save</button></div>
+      </div>
+      <p class="muted" style="font-size:12px">Safe, data-only knobs (stopwords, synonyms, boosts, limits…). Persisted and applied per workspace.</p>
+      <textarea id="cfgText" spellcheck="false"></textarea>
+    </div>
+
+    <!-- AUDIT LOG -->
+    <h2 style="display:flex;align-items:center;gap:10px;">Audit log
+      <button class="ghost" style="padding:4px 10px;font-size:12px" onclick="refreshAudit()">Refresh</button>
+    </h2>
+    <div class="panel">
+      <table id="auditTable"><thead>
+        <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+
+    <p style="margin-top:24px"><a href="/app">← Go to the Ask UI</a> · <a href="/">Home</a> · <button id="logoutBtn" class="ghost">Sign out</button></p>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let REPOS = [];
+
+function toggleTheme() {
+  const isLight = document.documentElement.getAttribute("data-theme") === "light";
+  if (isLight) document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", "light");
+  try { localStorage.setItem("codeatlas-theme", isLight ? "dark" : "light"); } catch (e) {}
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    ...opts,
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error((data && data.detail) || res.statusText);
+  return data;
+}
+
+function flash(msg, ok = false) {
+  const el = $("globalMsg");
+  el.textContent = msg;
+  el.className = "msg " + (ok ? "ok" : "err");
+  setTimeout(() => { el.className = "msg"; }, 4000);
+}
+
+// ---- in-page modal (works in embedded browsers, unlike window.prompt/confirm) ----
+let _modalResolve = null;
+function openModal({ title, message, input, value }) {
+  return new Promise((resolve) => {
+    _modalResolve = resolve;
+    $("modalTitle").textContent = title || "";
+    $("modalMsg").textContent = message || "";
+    $("modalMsg").style.display = message ? "block" : "none";
+    const wrap = $("modalInputWrap");
+    if (input) {
+      wrap.style.display = "block";
+      $("modalLabel").textContent = input;
+      $("modalInput").value = value || "";
+    } else { wrap.style.display = "none"; }
+    $("modal").style.display = "grid";
+    if (input) setTimeout(() => { $("modalInput").focus(); $("modalInput").select(); }, 30);
+    else setTimeout(() => $("modalOk").focus(), 30);
+  });
+}
+function closeModal(result) {
+  $("modal").style.display = "none";
+  const r = _modalResolve; _modalResolve = null;
+  if (r) r(result);
+}
+$("modalOk").onclick = () => {
+  const hasInput = $("modalInputWrap").style.display !== "none";
+  closeModal(hasInput ? $("modalInput").value : true);
+};
+$("modalCancel").onclick = () => closeModal(null);
+$("modalInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("modalOk").click();
+  if (e.key === "Escape") closeModal(null);
+});
+const modalPrompt = (title, label, value) => openModal({ title, input: label, value });
+const modalConfirm = (title, message) => openModal({ title, message });
+
+async function boot() {
+  const status = await api("/auth/status");
+  const me = await api("/auth/me");
+  if (me.user && me.user.role === "admin") return showConsole(me);
+  if (me.user) { document.body.innerHTML = "<div class='wrap'><p class='muted'>This account is not an admin. <a href='/app'>Go to the Ask UI</a></p></div>"; return; }
+  showAuth(status.bootstrapped);
+}
+
+function showAuth(bootstrapped) {
+  $("console").classList.add("hidden");
+  $("authPanel").classList.remove("hidden");
+  $("authTitle").textContent = bootstrapped ? "Admin sign in" : "First-run setup — create admin";
+  $("authHint").textContent = bootstrapped
+    ? "Sign in with an admin account."
+    : "No users exist yet. Create the first administrator.";
+  $("authBtn").textContent = bootstrapped ? "Sign in" : "Create admin";
+  $("authBtn").onclick = async () => {
+    try {
+      const body = JSON.stringify({ username: $("authUser").value, password: $("authPass").value });
+      await api(bootstrapped ? "/auth/login" : "/auth/bootstrap", { method: "POST", body });
+      boot();
+    } catch (e) { flash(e.message); }
+  };
+}
+
+async function showConsole(me) {
+  $("authPanel").classList.add("hidden");
+  $("console").classList.remove("hidden");
+  $("whoami").textContent = me.user.username + " · admin";
+  $("logoutBtn").onclick = async () => { await api("/auth/logout", { method: "POST" }); boot(); };
+  await refreshRepos();
+  await refreshUsers();
+  await refreshAudit();
+}
+
+async function refreshRepos() {
+  const { repos } = await api("/admin/repos");
+  REPOS = repos;
+  const tbody = $("repoTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const r of repos) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${esc(r.name)}</td>
+      <td class="muted">${esc(r.slug)}</td>
+      <td><span class="pill ${r.status}">${r.status}</span></td>
+      <td class="shared-cell"></td>
+      <td class="actions"></td>`;
+
+    // Shared-LLM on/off toggle
+    const sw = document.createElement("label");
+    sw.className = "switch"; sw.title = "Allow the shared LLM tier for this repo";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!r.allow_shared_fallback;
+    cb.onchange = () => doPrivacy(r.slug, cb.checked);
+    const track = document.createElement("span"); track.className = "track";
+    const lbl = document.createElement("span"); lbl.className = "swlabel";
+    lbl.textContent = r.allow_shared_fallback ? "on" : "off";
+    sw.append(cb, track, lbl);
+    tr.querySelector(".shared-cell").appendChild(sw);
+
+    const act = tr.querySelector(".actions");
+    if (r.status === "cloned") act.appendChild(btn("Index", () => doIndex(r.slug)));
+    if (r.status === "indexed") act.appendChild(btn("Publish", () => doPublish(r.slug)));
+    act.appendChild(btn("Edit", () => doEditRepo(r), true));
+    act.appendChild(btn("Grant", () => doGrant(r.slug), true));
+    act.appendChild(btn("Members", () => showMembers(r.slug), true));
+    if (r.slug !== "default") act.appendChild(btn("Delete", () => doDelete(r.slug), "danger"));
+    tbody.appendChild(tr);
+  }
+  for (const sel of [$("testRepo"), $("cfgRepo")]) {
+    sel.innerHTML = "";
+    for (const r of repos) {
+      const o = document.createElement("option");
+      o.value = r.slug; o.textContent = `${r.name} (${r.status})`;
+      sel.appendChild(o);
+    }
+  }
+}
+
+async function refreshUsers() {
+  try {
+    const { users } = await api("/auth/admin/users");
+    const el = $("userList");
+    el.innerHTML = "";
+    for (const u of users) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);";
+      row.innerHTML = `<span style="flex:1">${esc(u.username)} <span class="muted">· ${u.role}</span></span>`;
+      row.appendChild(btn("Delete", () => doDeleteUser(u.username), true));
+      el.appendChild(row);
+    }
+  } catch (e) {}
+}
+
+async function doDeleteUser(username) {
+  if (!(await modalConfirm("Delete user", `Delete user "${username}"? Their sessions and grants are removed.`))) return;
+  try { await api(`/auth/admin/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+        flash(`Deleted user ${username}`, true); refreshUsers(); refreshAudit(); }
+  catch (e) { flash(e.message); }
+}
+
+function btn(label, fn, variant) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  if (variant === true || variant === "ghost") b.className = "ghost";
+  else if (typeof variant === "string") b.className = variant;   // e.g. "danger"
+  b.onclick = fn;
+  return b;
+}
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+async function doEditRepo(r) {
+  const name = await modalPrompt("Edit repository", "Display name", r.name);
+  if (name === null) return;                       // cancelled
+  if (!name.trim()) { flash("Name cannot be empty"); return; }
+  if (name.trim() === r.name) return;              // unchanged
+  try {
+    await api(`/admin/repos/${r.slug}`, { method: "PATCH", body: JSON.stringify({ name: name.trim() }) });
+    flash(`Renamed ${r.slug} → "${name.trim()}"`, true); refreshRepos(); refreshAudit();
+  } catch (e) { flash(e.message); }
+}
+
+async function doIndex(slug) {
+  flash("Indexing " + slug + "…", true);
+  try { await api(`/admin/repos/${slug}/index`, { method: "POST" }); flash("Indexed " + slug, true); refreshRepos(); }
+  catch (e) { flash(e.message); }
+}
+async function doPublish(slug) {
+  try { await api(`/admin/repos/${slug}/publish`, { method: "POST" }); flash("Published " + slug, true); refreshRepos(); }
+  catch (e) { flash(e.message); }
+}
+async function doGrant(slug) {
+  const username = await modalPrompt(`Grant access to ${slug}`, "Username", "");
+  if (!username || !username.trim()) return;
+  try { await api(`/admin/repos/${slug}/grant`, { method: "POST", body: JSON.stringify({ username }) }); flash(`Granted ${username} → ${slug}`, true); refreshAudit(); if (curMembersSlug === slug) showMembers(slug); }
+  catch (e) { flash(e.message); }
+}
+
+let curMembersSlug = null;
+async function showMembers(slug) {
+  curMembersSlug = slug;
+  $("memberPanel").classList.remove("hidden");
+  $("memberRepo").textContent = slug;
+  const tbody = $("memberTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  try {
+    const { members } = await api(`/admin/repos/${slug}/members`);
+    $("memberEmpty").textContent = members.length ? "" : "No users granted yet (admins always have access).";
+    for (const m of members) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${esc(m.username)}</td><td class="muted">${m.role}</td><td class="muted">${esc(m.granted_at||"")}</td><td></td>`;
+      tr.querySelector("td:last-child").appendChild(btn("Revoke", () => doRevoke(slug, m.username), true));
+      tbody.appendChild(tr);
+    }
+  } catch (e) { flash(e.message); }
+}
+async function doRevoke(slug, username) {
+  if (!(await modalConfirm("Revoke access", `Revoke ${username}'s access to ${slug}?`))) return;
+  try { await api(`/admin/repos/${slug}/revoke`, { method: "POST", body: JSON.stringify({ username }) }); flash(`Revoked ${username} ✕ ${slug}`, true); showMembers(slug); refreshAudit(); }
+  catch (e) { flash(e.message); }
+}
+async function doPrivacy(slug, allow) {
+  try { await api(`/admin/repos/${slug}/privacy`, { method: "PATCH", body: JSON.stringify({ allow_shared_fallback: allow }) });
+        flash(`Shared LLM ${allow ? "enabled" : "disabled"} for ${slug}`, true); refreshRepos(); refreshAudit(); }
+  catch (e) { flash(e.message); refreshRepos(); }   // resync the toggle to server state
+}
+async function doDelete(slug) {
+  if (!(await modalConfirm("Delete repository", `Delete repository "${slug}"? This removes its clone, graph, config, and all grants. This cannot be undone.`))) return;
+  try { await api(`/admin/repos/${slug}`, { method: "DELETE" }); flash(`Deleted ${slug}`, true);
+        $("memberPanel").classList.add("hidden"); refreshRepos(); refreshAudit(); }
+  catch (e) { flash(e.message); }
+}
+
+async function refreshAudit() {
+  try {
+    const { audit } = await api("/auth/admin/audit?limit=100");
+    const tbody = $("auditTable").querySelector("tbody");
+    tbody.innerHTML = "";
+    for (const a of audit) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="muted" style="white-space:nowrap">${esc(a.created_at||"")}</td>`
+        + `<td>${esc(a.actor_username||"—")}</td><td>${esc(a.action)}</td>`
+        + `<td class="muted">${esc(a.target||"")}</td><td class="muted">${esc(a.detail||"")}</td>`;
+      tbody.appendChild(tr);
+    }
+  } catch (e) {}
+}
+
+$("addRepoBtn").onclick = async () => {
+  const body = JSON.stringify({
+    name: $("newName").value, slug: $("newSlug").value,
+    source_url: $("newUrl").value, clone_method: $("newMethod").value,
+  });
+  $("addRepoBtn").disabled = true;
+  flash("Cloning…", true);
+  try { await api("/admin/repos", { method: "POST", body }); flash("Cloned. Now Index it.", true);
+        $("newName").value = $("newSlug").value = $("newUrl").value = ""; refreshRepos(); refreshAudit(); }
+  catch (e) { flash(e.message); }
+  finally { $("addRepoBtn").disabled = false; }
+};
+
+$("addUserBtn").onclick = async () => {
+  const body = JSON.stringify({ username: $("uName").value, password: $("uPass").value, role: $("uRole").value });
+  try { await api("/auth/admin/users", { method: "POST", body }); flash("User created", true);
+        $("uName").value = $("uPass").value = ""; refreshUsers(); refreshAudit(); }
+  catch (e) { flash(e.message); }
+};
+
+$("testBtn").onclick = async () => {
+  const slug = $("testRepo").value, question = $("testQ").value;
+  if (!question) return;
+  $("testBtn").disabled = true; $("testOut").classList.add("hidden");
+  flash("Asking…", true);
+  try {
+    const data = await api(`/admin/repos/${slug}/test`, { method: "POST", body: JSON.stringify({ question }) });
+    $("testProvider").textContent = data.provider_used || "?";
+    $("testAnswer").textContent = data.answer || "(no answer)";
+    $("testOut").classList.remove("hidden");
+    flash("Done", true);
+  } catch (e) { flash(e.message); }
+  finally { $("testBtn").disabled = false; }
+};
+
+$("cfgLoad").onclick = async () => {
+  const slug = $("cfgRepo").value;
+  try { const { config } = await api(`/admin/repos/${slug}/config`); $("cfgText").value = JSON.stringify(config, null, 2); }
+  catch (e) { flash(e.message); }
+};
+$("cfgSave").onclick = async () => {
+  const slug = $("cfgRepo").value;
+  let parsed;
+  try { parsed = JSON.parse($("cfgText").value); } catch (e) { return flash("Invalid JSON: " + e.message); }
+  try { await api(`/admin/repos/${slug}/config`, { method: "PUT", body: JSON.stringify(parsed) }); flash("Config saved", true); }
+  catch (e) { flash(e.message); }
+};
+
+boot().catch(e => flash(e.message));
+</script>
 </body>
 </html>

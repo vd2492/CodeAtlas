@@ -11,7 +11,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List
 
-from ..config import retrieval_config_path
+from ..config import DEFAULT_WORKSPACE, retrieval_config_path
 
 # Generic stopwords stripped from questions before keyword matching.
 DEFAULT_STOPWORDS: List[str] = [
@@ -63,3 +63,61 @@ def save_retrieval_config(workspace: str, config: RetrievalConfig) -> None:
     path = retrieval_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config.to_dict(), indent=2))
+
+
+# --- Default workspace seed --------------------------------------------------
+# The demo "destiny" anchors, migrated out of build_context() and into data.
+# Anchor names are display names (must match relation_utils.readable_name);
+# anchors that don't resolve in a given graph are skipped gracefully.
+
+DEFAULT_DESTINY_CONFIG = RetrievalConfig(
+    synonyms={
+        "habit": ["habits"],
+        "habits": ["habit"],
+        "completion": ["complete", "completed", "state", "today", "toggle", "streak"],
+        "complete": ["completion", "completed", "state"],
+        "completed": ["completion", "complete", "state"],
+        "toggle": ["completion", "state", "today"],
+        "streak": ["completion", "state"],
+        "login": ["auth", "authentication", "signin"],
+        "auth": ["login", "authentication", "signin"],
+        "signin": ["login", "auth"],
+        "revision": ["revisions", "spaced", "repetition"],
+        "revisions": ["revision"],
+        "spaced": ["revision", "repetition"],
+    },
+    preferred_components=[
+        "HabitsScreen", "HomeScreen", "RevisionsScreen", "LoginScreen",
+        "HabitsViewModel", "HomeViewModel", "RevisionsViewModel",
+        "HabitRepository", "AuthRepository", "HabitDao", "HabitEntity",
+        "HabitCompletionEntity",
+    ],
+    preferred_methods=[
+        # Habit
+        "HomeViewModel.toggleHabit", "HabitsViewModel.continueHabitStreak",
+        "HabitRepository.getTodayHabitsWithCompletion", "HabitRepository.setHabitStateToday",
+        "HabitRepository.computeDisplayedHabitStreak", "HabitRepository.computeHabitStreak",
+        "HabitRepository.currentUserHabitsCollection", "HabitRepository.calculateHabitHistory",
+        "HabitDao.iscompletedon",
+        # Revision
+        "HabitRepository.addRevisionTopic", "HabitRepository.deleteRevisionTopic",
+        "HabitRepository.calculateRevisionDueAt", "HabitRepository.findMissedRevisionDay",
+        "HabitRepository.currentUserRevisionsCollection", "RevisionsViewModel.startRevision",
+        "RevisionsViewModel.completeRevision", "RevisionsViewModel.completeActiveRevision",
+        "RevisionsViewModel.restartRevisionTopic",
+        # Login / auth
+        "AuthRepository.login", "AuthRepository.loginWithGoogleIdToken",
+        "AuthRepository.register", "AuthRepository.logout",
+        "AuthRepository.saveUserProfile", "AuthRepository.requestGoogleIdToken",
+        "AuthRepository.extractGoogleIdToken", "AuthRepository.mapGoogleSignInError",
+    ],
+)
+
+
+def seed_default_retrieval_config() -> None:
+    """Write the migrated destiny anchors as the default workspace's config on
+    first boot (data/ is gitignored, so this can't be a committed file). Other
+    workspaces get RetrievalConfig() defaults until an admin tunes them."""
+    if retrieval_config_path(DEFAULT_WORKSPACE).exists():
+        return
+    save_retrieval_config(DEFAULT_WORKSPACE, DEFAULT_DESTINY_CONFIG)

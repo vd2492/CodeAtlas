@@ -1,36 +1,91 @@
 import os
 import re
+import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from .config import DEFAULT_WORKSPACE, repo_clone_dir
+from . import db
+from .config import DEFAULT_WORKSPACE, graph_path, repo_clone_dir
 from .retrieval.flow_map import TOPICS, load_graph, meta_for, pretty_name, pretty_method, find_methods
 from .retrieval.graph_insights import repo_summary_dynamic
 from .retrieval.relation_utils import readable_name, format_link, search_nodes, rank_nodes_for_query
+from .retrieval.config_schema import load_retrieval_config, seed_default_retrieval_config
 from .llm.client import generate
-from .auth.routes import router as auth_router
+from .auth.routes import router as auth_router, load_user_llm
+from .auth.security import hash_password
+from .auth.sessions import require_user
 from .repos.routes import router as repos_router
 
 app = FastAPI(title="CodeAtlas", version="0.2.0")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# Root of the indexed source tree, so node source paths resolve to real files.
-# Defaults to the default workspace's cloned repo; override for the demo graph
-# (e.g. CODEATLAS_SOURCE_ROOT=/path/to/destiny) to get code excerpts.
-SOURCE_ROOT = Path(os.environ.get("CODEATLAS_SOURCE_ROOT", repo_clone_dir(DEFAULT_WORKSPACE)))
-
-# Skeleton routers for the multi-tenant features (Phase 2+). Mounted now so the
-# routes exist; handlers are stubs until those phases land.
+# Multi-tenant routers (auth + admin repo lifecycle).
 app.include_router(auth_router)
 app.include_router(repos_router)
 
 
-def read_source_excerpt(source_file: str, source_location: str, max_lines: int = 32) -> "dict | None":
+@app.on_event("startup")
+def _startup() -> None:
+    """Create tables, register the seeded demo workspace as a repo, and (if
+    configured) seed an admin so the instance is usable on first boot."""
+    db.init_db()
+    db.seed_default_repo()
+    seed_default_retrieval_config()
+    admin_user = os.environ.get("CODEATLAS_ADMIN_USER")
+    admin_pass = os.environ.get("CODEATLAS_ADMIN_PASS")
+    if admin_user and admin_pass and db.user_count() == 0:
+        db.create_user(admin_user, hash_password(admin_pass), role="admin")
+
+
+def workspace_source_root(workspace: str) -> Path:
+    """Root of the indexed source tree for a workspace, so node source paths
+    resolve to real files for code excerpts. The default workspace honors a
+    CODEATLAS_SOURCE_ROOT override (handy for the demo graph)."""
+    if workspace == DEFAULT_WORKSPACE:
+        override = os.environ.get("CODEATLAS_SOURCE_ROOT")
+        if override:
+            return Path(override)
+    return Path(repo_clone_dir(workspace))
+
+
+# Per-user sliding-window rate limit for LLM asks. In-process (fine for the
+# single-process self-host model); resets on restart.
+RATE_LIMIT_PER_MIN = int(os.environ.get("CODEATLAS_RATE_LIMIT_PER_MIN", "20"))
+_ask_hits: "dict[int, list]" = defaultdict(list)
+
+
+def enforce_rate_limit(user_id: int) -> None:
+    now = time.monotonic()
+    hits = [t for t in _ask_hits[user_id] if now - t < 60]
+    if len(hits) >= RATE_LIMIT_PER_MIN:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit reached ({RATE_LIMIT_PER_MIN}/min). Please wait and retry.",
+        )
+    hits.append(now)
+    _ask_hits[user_id] = hits
+
+
+def authorized_workspace(
+    workspace: str = DEFAULT_WORKSPACE, user: dict = Depends(require_user)
+) -> str:
+    """Resolve + permission-check the target workspace for a query. Admins reach
+    every workspace; users only reach repos granted to them."""
+    if user["role"] != "admin" and not db.user_has_repo(user["id"], workspace):
+        raise HTTPException(status_code=403, detail="You do not have access to this repository.")
+    return workspace
+
+
+def read_source_excerpt(
+    source_file: str, source_location: str, source_root: Path,
+    max_lines: int = 32, max_chars: int = 1100,
+) -> "dict | None":
     """Read the actual code at a node's location so the LLM can reason about
     behavior, not just node names. Captures the enclosing block via brace
     balancing, falling back to a small window, and is bounded in size."""
@@ -44,9 +99,9 @@ def read_source_excerpt(source_file: str, source_location: str, max_lines: int =
     start = max(1, int(match.group(1)))
     end = int(match.group(2)) if match.group(2) else None
 
-    path = (SOURCE_ROOT / source_file).resolve()
+    path = (source_root / source_file).resolve()
     try:
-        path.relative_to(SOURCE_ROOT)
+        path.relative_to(source_root)
     except ValueError:
         return None
     if not path.is_file():
@@ -76,8 +131,8 @@ def read_source_excerpt(source_file: str, source_location: str, max_lines: int =
             last = min(len(lines), start + 11)
 
     excerpt = "\n".join(lines[start - 1:last])
-    if len(excerpt) > 1100:
-        excerpt = excerpt[:1100] + "\n…"
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars] + "\n…"
 
     return {"start_line": start, "end_line": last, "code": excerpt}
 
@@ -85,7 +140,77 @@ def read_source_excerpt(source_file: str, source_location: str, max_lines: int =
 
 @app.get("/")
 def root():
+    """Marketing / landing page."""
+    return FileResponse(STATIC_DIR / "home.html")
+
+
+@app.get("/app")
+def ask_ui():
+    """The user Ask UI (current login flow): login → repo picker → ask."""
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/admin.html")
+def admin_console():
+    return FileResponse(STATIC_DIR / "admin.html")
+
+
+# Map source-file extensions to a display language for the public catalog.
+_LANG_BY_EXT = {
+    ".kt": "Kotlin", ".java": "Java", ".py": "Python", ".ts": "TypeScript",
+    ".tsx": "TypeScript", ".js": "JavaScript", ".jsx": "JavaScript", ".go": "Go",
+    ".rb": "Ruby", ".rs": "Rust", ".cpp": "C++", ".cc": "C++", ".c": "C",
+    ".cs": "C#", ".php": "PHP", ".swift": "Swift", ".scala": "Scala", ".dart": "Dart",
+}
+_catalog_cache: "dict[str, tuple]" = {}
+
+
+def _graph_stats(workspace: str) -> "tuple[int, str | None]":
+    """Live (node_count, dominant_language) for a workspace's graph, cached by
+    file mtime so the public landing page reflects real indexing without
+    re-reading large graphs on every hit."""
+    path = graph_path(workspace)
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return 0, None
+    cached = _catalog_cache.get(str(path))
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    try:
+        nodes, links = load_graph(path)
+    except Exception:
+        return 0, None
+    counts: "dict[str, int]" = {}
+    for link in links:
+        ext = os.path.splitext(link.get("source_file") or "")[1].lower()
+        lang = _LANG_BY_EXT.get(ext)
+        if lang:
+            counts[lang] = counts.get(lang, 0) + 1
+    language = max(counts, key=counts.get) if counts else None
+    _catalog_cache[str(path)] = (mtime, len(nodes), language)
+    return len(nodes), language
+
+
+@app.get("/public/catalog")
+def public_catalog():
+    """Public, unauthenticated catalog of published repositories with live graph
+    stats — drives the landing page. Lists only published repos; never source."""
+    repos = []
+    total_nodes = 0
+    for repo in db.list_repos():
+        if repo["status"] != "published":
+            continue
+        node_count, language = _graph_stats(repo["workspace"])
+        total_nodes += node_count
+        repos.append({
+            "name": repo["name"],
+            "slug": repo["slug"],
+            "status": repo["status"],
+            "language": language,
+            "nodes": node_count,
+        })
+    return {"repos": repos, "totals": {"repos": len(repos), "nodes": total_nodes}}
 
 
 class AskRequest(BaseModel):
@@ -100,18 +225,22 @@ def health():
 
 
 @app.get("/repo/summary")
-def repo_summary():
-    return repo_summary_dynamic()
+def repo_summary(workspace: str = Depends(authorized_workspace)):
+    return repo_summary_dynamic(graph_path(workspace))
 
 
 @app.get("/repo/flows/{topic}")
-def flow(topic: str):
+def flow(topic: str, workspace: str = Depends(authorized_workspace)):
+    return _flow(topic, workspace)
+
+
+def _flow(topic: str, workspace: str):
     topic = topic.lower()
 
     if topic not in TOPICS:
         raise HTTPException(status_code=404, detail="Supported topics: habit, revision, login")
 
-    nodes, links = load_graph()
+    nodes, links = load_graph(graph_path(workspace))
     config = TOPICS[topic]
 
     methods = find_methods(nodes, config)
@@ -148,7 +277,7 @@ def flow(topic: str):
 
 
 @app.post("/repo/ask")
-def ask(request: AskRequest):
+def ask(request: AskRequest, workspace: str = Depends(authorized_workspace)):
     q = request.question.lower()
 
     if "habit" in q:
@@ -158,19 +287,19 @@ def ask(request: AskRequest):
     elif "login" in q or "auth" in q or "sign" in q:
         topic = "login"
     elif "screen" in q:
-        return repo_summary()
+        return repo_summary_dynamic(graph_path(workspace))
     else:
         return {
             "answer": "I can currently answer questions about screens, habit flow, revision flow, and login/auth flow.",
             "supported_topics": ["screens", "habit", "revision", "login"],
         }
 
-    return flow(topic)
+    return _flow(topic, workspace)
 
 
 @app.get("/repo/nodes/{node_id}")
-def node_details(node_id: str):
-    nodes, links = load_graph()
+def node_details(node_id: str, workspace: str = Depends(authorized_workspace)):
+    nodes, links = load_graph(graph_path(workspace))
 
     matching_node = None
     for node in nodes:
@@ -198,27 +327,24 @@ def node_details(node_id: str):
     }
 
 
-SEARCH_STOPWORDS = {
-    "how", "does", "do", "what", "where", "when", "why", "which", "who",
-    "is", "are", "the", "a", "an", "work", "works", "working", "use",
-    "uses", "used", "using", "tell", "explain", "show", "me", "in",
-    "of", "to", "for", "and", "or", "with", "this", "that", "about",
-    "flow",
-}
-
-
 @app.get("/repo/search")
-def search_repo(q: str = Query(..., min_length=1), limit: int = 30):
-    nodes, links = load_graph()
+def search_repo(
+    q: str = Query(..., min_length=1),
+    limit: int = 30,
+    workspace: str = Depends(authorized_workspace),
+):
+    nodes, links = load_graph(graph_path(workspace))
+    config = load_retrieval_config(workspace)
+    stopwords = set(config.stopwords)
 
     # Tokenize so natural-language phrases ("explain habit flow") match, not just
     # exact node substrings. Fall back to the raw query if nothing survives.
     raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]+", q.lower())
-    terms = [t for t in raw_tokens if t not in SEARCH_STOPWORDS and len(t) > 2]
+    terms = [t for t in raw_tokens if t not in stopwords and len(t) > 2]
     if not terms:
         terms = [t for t in raw_tokens if len(t) > 2] or [q]
 
-    results = rank_nodes_for_query(terms, nodes, links, 80)
+    results = rank_nodes_for_query(terms, nodes, links, 80, boosts=config.keyword_boosts)
 
     components = []
     methods = []
@@ -260,10 +386,18 @@ def search_repo(q: str = Query(..., min_length=1), limit: int = 30):
 
 
 @app.get("/repo/context")
-def repo_context(question: str = Query(..., min_length=1), limit: int = 12):
+def repo_context_endpoint(
+    question: str = Query(..., min_length=1),
+    limit: int = 12,
+    workspace: str = Depends(authorized_workspace),
+):
+    return build_context(question, limit, workspace)
+
+
+def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKSPACE):
     import re
 
-    nodes, links = load_graph()
+    nodes, links = load_graph(graph_path(workspace))
 
     def node_id_of(node):
         return str(node.get("id") or node.get("label") or node.get("name") or "")
@@ -328,55 +462,34 @@ def repo_context(question: str = Query(..., min_length=1), limit: int = 12):
 
         return candidates[0]
 
-    stopwords = {
-        "how", "does", "do", "what", "where", "when", "why", "which", "who",
-        "is", "are", "the", "a", "an", "work", "works", "working", "use",
-        "uses", "used", "using", "tell", "explain", "show", "me", "in",
-        "of", "to", "for", "and", "or", "with", "this", "that"
-    }
+    # Everything below is driven by the workspace's RetrievalConfig — no repo is
+    # special-cased in code. The default workspace is seeded with the demo
+    # anchors (config_schema.DEFAULT_DESTINY_CONFIG); other repos start from
+    # RetrievalConfig() defaults and are tuned from the admin console.
+    config = load_retrieval_config(workspace)
+    stopwords = set(config.stopwords)
 
     raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]+", question.lower())
     keywords = [t for t in raw_tokens if t not in stopwords and len(t) > 2]
     expanded = set(keywords)
 
-    if "habit" in expanded or "habits" in expanded:
-        expanded.update(["habit", "habits"])
-
-    if "completion" in expanded or "complete" in expanded or "completed" in expanded:
-        expanded.update(["completion", "complete", "completed", "state", "today", "toggle", "streak"])
+    # Expand query terms with the workspace's synonym map (domain vocabulary).
+    for term in list(expanded):
+        for syn in config.synonyms.get(term, []):
+            expanded.add(syn)
 
     query_terms = list(expanded)
+    expanded_compact = {compact_text(t) for t in expanded}
 
-    is_habit_completion = "habit" in expanded and any(
-        x in expanded for x in ["completion", "complete", "completed", "state", "today", "toggle"]
-    )
+    def anchor_matches_query(name: str) -> bool:
+        """Seed a preferred anchor only when it's relevant to the question, so
+        habit anchors fire on habit questions, login anchors on login ones, and
+        none on unrelated questions — driven purely by the query, not by code."""
+        nc = compact_text(name)
+        return any(term and term in nc for term in expanded_compact)
 
-    preferred_components = []
-    preferred_methods = []
-
-    if is_habit_completion:
-        preferred_components = [
-            "HabitsScreen",
-            "HomeScreen",
-            "HabitsViewModel",
-            "HomeViewModel",
-            "HabitRepository",
-            "HabitDao",
-            "HabitEntity",
-            "HabitCompletionEntity",
-        ]
-
-        preferred_methods = [
-            "HomeViewModel.toggleHabit",
-            "HabitsViewModel.continueHabitStreak",
-            "HabitRepository.getTodayHabitsWithCompletion",
-            "HabitRepository.setHabitStateToday",
-            "HabitRepository.computeDisplayedHabitStreak",
-            "HabitRepository.computeHabitStreak",
-            "HabitRepository.currentUserHabitsCollection",
-            "HabitRepository.calculateHabitHistory",
-            "HabitDao.iscompletedon",
-        ]
+    preferred_components = [c for c in config.preferred_components if anchor_matches_query(c)]
+    preferred_methods = [m for m in config.preferred_methods if anchor_matches_query(m)]
 
     context_nodes = []
     seen_names = set()
@@ -398,21 +511,20 @@ def repo_context(question: str = Query(..., min_length=1), limit: int = 12):
             seen_names.add(item["name"])
             seen_nodes.add(item["node"])
 
-    # 3. Fill remaining slots from a rarity-weighted, multi-term relevance rank.
-    #    Specific words (e.g. "strict") outrank generic ones (e.g. "mode"/"app")
-    #    instead of being crowded out by common-substring noise and alphabetical
-    #    tie-breaks.
-    ranked = rank_nodes_for_query(query_terms, nodes, links, limit=limit * 4)
+    # 3. Fill remaining slots from a rarity-weighted, multi-term relevance rank,
+    #    amplified by the workspace's keyword boosts. Specific words outrank
+    #    generic ones instead of being crowded out by common-substring noise.
+    node_limit = config.node_limit
+    ranked = rank_nodes_for_query(
+        query_terms, nodes, links, limit=node_limit * 4, boosts=config.keyword_boosts
+    )
 
     for item in ranked:
-        if len(context_nodes) >= limit:
+        if len(context_nodes) >= node_limit:
             break
 
         source_file = item.get("source_file") or ""
         if "/src/test/" in source_file or "/src/androidTest/" in source_file:
-            continue
-
-        if is_habit_completion and "revision" in item["name"].lower():
             continue
 
         if item["name"] in seen_names or item["node"] in seen_nodes:
@@ -425,66 +537,33 @@ def repo_context(question: str = Query(..., min_length=1), limit: int = 12):
     selected_names = {item["name"] for item in context_nodes}
     selected_node_ids = {item["node"] for item in context_nodes}
 
-    preferred_name_tokens = {compact_text(x) for x in preferred_components + preferred_methods}
-
     def is_useful_context_relation(formatted):
-        source_name = formatted.get("source_name") or ""
-        target_name = formatted.get("target_name") or ""
-        relation = formatted.get("relation")
+        """Generic, repo-agnostic relation filter: drop test files and primitive
+        type-reference noise, then keep any relation that touches a node already
+        selected into the context (by id or display name)."""
         context = formatted.get("context")
         source_file = formatted.get("source_file") or ""
 
         if "/src/test/" in source_file or "/src/androidTest/" in source_file:
             return False
 
-        combined = compact_text(source_name + " " + target_name)
-
-        if is_habit_completion and "revision" in combined:
+        # Drop primitive/type generic noise (parameter/return/generic type refs).
+        if context in {"generic_arg", "return_type", "parameter_type"}:
             return False
 
-        # Drop primitive/type generic noise.
-        if context in {"generic_arg", "return_type", "parameter_type"}:
-            if target_name in {"HabitRepository", "HabitsScreen", "HomeScreen", "HabitsViewModel", "HomeViewModel"}:
-                return False
-
-        # Keep definitions only for selected preferred methods.
-        if relation == "method":
-            return target_name in selected_names or compact_text(target_name) in preferred_name_tokens
-
-        # Keep actual calls that involve selected components/methods.
-        if relation == "calls":
-            if source_name in selected_names or target_name in selected_names:
-                return True
-
-            return any(token in combined for token in preferred_name_tokens)
-
-        # Keep screen/viewmodel/repository references.
-        if relation == "references":
-            important_pairs = [
-                ("habitsscreen", "habitsviewmodel"),
-                ("homescreen", "homeviewmodel"),
-                ("habitsviewmodel", "habitrepository"),
-                ("homeviewmodel", "habitrepository"),
-                ("habitrepository", "habitdao"),
-            ]
-            return any(a in combined and b in combined for a, b in important_pairs)
-
-        return False
+        return (
+            formatted.get("source") in selected_node_ids
+            or formatted.get("target") in selected_node_ids
+            or formatted.get("source_name") in selected_names
+            or formatted.get("target_name") in selected_names
+        )
 
     context_relations = []
     seen_relations = set()
+    relation_limit = config.relation_limit
 
     for link in links:
         formatted = format_link(link)
-
-        source = formatted.get("source")
-        target = formatted.get("target")
-
-        # First preference: relations directly attached to selected nodes.
-        attached = source in selected_node_ids or target in selected_node_ids
-
-        if not attached and not is_useful_context_relation(formatted):
-            continue
 
         if not is_useful_context_relation(formatted):
             continue
@@ -502,15 +581,18 @@ def repo_context(question: str = Query(..., min_length=1), limit: int = 12):
         context_relations.append(formatted)
         seen_relations.add(relation_key)
 
-        if len(context_relations) >= 24:
+        if len(context_relations) >= relation_limit:
             break
 
     # Attach real source code for the most relevant nodes so the LLM can explain
     # actual behavior (e.g. what a feature enforces), not just node names. Kept
     # small (top few nodes, short excerpts) so the prompt stays fast.
-    for node in context_nodes[:6]:
+    source_root = workspace_source_root(workspace)
+    for node in context_nodes[:config.excerpt_nodes]:
         excerpt = read_source_excerpt(
-            node.get("source_file", ""), node.get("source_location", ""), max_lines=22
+            node.get("source_file", ""), node.get("source_location", ""),
+            source_root, max_lines=config.excerpt_max_lines,
+            max_chars=config.excerpt_max_chars,
         )
         if excerpt:
             node["source_excerpt"] = excerpt["code"]
@@ -546,18 +628,38 @@ def repo_context(question: str = Query(..., min_length=1), limit: int = 12):
 
 
 
-@app.post("/repo/ask-llm")
-def ask_llm_endpoint(request: AskRequest):
-    try:
-        context = repo_context(question=request.question, limit=16)
-        result = generate(context, user_llm=request.user_llm)
+def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
+                    user_llm: dict = None, allow_shared_fallback: bool = True) -> dict:
+    """Build context for a workspace and run the LLM fallback chain. Shared by
+    the user ask endpoint and the admin test panel."""
+    context = build_context(question, limit=16, workspace=workspace)
+    result = generate(context, user_llm=user_llm, allow_shared_fallback=allow_shared_fallback)
+    return {
+        "question": question,
+        "answer": result["answer"],
+        "provider_used": result["provider_used"],
+        "context": context,
+    }
 
-        return {
-            "question": request.question,
-            "answer": result["answer"],
-            "provider_used": result["provider_used"],
-            "context": context,
-        }
+
+@app.post("/repo/ask-llm")
+def ask_llm_endpoint(
+    request: AskRequest,
+    workspace: str = Depends(authorized_workspace),
+    user: dict = Depends(require_user),
+):
+    enforce_rate_limit(user["id"])
+    repo = db.get_repo_by_workspace(workspace)
+    allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
+    # Tier 1: an explicit per-request key wins; otherwise the user's stored BYOK key.
+    user_llm = request.user_llm or load_user_llm(user["id"])
+    try:
+        return answer_question(
+            request.question,
+            workspace=workspace,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared,
+        )
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:

@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CodeAtlas — Codebase intelligence, self-hosted</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#080a0e; --panel:#0c0f15; --panel2:#0e121a;
+    --txt:#eef2f6; --muted:#9aa4b2; --dim:#5f6b7a;
+    --green:#5fe39a; --green-br:#7aecaf; --green-gl:#9bf2bf; --blue:#7dd3fc;
+    --b1:rgba(255,255,255,0.06); --b2:rgba(255,255,255,0.10); --b3:rgba(255,255,255,0.18);
+    --green-tint:rgba(95,227,154,0.06);
+    --dot:rgba(255,255,255,0.022); --nav-bg:rgba(8,10,14,0.72); --vig:rgba(8,10,14,0.55);
+  }
+  [data-theme="light"]{
+    --bg:#f4f7fb; --panel:#ffffff; --panel2:#eef2f7;
+    --txt:#10202e; --muted:#51637a; --dim:#8593a6;
+    --green:#0f9d63; --green-br:#0bbd76; --green-gl:#5fe39a; --blue:#1f8fd0;
+    --b1:rgba(15,30,45,0.08); --b2:rgba(15,30,45,0.13); --b3:rgba(15,30,45,0.22);
+    --green-tint:rgba(15,157,99,0.07);
+    --dot:rgba(12,30,50,0.05); --nav-bg:rgba(255,255,255,0.8); --vig:rgba(244,247,251,0.6);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:"Space Grotesk",-apple-system,BlinkMacSystemFont,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5;
+    transition:background-color .3s ease,color .3s ease;}
+  body{
+    background-image:radial-gradient(var(--dot) 1px, transparent 1px);
+    background-size:34px 34px;
+  }
+  a{color:inherit;text-decoration:none;}
+  .mono{font-family:"JetBrains Mono",monospace;}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 24px;}
+  section{position:relative;}
+
+  /* eyebrow */
+  .eyebrow{font-family:"JetBrains Mono",monospace;font-size:11.5px;text-transform:uppercase;
+    letter-spacing:0.14em;color:var(--green);display:inline-flex;align-items:center;gap:8px;margin-bottom:18px;}
+  .eyebrow::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 8px var(--green-gl);}
+
+  /* buttons */
+  .btn{font-family:"Space Grotesk",sans-serif;font-size:14px;font-weight:600;cursor:pointer;
+    border-radius:10px;padding:11px 20px;border:1px solid transparent;display:inline-flex;
+    align-items:center;gap:8px;transition:transform .14s ease,background .18s ease,
+    border-color .18s ease,box-shadow .18s ease,color .18s ease;white-space:nowrap;}
+  .btn-solid{background:var(--green);color:#04140c;box-shadow:0 6px 22px -10px rgba(95,227,154,0.8);}
+  .btn-solid:hover{background:var(--green-br);transform:translateY(-1px);
+    box-shadow:0 10px 30px -10px rgba(95,227,154,0.95);}
+  .btn-ghost{background:transparent;color:var(--txt);border-color:var(--b3);}
+  .btn-ghost:hover{border-color:var(--green);color:var(--green-br);background:rgba(95,227,154,0.05);transform:translateY(-1px);}
+  .btn-blue{background:transparent;color:var(--blue);border-color:rgba(125,211,252,0.4);}
+  .btn-blue:hover{background:rgba(125,211,252,0.08);border-color:var(--blue);transform:translateY(-1px);}
+
+  /* pulsing dot */
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(95,227,154,0.6);
+    animation:pulse 1.8s infinite;display:inline-block;}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(95,227,154,0.55);}70%{box-shadow:0 0 0 7px rgba(95,227,154,0);}100%{box-shadow:0 0 0 0 rgba(95,227,154,0);}}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:30;backdrop-filter:blur(12px);
+    background:var(--nav-bg);border-bottom:1px solid var(--b1);}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;height:64px;}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .logo{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;position:relative;
+    background:radial-gradient(circle at 50% 40%, rgba(95,227,154,0.35), rgba(95,227,154,0.05));
+    border:1px solid rgba(95,227,154,0.4);}
+  .logo::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green-gl);}
+  .wordmark{font-weight:700;font-size:17px;letter-spacing:-0.01em;}
+  .vpill{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--dim);
+    border:1px solid var(--b2);border-radius:99px;padding:2px 8px;}
+  .nav-right{display:flex;align-items:center;gap:14px;}
+  .status{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--muted);
+    display:flex;align-items:center;gap:7px;}
+  @media(max-width:680px){.status,.nav-right .btn-ghost{display:none;}}
+
+  /* hero */
+  .hero{padding:96px 0 84px;overflow:hidden;}
+  #graph{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;}
+  .vignette{position:absolute;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 30%, transparent 38%, var(--vig) 72%, var(--bg) 100%);}
+
+  /* theme toggle — fixed top-right, below the header */
+  .theme-fab{position:fixed;top:80px;right:24px;z-index:40;width:42px;height:42px;border-radius:12px;
+    display:grid;place-items:center;cursor:pointer;color:var(--muted);background:var(--panel);
+    border:1px solid var(--b2);box-shadow:0 6px 20px -10px rgba(0,0,0,0.5);
+    transition:color .18s ease,border-color .18s ease,transform .12s ease;}
+  .theme-fab:hover{color:var(--green);border-color:var(--green);transform:translateY(-1px);}
+  .theme-fab .ic-moon{display:none;} .theme-fab .ic-sun{display:block;}
+  [data-theme="light"] .theme-fab .ic-moon{display:block;}
+  [data-theme="light"] .theme-fab .ic-sun{display:none;}
+  @media(max-width:680px){.theme-fab{top:74px;right:16px;}}
+  .hero-in{position:relative;z-index:2;max-width:760px;}
+  h1{font-size:clamp(38px,7vw,68px);line-height:1.03;letter-spacing:-0.03em;font-weight:700;margin:0 0 22px;}
+  .subhead{font-size:clamp(15px,2vw,18px);color:var(--muted);max-width:580px;margin:0 0 30px;}
+  .cta-row{display:flex;gap:13px;flex-wrap:wrap;margin-bottom:34px;}
+  .statline{font-family:"JetBrains Mono",monospace;font-size:12.5px;color:var(--dim);
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .statline b{color:var(--muted);font-weight:500;}
+  .statline .sep{color:var(--b3);}
+  .live{display:inline-flex;align-items:center;gap:7px;color:var(--green);}
+
+  /* generic section spacing */
+  .sec{padding:74px 0;border-top:1px solid var(--b1);}
+  h2{font-size:clamp(24px,3.4vw,34px);letter-spacing:-0.02em;font-weight:600;margin:0 0 10px;}
+  .lead{color:var(--muted);max-width:620px;margin:0 0 34px;font-size:15px;}
+
+  /* repo cards */
+  .grid{display:grid;gap:14px;}
+  .repos{grid-template-columns:repeat(auto-fit,minmax(240px,1fr));}
+  .repo-card{background:var(--panel);border:1px solid var(--b1);border-radius:14px;padding:18px;
+    cursor:pointer;transition:border-color .18s ease,transform .14s ease,background .18s ease;}
+  .repo-card:hover{border-color:var(--b3);transform:translateY(-2px);}
+  .repo-card.sel{border-color:var(--green);background:rgba(95,227,154,0.05);}
+  .repo-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
+  .repo-name{font-family:"JetBrains Mono",monospace;font-size:13.5px;font-weight:600;color:var(--txt);
+    display:flex;align-items:center;gap:8px;}
+  .lang-dot{width:9px;height:9px;border-radius:50%;flex:none;}
+  .pill{font-family:"JetBrains Mono",monospace;font-size:10.5px;text-transform:lowercase;
+    border:1px solid var(--b2);border-radius:99px;padding:3px 9px;color:var(--dim);}
+  .repo-card.sel .pill{border-color:var(--green);color:var(--green);}
+  .repo-meta{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--muted);
+    display:flex;gap:8px;align-items:center;}
+  .repo-meta .sep{color:var(--b3);}
+  .scoped{font-family:"JetBrains Mono",monospace;font-size:12.5px;color:var(--dim);margin-top:20px;}
+  .scoped .on{color:var(--green);}
+
+  /* steps */
+  .steps-box{border:1px solid var(--b1);border-radius:16px;overflow:hidden;
+    display:grid;grid-template-columns:repeat(3,1fr);}
+  .step{padding:24px;border-right:1px solid var(--b1);border-bottom:1px solid var(--b1);}
+  .steps-box .step:nth-child(3n){border-right:0;}
+  .steps-box .step:nth-child(n+4){}
+  .steps-box .step:nth-last-child(-n+3){border-bottom:0;}
+  .step-num{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--green);margin-bottom:12px;}
+  .step-name{font-weight:600;font-size:16px;margin-bottom:6px;}
+  .step-desc{color:var(--muted);font-size:13.5px;}
+  @media(max-width:780px){.steps-box{grid-template-columns:1fr 1fr;}
+    .steps-box .step:nth-child(3n){border-right:1px solid var(--b1);}
+    .steps-box .step:nth-child(2n){border-right:0;}
+    .steps-box .step{border-bottom:1px solid var(--b1);}}
+  @media(max-width:480px){.steps-box{grid-template-columns:1fr;}
+    .steps-box .step{border-right:0 !important;}}
+
+  /* roles */
+  .roles{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));}
+  .role{border-radius:16px;padding:26px;border:1px solid var(--b2);background:var(--panel);
+    display:flex;flex-direction:column;}
+  .role.admin{border-color:rgba(95,227,154,0.3);background:linear-gradient(180deg,rgba(95,227,154,0.05),transparent 60%);}
+  .role.user{border-color:rgba(125,211,252,0.28);background:linear-gradient(180deg,rgba(125,211,252,0.05),transparent 60%);}
+  .role-tag{font-family:"JetBrains Mono",monospace;font-size:11.5px;text-transform:uppercase;
+    letter-spacing:0.12em;margin-bottom:8px;}
+  .role.admin .role-tag{color:var(--green);}
+  .role.user .role-tag{color:var(--blue);}
+  .role h3{font-size:20px;font-weight:600;margin:0 0 18px;letter-spacing:-0.01em;}
+  .role ul{list-style:none;padding:0;margin:0 0 24px;flex:1;}
+  .role li{display:flex;gap:10px;align-items:flex-start;padding:8px 0;color:var(--muted);font-size:14px;
+    border-bottom:1px solid var(--b1);}
+  .role li:last-child{border-bottom:0;}
+  .tick{flex:none;margin-top:3px;}
+  .role.admin .tick{color:var(--green);} .role.user .tick{color:var(--blue);}
+
+  /* questions */
+  .qs{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));}
+  .q{font-family:"JetBrains Mono",monospace;font-size:13.5px;color:var(--muted);
+    background:var(--panel);border:1px solid var(--b1);border-radius:11px;padding:16px 18px;
+    transition:border-color .18s ease,color .18s ease,transform .14s ease;}
+  .q:hover{border-color:rgba(95,227,154,0.4);color:var(--txt);transform:translateY(-2px);}
+  .q .pr{color:var(--green);margin-right:9px;}
+
+  /* security */
+  .sec-panel{border:1px solid rgba(95,227,154,0.28);border-radius:18px;padding:36px;
+    background:linear-gradient(180deg,var(--green-tint),transparent 70%);}
+  .sec-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:24px;margin-top:28px;}
+  .sec-col h4{font-family:"JetBrains Mono",monospace;font-size:11.5px;text-transform:uppercase;
+    letter-spacing:0.12em;color:var(--green);margin:0 0 9px;}
+  .sec-col p{color:var(--muted);font-size:13.5px;margin:0;}
+
+  /* footer */
+  footer{border-top:1px solid var(--b1);padding:40px 0;}
+  .foot-in{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;}
+  .foot-links{display:flex;gap:20px;align-items:center;}
+  .foot-links a{color:var(--muted);font-size:14px;}
+  .foot-links a:hover{color:var(--green-br);}
+  .foot-tag{color:var(--dim);font-size:13px;font-family:"JetBrains Mono",monospace;}
+</style>
+<script>
+  // Apply saved (or system) theme before paint to avoid a flash of the wrong theme.
+  (function(){
+    try{
+      var saved = localStorage.getItem('codeatlas-theme');
+      if(!saved){ saved = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark'; }
+      if(saved === 'light') document.documentElement.setAttribute('data-theme','light');
+    }catch(e){}
+  })();
+</script>
+</head>
+<body>
+
+<!-- theme toggle (fixed, top-right, below header) -->
+<button class="theme-fab" onclick="toggleTheme()" title="Toggle light / dark" aria-label="Toggle light and dark mode">
+  <svg class="ic-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="4"></circle>
+    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+  </svg>
+  <svg class="ic-moon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+  </svg>
+</button>
+
+<!-- 1. NAV -->
+<nav>
+  <div class="wrap nav-in">
+    <div class="brand">
+      <span class="logo"></span>
+      <span class="wordmark">CodeAtlas</span>
+      <span class="vpill mono">v1.0</span>
+    </div>
+    <div class="nav-right">
+      <span class="status"><span class="pulse"></span>retrieval online</span>
+      <a class="btn btn-ghost" href="/admin.html">Admin console</a>
+      <a class="btn btn-solid" href="/app">Sign in</a>
+    </div>
+  </div>
+</nav>
+
+<!-- 2. HERO -->
+<section class="hero">
+  <canvas id="graph"></canvas>
+  <div class="vignette"></div>
+  <div class="wrap hero-in">
+    <div class="eyebrow">CODEBASE INTELLIGENCE — SELF-HOSTED</div>
+    <h1>Your codebase,<br>finally answerable.</h1>
+    <p class="subhead">Host private repositories, index them into a queryable graph, and let your
+      team ask grounded questions about the code — with answers that cite real files and lines.
+      No data leaves your box.</p>
+    <div class="cta-row">
+      <a class="btn btn-solid" href="/app">Sign in to ask →</a>
+      <a class="btn btn-ghost" href="/admin.html">Open admin console</a>
+    </div>
+    <div class="statline mono">
+      <b id="statRepos">—</b> repositories indexed <span class="sep">·</span>
+      <b id="statNodes">—</b> graph nodes <span class="sep">·</span>
+      <span class="live"><span class="pulse"></span>live indexing</span>
+    </div>
+  </div>
+</section>
+
+<!-- 3. AUTHORIZED REPOSITORIES -->
+<section class="sec">
+  <div class="wrap">
+    <div class="eyebrow">ACCESS-SCOPED</div>
+    <h2>Authorized repositories</h2>
+    <p class="lead">You only see repositories an admin has authorized for you.</p>
+    <div class="grid repos" id="repoGrid"></div>
+    <div class="scoped mono" id="scoped">// select a repository to scope your questions</div>
+  </div>
+</section>
+
+<!-- 4. HOW IT WORKS -->
+<section class="sec">
+  <div class="wrap">
+    <div class="eyebrow">PIPELINE</div>
+    <h2>How it works</h2>
+    <p class="lead">A repository goes from raw clone to answerable in six steps — every one
+      controlled from the admin console.</p>
+    <div class="steps-box" id="stepsBox"></div>
+  </div>
+</section>
+
+<!-- 5. ROLES -->
+<section class="sec">
+  <div class="wrap">
+    <div class="eyebrow">TWO ROLES</div>
+    <h2>Built for admins and the teams they support</h2>
+    <div class="grid roles" style="margin-top:30px">
+      <div class="role admin">
+        <div class="role-tag">For admins</div>
+        <h3>Own the index, control access</h3>
+        <ul>
+          <li><span class="tick">▹</span>Clone via HTTPS, SSH, or GitHub CLI</li>
+          <li><span class="tick">▹</span>Index into a searchable graph</li>
+          <li><span class="tick">▹</span>Test retrieval &amp; answer quality</li>
+          <li><span class="tick">▹</span>Tune safely per-repo</li>
+          <li><span class="tick">▹</span>Manage users &amp; repository access</li>
+        </ul>
+        <a class="btn btn-solid" href="/admin.html" style="justify-content:center">Open admin console</a>
+      </div>
+      <div class="role user">
+        <div class="role-tag">For users</div>
+        <h3>Ask, and get grounded answers</h3>
+        <ul>
+          <li><span class="tick">▹</span>Log in with admin-provided credentials</li>
+          <li><span class="tick">▹</span>See only authorized repos</li>
+          <li><span class="tick">▹</span>Ask about selected codebases</li>
+          <li><span class="tick">▹</span>Get grounded answers with source references</li>
+          <li><span class="tick">▹</span>Understand flows, files &amp; architecture without manual digging</li>
+        </ul>
+        <a class="btn btn-blue" href="/app" style="justify-content:center">Sign in to ask</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 6. EXAMPLE QUESTIONS -->
+<section class="sec">
+  <div class="wrap">
+    <div class="eyebrow">ASK ANYTHING</div>
+    <h2>Questions your team actually has</h2>
+    <p class="lead">Natural language in, grounded answers out — scoped to the repository you select.</p>
+    <div class="grid qs" id="qGrid"></div>
+  </div>
+</section>
+
+<!-- 7. SECURITY -->
+<section class="sec">
+  <div class="wrap">
+    <div class="sec-panel">
+      <div class="eyebrow">TRUST MODEL</div>
+      <h2>Secure by design</h2>
+      <p class="lead" style="margin-bottom:0">Self-hosted, access-scoped, and grounded — private
+        code stays private and answers stay honest.</p>
+      <div class="sec-cols">
+        <div class="sec-col">
+          <h4>Access control</h4>
+          <p>Users see only the repositories an admin has explicitly authorized for them — every
+            query is permission-checked.</p>
+        </div>
+        <div class="sec-col">
+          <h4>Safe tuning</h4>
+          <p>Retrieval is tuned with stopwords &amp; synonym mapping — configuration data only,
+            never browser-driven code execution.</p>
+        </div>
+        <div class="sec-col">
+          <h4>Grounded answers</h4>
+          <p>Every response is built from the indexed graph and cites real source references, so
+            answers stay verifiable.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 8. FOOTER -->
+<footer>
+  <div class="wrap foot-in">
+    <div class="brand">
+      <span class="logo"></span>
+      <div>
+        <div class="wordmark" style="font-size:15px">CodeAtlas</div>
+        <div class="foot-tag">Codebase intelligence, self-hosted.</div>
+      </div>
+    </div>
+    <div class="foot-links">
+      <a href="/admin.html">Admin console</a>
+      <a href="/app">Sign in</a>
+      <span class="foot-tag">© 2026</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // ---------- theme ----------
+  function setTheme(t) {
+    if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+    else document.documentElement.removeAttribute("data-theme");
+    try { localStorage.setItem("codeatlas-theme", t); } catch (e) {}
+    if (window.__refreshGraphTheme) window.__refreshGraphTheme();
+  }
+  function toggleTheme() {
+    const isLight = document.documentElement.getAttribute("data-theme") === "light";
+    setTheme(isLight ? "dark" : "light");
+  }
+
+  // ---------- repo cards (live from /public/catalog) ----------
+  const LANG_COLORS = {
+    Go:"#7dd3fc", TypeScript:"#5fa8e3", JavaScript:"#e3c45f", Kotlin:"#e3a15f",
+    Python:"#5fe39a", Java:"#e38a5f", Ruby:"#e3677a", Rust:"#e3a15f", "C++":"#7dd3fc",
+    "C#":"#9fe35f", PHP:"#8a9fe3", Swift:"#e3a15f", Scala:"#e3677a", Dart:"#5fe39a", C:"#7dd3fc",
+  };
+  const grid = document.getElementById("repoGrid");
+  const scoped = document.getElementById("scoped");
+  const fmt = (n) => (n || 0).toLocaleString();
+  const escHtml = (s) => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+
+  function renderCatalog(data) {
+    const repos = (data && data.repos) || [];
+    const totals = (data && data.totals) || { repos: 0, nodes: 0 };
+    const sr = document.getElementById("statRepos");
+    const sn = document.getElementById("statNodes");
+    if (sr) sr.textContent = totals.repos;
+    if (sn) sn.textContent = fmt(totals.nodes);
+
+    grid.innerHTML = "";
+    if (!repos.length) {
+      grid.style.gridTemplateColumns = "1fr";
+      const m = document.createElement("div");
+      m.className = "repo-card";
+      m.style.cursor = "default";
+      m.innerHTML = `
+        <div class="repo-name" style="margin-bottom:10px"><span class="lang-dot" style="background:var(--dim)"></span>No repositories indexed yet</div>
+        <div class="repo-meta"><span>Contact your admin to clone &amp; index a repository before you can ask questions.</span></div>`;
+      grid.appendChild(m);
+      scoped.textContent = "// no repositories available — ask an admin to index one";
+      return;
+    }
+
+    grid.style.gridTemplateColumns = "";
+    scoped.textContent = "// select a repository to scope your questions";
+    repos.forEach((r) => {
+      const color = LANG_COLORS[r.language] || "#5fe39a";
+      const meta = [r.language || "indexed", fmt(r.nodes) + " nodes"].join(" · ");
+      const c = document.createElement("div");
+      c.className = "repo-card";
+      c.innerHTML = `
+        <div class="repo-top">
+          <span class="repo-name"><span class="lang-dot" style="background:${color};box-shadow:0 0 8px ${color}66"></span>${escHtml(r.name)}</span>
+          <span class="pill">authorized</span>
+        </div>
+        <div class="repo-meta"><span>${r.slug}</span><span class="sep">·</span><span>${meta}</span></div>`;
+      c.onclick = () => {
+        const wasSel = c.classList.contains("sel");
+        document.querySelectorAll(".repo-card").forEach(x => {
+          x.classList.remove("sel");
+          const p = x.querySelector(".pill"); if (p) p.textContent = "authorized";
+        });
+        if (!wasSel) {
+          c.classList.add("sel"); c.querySelector(".pill").textContent = "selected";
+          scoped.innerHTML = `// scoped to <span class="on">${escHtml(r.name)}</span> — sign in to start asking`;
+        } else {
+          scoped.textContent = "// select a repository to scope your questions";
+        }
+      };
+      grid.appendChild(c);
+    });
+  }
+
+  fetch("/public/catalog")
+    .then(r => r.json())
+    .then(renderCatalog)
+    .catch(() => renderCatalog({ repos: [], totals: { repos: 0, nodes: 0 } }));
+
+  // ---------- how it works ----------
+  const STEPS = [
+    ["01","Clone","Pull any repo over HTTPS, SSH, or the GitHub CLI into an isolated workspace."],
+    ["02","Index","Extract structure into a searchable graph of files, symbols, and relations."],
+    ["03","Test","Probe retrieval and answer quality before anyone else sees the repo."],
+    ["04","Tune","Adjust stopwords, synonyms, and limits per repo — safely, as config."],
+    ["05","Publish","Flip the workspace live and grant access to selected users."],
+    ["06","Ask","Authorized users ask questions and get grounded, cited answers."],
+  ];
+  const stepsBox = document.getElementById("stepsBox");
+  STEPS.forEach(([n,t,d]) => {
+    const el = document.createElement("div");
+    el.className = "step";
+    el.innerHTML = `<div class="step-num mono">${n}</div><div class="step-name">${t}</div><div class="step-desc">${d}</div>`;
+    stepsBox.appendChild(el);
+  });
+
+  // ---------- example questions ----------
+  const QS = [
+    "How does login work?",
+    "Which files are involved in habit completion?",
+    "What happens when a user creates a payment?",
+    "Explain this feature flow end to end",
+    "Which ViewModel talks to this Repository?",
+    "What APIs are used in this module?",
+    "What files should I change for this feature?",
+  ];
+  const qGrid = document.getElementById("qGrid");
+  QS.forEach(q => {
+    const el = document.createElement("div");
+    el.className = "q";
+    el.innerHTML = `<span class="pr">&gt;</span>${q}`;
+    qGrid.appendChild(el);
+  });
+
+  // ---------- live node-graph background ----------
+  (function(){
+    const canvas = document.getElementById("graph");
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let W=0, H=0, DPR=1, nodes=[], packets=[], last=0;
+    const LABELS = ["auth/login.ts","PaymentService","useRepo()","graph.db","indexer","RetrievalConfig","VectorStore","schema.sql"];
+    const MAXD = 152, MAXD2 = MAXD*MAXD;
+    const rnd = (a,b) => a + Math.random()*(b-a);
+
+    // Theme-aware palette so the graph stays legible in light mode.
+    function palette(){
+      const light = document.documentElement.getAttribute("data-theme") === "light";
+      return light ? {
+        edge:"70,95,130", edgeMax:0.22, node:"rgba(80,105,140,0.6)",
+        hub:"rgba(15,150,99,0.95)", hubGlow:"rgba(15,150,99,0.8)", label:"rgba(70,90,115,0.85)",
+        pkt:"rgba(15,157,99,0.5)", core:"#0bbd76", gin:"rgba(40,200,140,0.85)", gout:"rgba(15,157,99,0)"
+      } : {
+        edge:"150,170,195", edgeMax:0.13, node:"rgba(150,170,195,0.5)",
+        hub:"rgba(95,227,154,0.92)", hubGlow:"rgba(95,227,154,0.85)", label:"rgba(154,164,178,0.7)",
+        pkt:"rgba(95,227,154,0.34)", core:"#9bf2bf", gin:"rgba(155,242,191,0.9)", gout:"rgba(95,227,154,0)"
+      };
+    }
+    let C = palette();
+    window.__refreshGraphTheme = () => { C = palette(); };
+
+    function build(){
+      const count = Math.max(30, Math.min(66, Math.round(W*H/15000)));
+      nodes = [];
+      for (let i=0;i<count;i++){
+        const hub = Math.random() < 0.16;
+        nodes.push({ x:Math.random()*W, y:Math.random()*H,
+          vx:rnd(-0.22,0.22), vy:rnd(-0.22,0.22),
+          hub, r: hub ? rnd(2.6,4.2) : rnd(1.1,2.0), label:null });
+      }
+      const hubs = nodes.filter(n=>n.hub);
+      for (let i=hubs.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [hubs[i],hubs[j]]=[hubs[j],hubs[i]]; }
+      LABELS.forEach((l,i)=>{ if (hubs[i]) hubs[i].label = l; });
+      packets = [];
+    }
+
+    function resize(){
+      DPR = Math.min(window.devicePixelRatio||1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      if (!W || !H) return;
+      canvas.width = Math.round(W*DPR); canvas.height = Math.round(H*DPR);
+      ctx.setTransform(DPR,0,0,DPR,0,0);
+      build();
+    }
+
+    function neighbors(node){
+      const out = [];
+      for (const n of nodes){
+        if (n === node) continue;
+        const dx=n.x-node.x, dy=n.y-node.y;
+        if (dx*dx+dy*dy < MAXD2) out.push(n);
+      }
+      return out;
+    }
+
+    function spawn(){
+      if (packets.length >= 13 || nodes.length < 2) return;
+      const a = nodes[Math.floor(Math.random()*nodes.length)];
+      const nb = neighbors(a);
+      if (!nb.length) return;
+      const b = nb[Math.floor(Math.random()*nb.length)];
+      packets.push({ a, b, t:0, hops:0, max: 2+Math.floor(Math.random()*4) });
+    }
+
+    function step(ts){
+      requestAnimationFrame(step);
+      if (!W || !H) return;
+      ctx.clearRect(0,0,W,H);
+
+      for (const n of nodes){
+        n.x += n.vx; n.y += n.vy;
+        if (n.x < -20) n.x = W+20; else if (n.x > W+20) n.x = -20;
+        if (n.y < -20) n.y = H+20; else if (n.y > H+20) n.y = -20;
+      }
+
+      // idle steel-blue web
+      ctx.lineWidth = 1;
+      for (let i=0;i<nodes.length;i++){
+        for (let j=i+1;j<nodes.length;j++){
+          const a=nodes[i], b=nodes[j];
+          const dx=a.x-b.x, dy=a.y-b.y, d2=dx*dx+dy*dy;
+          if (d2 < MAXD2){
+            const al = (1 - Math.sqrt(d2)/MAXD) * C.edgeMax;
+            ctx.strokeStyle = "rgba(" + C.edge + "," + al.toFixed(3) + ")";
+            ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+          }
+        }
+      }
+
+      // data packets
+      if (ts - last > 320){ spawn(); last = ts; }
+      for (let i=packets.length-1;i>=0;i--){
+        const p = packets[i];
+        p.t += 0.018;
+        if (p.t >= 1){
+          p.hops++;
+          if (p.hops >= p.max){ packets.splice(i,1); continue; }
+          const nb = neighbors(p.b).filter(n => n !== p.a);
+          if (!nb.length){ packets.splice(i,1); continue; }
+          p.a = p.b; p.b = nb[Math.floor(Math.random()*nb.length)]; p.t = 0;
+        }
+        const ax=p.a.x, ay=p.a.y, bx=p.b.x, by=p.b.y;
+        ctx.strokeStyle = C.pkt; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.stroke();
+        const px = ax + (bx-ax)*p.t, py = ay + (by-ay)*p.t;
+        const g = ctx.createRadialGradient(px,py,0,px,py,9);
+        g.addColorStop(0, C.gin);
+        g.addColorStop(1, C.gout);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px,py,9,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle = C.core; ctx.beginPath(); ctx.arc(px,py,1.7,0,Math.PI*2); ctx.fill();
+      }
+
+      // nodes
+      ctx.font = '10px "JetBrains Mono", monospace';
+      for (const n of nodes){
+        if (n.hub){
+          ctx.shadowColor = C.hubGlow; ctx.shadowBlur = 12;
+          ctx.fillStyle = C.hub;
+          ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fill();
+          ctx.shadowBlur = 0;
+          if (n.label){
+            ctx.fillStyle = C.label;
+            ctx.fillText(n.label, n.x + n.r + 6, n.y + 3);
+          }
+        } else {
+          ctx.fillStyle = C.node;
+          ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,Math.PI*2); ctx.fill();
+        }
+      }
+    }
+
+    window.addEventListener("resize", resize);
+    resize();
+    requestAnimationFrame(step);
+  })();
+</script>
+</body>
+</html>

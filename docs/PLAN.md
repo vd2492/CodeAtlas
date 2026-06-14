@@ -23,29 +23,75 @@ optional cost is the shared LLM tier.
 - Clone/index helpers (`app/repos/`), stub auth/admin routers.
 - Default workspace seeded with a sample graph so it runs out of the box.
 
-### Phase 2 — Auth & repo lifecycle
-- Real login/sessions; admin bootstrap (first user = admin).
-- Admin: add repo (https/ssh/gh) → clone → index → workspace `status` transitions.
-- Wire `app/repos/routes.py` + `app/auth/routes.py` to the DB and helpers.
-- Admin console UI (`static/admin.html`).
+### Phase 2 — Auth & repo lifecycle ✅
+- Real login/sessions (DB-backed `sessions` table + HttpOnly `ca_session` cookie);
+  first-run bootstrap (first user = admin), optional `CODEATLAS_ADMIN_USER/PASS` seed.
+- Admin: add repo (https/ssh/gh) → clone → index → publish; `status` transitions
+  `new→cloned→indexed→published`. Admin "test retrieval & answers" panel runs the
+  LLM against a specific workspace before exposing it.
+- Wired `app/repos/routes.py` + `app/auth/routes.py` to the DB and clone/index helpers.
+- Admin console UI (`static/admin.html`); Ask UI login-gated with a repo picker.
+- **Access control pulled forward** (chosen during the build): every `/repo/*`
+  query is scoped to a `workspace` and permission-checked (admins bypass; users
+  need an explicit grant). Per-repo `allow_shared_fallback` enforced in the ask
+  path. Phase 4 now only owns the remaining polish: revoke UI, audit log.
 
-### Phase 3 — Config-driven retrieval
-- Thread `RetrievalConfig` through the context builder so stopwords, synonyms,
-  keyword boosts, preferred components/methods, node/relation limits, and
-  excerpt sizes apply **per workspace**.
-- Admin "test retrieval & answers" panel: edit config → re-run → compare.
-- Migrate the current hardcoded (destiny-specific) anchors into the default
-  workspace's config.
+### Phase 3 — Config-driven retrieval ✅
+- `build_context` is now driven entirely by the workspace's `RetrievalConfig`:
+  stopwords, synonyms, keyword boosts (threaded into `rank_nodes_for_query`),
+  query-relevant preferred components/methods, node/relation limits, and excerpt
+  sizes all apply **per workspace**. The relation filter is now generic (drop
+  test files + primitive-type noise, keep relations touching selected nodes).
+- Destiny-specific anchors migrated out of code into the **default workspace's**
+  seeded config (`config_schema.DEFAULT_DESTINY_CONFIG` +
+  `seed_default_retrieval_config()`, written on first boot since `data/` is
+  gitignored). New repos start from `RetrievalConfig()` defaults, tunable from
+  the admin console.
+- Admin "test retrieval & answers" panel (built in Phase 2) drives edit→re-run→
+  compare. Verified: demo answers unchanged (login is actually better now),
+  editing synonyms/boosts changes the grounded context set, and no destiny
+  anchors leak into other repos.
+- Note: the legacy `/repo/flows/{topic}` + `/repo/ask` demo endpoints still use
+  `flow_map.TOPICS` (destiny-only flow explorer); they're separate from the
+  config-driven answer path and untouched.
 
-### Phase 4 — Access control & publishing
-- Publish a workspace; grant/revoke per-user access (`repo_access`).
-- Users see only authorized repos; every query is scoped + permission-checked.
-- Per-repo `allow_shared_fallback` enforced in the LLM chain.
+### Phase 4 — Access control & publishing ✅
+- Publish + grant + per-query scoping + `allow_shared_fallback` enforcement
+  landed in Phase 2. Phase 4 added the remaining **management surface**:
+  - **Revoke** access (`POST /admin/repos/{slug}/revoke`) and **Members** view
+    (`GET .../members`) — wired to the existing `db.revoke_access` /
+    `list_repo_members`. Revokes take effect on the user's next page load.
+  - **Delete repo** (`DELETE /admin/repos/{slug}`): removes the DB row (grants
+    cascade) and the workspace dir (`cloning.remove_workspace`); the seeded
+    `default` repo is protected. (Replaces the manual DB+rm step.)
+  - **Privacy toggle** (`PATCH .../privacy`): flip `allow_shared_fallback` from
+    the UI; verified that disabling it blocks the shared LLM tier.
+  - **Audit log**: append-only `audit_log` table + `record_audit`/`list_audit`,
+    recorded on login/bootstrap/create-user/add/index/publish/grant/revoke/
+    privacy/delete, surfaced read-only at `GET /auth/admin/audit` and in the
+    console.
+- Admin console (`static/admin.html`) extended with Members/Privacy/Delete row
+  actions and an Audit log section. User Ask UI unchanged (scoping already live).
 
-### Phase 5 — BYOK & polish
-- Per-user encrypted LLM creds (tier 1) stored in `users.llm_creds`.
-- Provider sniffing from key prefix; UI to manage keys.
-- Audit log, rate limits, multi-workspace graph loading.
+### Phase 5 — BYOK & polish ✅
+- **BYOK**: per-user LLM key encrypted at rest with **Fernet**
+  (`app/auth/crypto.py`; secret from `CODEATLAS_SECRET_KEY` env or generated to
+  `data/secret.key`, gitignored, mode 0600) and stored in `users.llm_creds`.
+  Used as LLM tier 1 for that user's questions; `/repo/ask-llm` loads + decrypts
+  it (request-body `user_llm` still works as an override).
+- **Provider sniffing** (`client.sniff_provider`): `sk-ant-*`→anthropic,
+  `sk-*`→openai, else openai_compatible (base_url required). Key-management panel
+  in the Ask UI (`GET/PUT/DELETE /auth/me/llm`); `GET` returns a hint, never the
+  key. The answer view shows which tier responded (`user:` / `ollama:` /
+  `shared:`).
+- **Rate limits**: per-user sliding window on `/repo/ask-llm`
+  (`CODEATLAS_RATE_LIMIT_PER_MIN`, default 20) → HTTP 429 over-limit.
+- **User management**: admin `DELETE /auth/admin/users/{username}` (refuses self
+  and the last admin) + Users table with delete in the console.
+- Multi-workspace graph loading already landed in Phase 2/3; audit log in Phase 4.
+- Verified: tier-1 BYOK answers as `user:*`, key is ciphertext at rest and never
+  returned, clearing falls back to `shared:`, rate limit trips at the cap, and
+  user deletion guards hold.
 
 ## Safe retrieval config (admin-tunable, no code execution)
 
