@@ -266,6 +266,68 @@
     h2, h3 { margin: 0; }
     .row { display: flex; gap: 10px; flex-wrap: wrap; }
 
+    .llm-card {
+      margin-bottom: 16px;
+    }
+    .llm-options,
+    .personal-llm {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .personal-llm { margin-top: 12px; }
+    .llm-option.active {
+      color: #04221f;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border-color: transparent;
+      box-shadow: 0 8px 22px -10px rgba(95, 227, 154, 0.75);
+    }
+    .personal-llm input {
+      flex: 1 1 180px;
+      min-width: 0;
+      padding: 11px 14px;
+      border-radius: 11px;
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.18s ease;
+    }
+    .personal-llm input:focus { border-color: rgba(95, 227, 154, 0.45); }
+    .personal-llm input::placeholder { color: var(--faint); }
+    .personal-llm .btn-primary {
+      flex-basis: 100%;
+      max-width: 260px;
+      justify-content: center;
+    }
+    #keyStatus { margin-top: 10px; }
+
+    .advanced-card {
+      margin-top: 16px;
+    }
+    .advanced-card summary {
+      padding: 0;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--text);
+    }
+    .advanced-card summary::after {
+      content: "Show";
+      font-size: 12px;
+      font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      color: var(--faint);
+      transform: none;
+    }
+    .advanced-card[open] summary::after {
+      content: "Hide";
+      transform: none;
+    }
+    .advanced-body {
+      margin-top: 16px;
+    }
+
     .search-row { display: flex; gap: 10px; }
     .search-row input {
       flex: 1;
@@ -500,36 +562,6 @@
     </div>
   </div>
 
-  <!-- BYOK key panel -->
-  <div id="keyOverlay" class="overlay" style="display:none;">
-    <div class="login-card" style="width:420px">
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <h2 style="margin:0">My LLM key</h2>
-        <button class="theme-toggle" onclick="showKey(false)" title="Close" style="width:34px;height:34px">✕</button>
-      </div>
-      <p>Bring your own key — used as the first LLM tier for your questions, so your code never touches the shared endpoint. Stored encrypted.</p>
-      <div id="keyStatus" class="muted" style="font-size:13px;margin-bottom:8px;"></div>
-      <label>API key</label>
-      <input id="keyApi" type="password" placeholder="sk-… / sk-ant-… / your token" autocomplete="off" />
-      <label>Provider <span class="muted">(auto-detected from key if blank)</span></label>
-      <select id="keyProvider" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border-strong);background:var(--input-bg);color:var(--text);font-size:14px;">
-        <option value="">auto</option>
-        <option value="openai">openai</option>
-        <option value="anthropic">anthropic</option>
-        <option value="openai_compatible">openai_compatible</option>
-      </select>
-      <label>Base URL <span class="muted">(required for openai_compatible)</span></label>
-      <input id="keyBase" placeholder="https://host/v1" autocomplete="off" />
-      <label>Model</label>
-      <input id="keyModel" placeholder="e.g. gpt-4o, claude-sonnet-4-5, mimo-v2.5" autocomplete="off" />
-      <div id="keyErr" class="login-err"></div>
-      <div style="display:flex;gap:10px;margin-top:14px;">
-        <button class="btn-primary" style="flex:1;justify-content:center" onclick="saveKey()">Save key</button>
-        <button onclick="clearKey()">Clear</button>
-      </div>
-    </div>
-  </div>
-
   <div class="container">
     <header class="header">
       <div class="logo-mark" aria-hidden="true"></div>
@@ -539,7 +571,6 @@
       </div>
       <div class="header-spacer"></div>
       <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
-      <button class="theme-toggle" onclick="openKeyPanel()" aria-label="My LLM key" title="My LLM key" style="font-size:18px">⚙</button>
       <button class="theme-toggle" onclick="logout()" aria-label="Sign out" title="Sign out">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
       </button>
@@ -569,6 +600,32 @@
       </div>
     </section>
 
+    <!-- LLM choice -->
+    <section class="card llm-card span-2">
+      <div class="card-head"><span class="card-dot"></span><h2 class="card-title">My LLM key</h2></div>
+      <div class="llm-options" role="group" aria-label="LLM provider">
+        <button type="button" class="llm-option" data-llm-mode="ollama">Use default free Ollama</button>
+        <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
+      </div>
+      <div class="personal-llm">
+        <input id="keyApi" type="password" placeholder="Personal API key" autocomplete="off" />
+        <input id="keyModel" placeholder="Model name (optional)" autocomplete="off" />
+        <button type="button" class="btn-primary" onclick="saveKey()">Use personal LLM key</button>
+      </div>
+      <div id="keyStatus" class="src"></div>
+      <div id="keyErr" class="login-err"></div>
+    </section>
+
+    <!-- Result -->
+    <section class="card result-card span-2">
+      <div id="result">
+        <div class="empty-state">
+          <div class="eyebrow">Ready</div>
+          <p>Ask a question above, choose an LLM option, and the grounded answer will appear here.</p>
+        </div>
+      </div>
+    </section>
+
     <!-- Secondary tools -->
     <div class="tools">
       <section class="card">
@@ -584,25 +641,20 @@
         </div>
       </section>
 
-      <section class="card span-2">
-        <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Graph Search</h2></div>
-        <div class="search-row">
-          <input id="search" placeholder="Search nodes, screens, methods…" autocomplete="off" />
-          <button onclick="searchGraph()">Search</button>
+      <details class="card advanced-card span-2">
+        <summary>
+          <span class="card-dot"></span>
+          <h2 class="card-title">Advanced graph search</h2>
+        </summary>
+        <div class="advanced-body">
+          <div class="search-row">
+            <input id="search" placeholder="Search nodes, screens, methods..." autocomplete="off" />
+            <button onclick="searchGraph()">Search</button>
+          </div>
+          <div id="searchResults"></div>
         </div>
-        <div id="searchResults"></div>
-      </section>
+      </details>
     </div>
-
-    <!-- Result -->
-    <section class="card result-card span-2">
-      <div id="result">
-        <div class="empty-state">
-          <div class="eyebrow">Ready</div>
-          <p>Ask a question above, or use a tool to explore the graph. Answers appear here with the grounded context CodeAtlas used.</p>
-        </div>
-      </div>
-    </section>
   </div>
 
   <script>
@@ -619,6 +671,8 @@
 
     // ---------- Auth + active workspace ----------
     let WORKSPACE = null;
+    let LLM_MODE = 'mimo';
+    let PERSONAL_KEY_CONFIGURED = false;
 
     function wsUrl(path) {
       const sep = path.includes('?') ? '&' : '?';
@@ -682,6 +736,7 @@
       if (!data.user) { showLogin(true); return false; }
       populateRepos(data.repos);
       await loadFlowButtons();
+      await loadLlmStatus();
       return true;
     }
 
@@ -697,24 +752,49 @@
       window.location.href = '/';   // back to the landing page
     }
 
-    // ---------- BYOK key panel ----------
-    function showKey(show) { document.getElementById('keyOverlay').style.display = show ? 'grid' : 'none'; }
+    // ---------- LLM mode ----------
+    function getSavedLlmMode() {
+      try { return localStorage.getItem('codeatlas-llm-mode') || 'mimo'; }
+      catch (e) { return 'mimo'; }
+    }
 
-    async function openKeyPanel() {
-      document.getElementById('keyErr').textContent = '';
-      showKey(true);
+    function setLlmMode(mode) {
+      LLM_MODE = mode || 'mimo';
+      try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
+      updateLlmModeUi();
+    }
+
+    function updateLlmModeUi() {
+      document.querySelectorAll('.llm-option').forEach(button => {
+        button.classList.toggle('active', button.getAttribute('data-llm-mode') === LLM_MODE);
+      });
+
+      const status = document.getElementById('keyStatus');
+      if (!status) return;
+
+      if (LLM_MODE === 'ollama') {
+        status.textContent = 'Selected: default free Ollama.';
+      } else if (LLM_MODE === 'personal') {
+        status.textContent = PERSONAL_KEY_CONFIGURED
+          ? 'Selected: personal LLM key.'
+          : 'Add a personal API key to use this option.';
+      } else {
+        status.textContent = 'Selected: Mimo v2.5.';
+      }
+    }
+
+    async function loadLlmStatus() {
+      LLM_MODE = getSavedLlmMode();
       try {
         const s = await (await fetch('/auth/me/llm')).json();
-        const st = document.getElementById('keyStatus');
+        PERSONAL_KEY_CONFIGURED = Boolean(s.configured);
         if (s.configured) {
-          st.innerHTML = `Current: <b>${s.provider}</b> · ${s.model || 'default model'} · key ${s.key_hint}`;
-          document.getElementById('keyProvider').value = s.provider || '';
-          document.getElementById('keyBase').value = s.base_url || '';
           document.getElementById('keyModel').value = s.model || '';
-        } else {
-          st.textContent = 'No key set — your questions use the shared LLM tier.';
         }
-      } catch (e) {}
+      } catch (e) {
+        PERSONAL_KEY_CONFIGURED = false;
+      }
+      updateLlmModeUi();
     }
 
     async function saveKey() {
@@ -722,8 +802,6 @@
       errEl.textContent = '';
       const body = {
         api_key: document.getElementById('keyApi').value,
-        provider: document.getElementById('keyProvider').value || null,
-        base_url: document.getElementById('keyBase').value || null,
         model: document.getElementById('keyModel').value || null,
       };
       try {
@@ -733,13 +811,9 @@
         const data = await res.json();
         if (!res.ok) { errEl.textContent = data.detail || 'Failed to save'; return; }
         document.getElementById('keyApi').value = '';
-        openKeyPanel();
+        PERSONAL_KEY_CONFIGURED = true;
+        setLlmMode('personal');
       } catch (e) { errEl.textContent = String(e); }
-    }
-
-    async function clearKey() {
-      try { await fetch('/auth/me/llm', { method: 'DELETE' }); document.getElementById('keyApi').value = ''; openKeyPanel(); }
-      catch (e) { document.getElementById('keyErr').textContent = String(e); }
     }
 
     function srcLine(item) {
@@ -951,7 +1025,7 @@
         const res = await fetch(wsUrl('/repo/ask-llm'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question })
+          body: JSON.stringify({ question, llm_mode: LLM_MODE })
         });
 
         if (handle401(res)) return;
@@ -968,19 +1042,34 @@
         }
 
         const nodes = data.context?.context_nodes || [];
+        const sourceHits = data.context?.source_hits || [];
 
-        const contextSection = nodes.length ? `
-          <details open>
-            <summary>Grounded Context Used <span class="badge">${nodes.length}</span></summary>
+        const contextSection = (nodes.length || sourceHits.length) ? `
+          <details>
+            <summary>Grounded Context Used <span class="badge">${nodes.length + sourceHits.length}</span></summary>
             <div class="details-body">
-              <ul>
-                ${nodes.map(item => `
-                  <li>
-                    ${nodeChip(item)}
-                    ${srcLine(item)}
-                  </li>
-                `).join('')}
-              </ul>
+              ${nodes.length ? `
+                <div class="group-label">Graph nodes</div>
+                <ul>
+                  ${nodes.map(item => `
+                    <li>
+                      ${nodeChip(item)}
+                      ${srcLine(item)}
+                    </li>
+                  `).join('')}
+                </ul>
+              ` : ''}
+              ${sourceHits.length ? `
+                <div class="group-label">Source snippets</div>
+                <ul>
+                  ${sourceHits.map(hit => `
+                    <li>
+                      <b>${escapeHtml(hit.path)}</b>
+                      <div class="src">${(hit.snippets || []).map(snippet => `L${snippet.start_line}-L${snippet.end_line}`).join(', ')}</div>
+                    </li>
+                  `).join('')}
+                </ul>
+              ` : ''}
             </div>
           </details>
         ` : '';
@@ -1051,6 +1140,12 @@
           loadFlow(button.getAttribute('data-flow'));
         });
       }
+
+      document.querySelectorAll('.llm-option').forEach(button => {
+        button.addEventListener('click', function() {
+          setLlmMode(button.getAttribute('data-llm-mode'));
+        });
+      });
 
       const askInput = document.getElementById('question');
       if (askInput) {
