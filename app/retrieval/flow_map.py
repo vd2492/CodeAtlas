@@ -2,6 +2,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 from ..config import graph_path
 
@@ -83,6 +84,15 @@ def get_node_id(node):
     return str(node.get("id") or node.get("label") or node.get("name") or "")
 
 
+def compact(value: str) -> str:
+    return value.lower().replace("_", "").replace("-", "").replace(".", "")
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "flow"
+
+
 def pretty_name(node_id):
     parts = node_id.split("_")
 
@@ -158,6 +168,224 @@ def pretty_method(node_id):
         return f"{owner}.{method}"
 
     return method
+
+
+def is_noise_node(node_id: str) -> bool:
+    last = compact(node_id.split("_")[-1]) if node_id else ""
+    return last in {
+        "boolean", "string", "int", "long", "modifier", "stateflow", "list",
+        "set", "flow", "context", "class", "t",
+    }
+
+
+def is_class_level_node(node_id: str) -> bool:
+    parts = [compact(part) for part in node_id.split("_")]
+    return len(parts) >= 2 and parts[-1] == parts[-2]
+
+
+def display_name(node_id: str) -> str:
+    name = pretty_name(node_id)
+    if name != node_id:
+        return name
+
+    parts = node_id.split("_")
+    raw = parts[-1] if parts else node_id
+    raw_compact = compact(raw)
+
+    suffixes = {
+        "screen": "Screen",
+        "viewmodel": "ViewModel",
+        "repository": "Repository",
+        "controller": "Controller",
+        "component": "Component",
+        "handler": "Handler",
+        "service": "Service",
+        "manager": "Manager",
+        "scheduler": "Scheduler",
+        "page": "Page",
+        "view": "View",
+    }
+    for suffix, label in suffixes.items():
+        if raw_compact.endswith(suffix):
+            base = raw_compact[:-len(suffix)]
+            return base.capitalize() + label
+
+    return raw
+
+
+def flow_candidate_score(node_id: str) -> int:
+    if is_noise_node(node_id):
+        return 0
+
+    raw = compact(node_id.split("_")[-1]) if node_id else ""
+    score = 0
+
+    if raw.endswith("screen"):
+        score += 100
+    if raw.endswith(("page", "view", "route")):
+        score += 80
+    if raw.endswith(("controller", "handler", "component")):
+        score += 60
+    if score and is_class_level_node(node_id):
+        score += 20
+
+    return score
+
+
+def fallback_flow_candidate_score(node_id: str) -> int:
+    if is_noise_node(node_id) or not is_class_level_node(node_id):
+        return 0
+
+    raw = compact(node_id.split("_")[-1]) if node_id else ""
+    if raw.endswith(("service", "manager", "scheduler")):
+        return 40
+    if raw.endswith("repository"):
+        return 30
+    return 0
+
+
+def discover_flows_from_graph(nodes, links, limit: int = 12):
+    candidates = []
+
+    for node in nodes:
+        node_id = get_node_id(node)
+        score = flow_candidate_score(node_id)
+        if score <= 0:
+            continue
+
+        name = display_name(node_id)
+        candidates.append({
+            "slug": slugify(name),
+            "title": f"{name} flow",
+            "name": name,
+            "node": node_id,
+            "score": score,
+        })
+
+    if not candidates:
+        for node in nodes:
+            node_id = get_node_id(node)
+            score = fallback_flow_candidate_score(node_id)
+            if score <= 0:
+                continue
+
+            name = display_name(node_id)
+            candidates.append({
+                "slug": slugify(name),
+                "title": f"{name} flow",
+                "name": name,
+                "node": node_id,
+                "score": score,
+            })
+
+    unique = {}
+    for item in sorted(candidates, key=lambda x: (-x["score"], x["name"])):
+        base_slug = item["slug"]
+        slug = base_slug
+        index = 2
+        while slug in unique and unique[slug]["node"] != item["node"]:
+            slug = f"{base_slug}-{index}"
+            index += 1
+        if slug not in unique:
+            item["slug"] = slug
+            unique[slug] = item
+
+    flows = list(unique.values())[:limit]
+    for item in flows:
+        item.pop("score", None)
+    return flows
+
+
+def discover_flows(graph_file=None, limit: int = 12):
+    nodes, links = load_graph(graph_file)
+    return discover_flows_from_graph(nodes, links, limit=limit)
+
+
+def node_payload(node_id: str, links):
+    source_file, source_location = meta_for(node_id, links)
+    return {
+        "name": display_name(node_id),
+        "node": node_id,
+        "source_file": source_file,
+        "source_location": source_location,
+    }
+
+
+def relation_neighbors(root_id: str, links, depth: int = 2):
+    adjacency = {}
+    for link in links:
+        source = link.get("source")
+        target = link.get("target")
+        if not source or not target:
+            continue
+        adjacency.setdefault(source, set()).add(target)
+        adjacency.setdefault(target, set()).add(source)
+
+    seen = {root_id}
+    frontier = {root_id}
+    for _ in range(depth):
+        next_frontier = set()
+        for node_id in frontier:
+            next_frontier.update(adjacency.get(node_id, set()))
+        next_frontier -= seen
+        seen.update(next_frontier)
+        frontier = next_frontier
+
+    seen.remove(root_id)
+    return seen
+
+
+def categorize_related_nodes(root_id: str, nodes, links):
+    node_ids = {get_node_id(node) for node in nodes}
+    nearby = [node_id for node_id in relation_neighbors(root_id, links) if node_id in node_ids]
+
+    def wanted(node_id: str, terms: tuple[str, ...]) -> bool:
+        value = compact(node_id)
+        return any(term in value for term in terms)
+
+    def ranked(items):
+        return sorted(set(items), key=lambda node_id: (not is_class_level_node(node_id), display_name(node_id)))[:30]
+
+    entry_points = [root_id]
+    viewmodels = ranked(node_id for node_id in nearby if wanted(node_id, ("viewmodel",)))
+    repositories = ranked(
+        node_id for node_id in nearby
+        if wanted(node_id, ("repository", "service", "manager", "scheduler", "dao"))
+    )
+    methods = ranked(
+        node_id for node_id in nearby
+        if not is_class_level_node(node_id) and not is_noise_node(node_id)
+    )
+
+    return {
+        "entry_points": [node_payload(node_id, links) for node_id in entry_points],
+        "viewmodels": [node_payload(node_id, links) for node_id in viewmodels],
+        "repositories": [node_payload(node_id, links) for node_id in repositories],
+        "important_methods": [node_payload(node_id, links) for node_id in methods],
+    }
+
+
+def build_discovered_flow(slug: str, graph_file=None) -> Optional[dict]:
+    nodes, links = load_graph(graph_file)
+    flows = discover_flows_from_graph(nodes, links)
+    flow = next((item for item in flows if item["slug"] == slug), None)
+    if flow is None:
+        return None
+
+    related = categorize_related_nodes(flow["node"], nodes, links)
+    has_layers = bool(related["viewmodels"] or related["repositories"] or related["important_methods"])
+
+    return {
+        "topic": flow["slug"],
+        "title": flow["title"],
+        "high_level_flow": (
+            "Entry point -> related components -> data/persistence"
+            if has_layers
+            else "Entry point with no related graph links detected"
+        ),
+        "screens": related["entry_points"],
+        **related,
+    }
 
 def meta_for(node_id, links):
     for link in links:

@@ -579,10 +579,8 @@
 
       <section class="card">
         <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Flow Explorer</h2></div>
-        <div class="row">
-          <button onclick="loadFlow('habit')">Habit Flow</button>
-          <button onclick="loadFlow('revision')">Revision Flow</button>
-          <button onclick="loadFlow('login')">Login Flow</button>
+        <div id="flowButtons" class="row">
+          <span class="src">Select a repository to load flows.</span>
         </div>
       </section>
 
@@ -675,6 +673,7 @@
       document.getElementById('searchResults').innerHTML = '';
       document.getElementById('result').innerHTML =
         '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question about this repository, or use a tool to explore the graph.</p></div>';
+      loadFlowButtons();
     }
 
     async function initAuth() {
@@ -682,6 +681,7 @@
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
       populateRepos(data.repos);
+      await loadFlowButtons();
       return true;
     }
 
@@ -744,13 +744,34 @@
 
     function srcLine(item) {
       const s = `${item.source_file || ''} ${item.source_location || ''}`.trim();
-      return s ? `<div class="src">${s}</div>` : '';
+      return s ? `<div class="src">${escapeHtml(s)}</div>` : '';
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function cleanAnswerText(value) {
+      return String(value ?? '')
+        .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+        .replace(/__([^_\n]+)__/g, '$1')
+        .replace(/\*\*/g, '')
+        .replace(/__/g, '');
+    }
+
+    function renderAnswer(value) {
+      return escapeHtml(cleanAnswerText(value));
     }
 
     function nodeChip(item) {
       const node = encodeURIComponent(item.node || '');
       const meta = `${item.source_file || ''} ${item.source_location || ''}`.trim();
-      return `<span class="pill node-chip" data-node="${node}" title="${meta}">${item.name}</span>`;
+      return `<span class="pill node-chip" data-node="${node}" title="${escapeHtml(meta)}">${escapeHtml(item.name)}</span>`;
     }
 
     async function loadNode(encodedNodeId) {
@@ -766,19 +787,19 @@
       const links = data.connected_links || [];
 
       document.getElementById('result').innerHTML = `
-        <h2>${data.name}</h2>
-        <p><b>Node:</b> ${data.node}</p>
-        <div class="src">${data.source_file || ''} ${data.source_location || ''}</div>
+        <h2>${escapeHtml(data.name)}</h2>
+        <p><b>Node:</b> ${escapeHtml(data.node)}</p>
+        <div class="src">${escapeHtml(`${data.source_file || ''} ${data.source_location || ''}`.trim())}</div>
 
         <h3>Connected relations</h3>
         <ul>
           ${links.map(link => `
             <li>
-              <b>${link.source_name || link.source}</b> → <b>${link.target_name || link.target}</b>
+              <b>${escapeHtml(link.source_name || link.source)}</b> → <b>${escapeHtml(link.target_name || link.target)}</b>
               <div class="src">
-                relation: ${link.relation_label || link.relation || ''} ${link.context ? `(${link.context})` : ''}
+                relation: ${escapeHtml(link.relation_label || link.relation || '')} ${link.context ? `(${escapeHtml(link.context)})` : ''}
                 <br />
-                ${link.source_file || ''} ${link.source_location || ''}
+                ${escapeHtml(`${link.source_file || ''} ${link.source_location || ''}`.trim())}
               </div>
             </li>
           `).join('')}
@@ -813,7 +834,7 @@
 
       const chip = (item) => {
         if (typeof item === 'string') {
-          return `<span class="pill">${item}</span>`;
+          return `<span class="pill">${escapeHtml(item)}</span>`;
         }
         return nodeChip(item);
       };
@@ -834,6 +855,40 @@
       if (handle401(res)) return;
       const data = await res.json();
       renderResult(data);
+    }
+
+    async function loadFlowButtons() {
+      const target = document.getElementById('flowButtons');
+      if (!target) return;
+      if (!WORKSPACE) {
+        target.innerHTML = '<span class="src">No repository selected.</span>';
+        return;
+      }
+
+      target.innerHTML = '<span class="src">Loading flows...</span>';
+
+      try {
+        const res = await fetch(wsUrl('/repo/flows'));
+        if (handle401(res)) return;
+        const data = await res.json();
+
+        if (!res.ok) {
+          target.innerHTML = '<span class="src">Unable to load flows.</span>';
+          return;
+        }
+
+        const flows = data.flows || [];
+        if (!flows.length) {
+          target.innerHTML = '<span class="src">No screen or entry-point flows detected for this repository.</span>';
+          return;
+        }
+
+        target.innerHTML = flows.map(flow => `
+          <button type="button" class="flow-button" data-flow="${encodeURIComponent(flow.slug)}">${escapeHtml(flow.title || flow.name || flow.slug)}</button>
+        `).join('');
+      } catch (error) {
+        target.innerHTML = `<span class="src">${escapeHtml(error)}</span>`;
+      }
     }
 
     async function searchGraph() {
@@ -860,7 +915,7 @@
 
         const total = (data.results || []).length;
         if (total === 0) {
-          target.innerHTML = `<p class="empty-state" style="margin-top:14px;">No matches for “${q}”.</p>`;
+          target.innerHTML = `<p class="empty-state" style="margin-top:14px;">No matches for "${escapeHtml(q)}".</p>`;
           return;
         }
 
@@ -935,8 +990,8 @@
           : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
         result.innerHTML = `
           <h2>CodeAtlas Answer</h2>
-          <p class="src" style="margin-top:0">answered by <b>${provLabel}</b> · ${prov}</p>
-          <div class="answer">${data.answer}</div>
+          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)}</p>
+          <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
       } catch (error) {
@@ -956,7 +1011,7 @@
         <ul>
           ${items.map(item => `
             <li>
-              <b>${item.name}</b>
+              <b>${escapeHtml(item.name)}</b>
               ${srcLine(item)}
             </li>
           `).join('')}
@@ -969,11 +1024,11 @@
 
       if (data.title && data.high_level_flow) {
         result.innerHTML = `
-          <h2>${data.title}</h2>
-          <p><b>High-level flow:</b> ${data.high_level_flow}</p>
-          ${renderList('Screens', data.screens)}
+          <h2>${escapeHtml(data.title)}</h2>
+          <p><b>High-level flow:</b> ${escapeHtml(data.high_level_flow)}</p>
+          ${renderList('Entry Points', data.entry_points || data.screens)}
           ${renderList('ViewModels', data.viewmodels)}
-          ${renderList('Repositories', data.repositories)}
+          ${renderList('Repositories / Services', data.repositories)}
           ${renderList('Important Methods / Actions', data.important_methods)}
         `;
         return;
@@ -987,6 +1042,15 @@
     // Submit Graph Search when Enter is pressed inside the search input.
     window.addEventListener('DOMContentLoaded', function () {
       initAuth();
+
+      const flowButtons = document.getElementById('flowButtons');
+      if (flowButtons) {
+        flowButtons.addEventListener('click', function(event) {
+          const button = event.target.closest('.flow-button');
+          if (!button) return;
+          loadFlow(button.getAttribute('data-flow'));
+        });
+      }
 
       const askInput = document.getElementById('question');
       if (askInput) {

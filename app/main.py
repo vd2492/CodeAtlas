@@ -11,7 +11,16 @@ from pydantic import BaseModel
 
 from . import db
 from .config import DEFAULT_WORKSPACE, graph_path, repo_clone_dir
-from .retrieval.flow_map import TOPICS, load_graph, meta_for, pretty_name, pretty_method, find_methods
+from .retrieval.flow_map import (
+    TOPICS,
+    build_discovered_flow,
+    discover_flows,
+    find_methods,
+    load_graph,
+    meta_for,
+    pretty_name,
+    pretty_method,
+)
 from .retrieval.graph_insights import repo_summary_dynamic
 from .retrieval.relation_utils import readable_name, format_link, search_nodes, rank_nodes_for_query
 from .retrieval.config_schema import load_retrieval_config, seed_default_retrieval_config
@@ -234,14 +243,29 @@ def flow(topic: str, workspace: str = Depends(authorized_workspace)):
     return _flow(topic, workspace)
 
 
+@app.get("/repo/flows")
+def flows(workspace: str = Depends(authorized_workspace)):
+    return {"flows": discover_flows(graph_path(workspace))}
+
+
 def _flow(topic: str, workspace: str):
     topic = topic.lower()
 
+    discovered = build_discovered_flow(topic, graph_path(workspace))
+    if discovered:
+        return discovered
+
     if topic not in TOPICS:
-        raise HTTPException(status_code=404, detail="Supported topics: habit, revision, login")
+        available = [flow["slug"] for flow in discover_flows(graph_path(workspace))]
+        raise HTTPException(status_code=404, detail={"available_flows": available})
 
     nodes, links = load_graph(graph_path(workspace))
     config = TOPICS[topic]
+    node_ids = {str(node.get("id") or node.get("label") or node.get("name") or "") for node in nodes}
+    configured_nodes = set(config["screens"] + config["viewmodels"] + config["repositories"])
+    if not configured_nodes.intersection(node_ids):
+        available = [flow["slug"] for flow in discover_flows(graph_path(workspace))]
+        raise HTTPException(status_code=404, detail={"available_flows": available})
 
     methods = find_methods(nodes, config)
 
@@ -279,6 +303,12 @@ def _flow(topic: str, workspace: str):
 @app.post("/repo/ask")
 def ask(request: AskRequest, workspace: str = Depends(authorized_workspace)):
     q = request.question.lower()
+    available_flows = discover_flows(graph_path(workspace))
+
+    for item in available_flows:
+        terms = {item["slug"].replace("-", " "), item["slug"], item["name"].lower()}
+        if any(term and term in q for term in terms):
+            return _flow(item["slug"], workspace)
 
     if "habit" in q:
         topic = "habit"
@@ -290,11 +320,19 @@ def ask(request: AskRequest, workspace: str = Depends(authorized_workspace)):
         return repo_summary_dynamic(graph_path(workspace))
     else:
         return {
-            "answer": "I can currently answer questions about screens, habit flow, revision flow, and login/auth flow.",
-            "supported_topics": ["screens", "habit", "revision", "login"],
+            "answer": "I can answer questions about the detected screens and flows in this repository.",
+            "supported_topics": ["screens"] + [item["slug"] for item in available_flows],
         }
 
-    return _flow(topic, workspace)
+    try:
+        return _flow(topic, workspace)
+    except HTTPException as error:
+        if error.status_code != 404:
+            raise
+        return {
+            "answer": "That fixed demo flow was not found in this repository. Use one of the detected flows for this repo.",
+            "supported_topics": ["screens"] + [item["slug"] for item in available_flows],
+        }
 
 
 @app.get("/repo/nodes/{node_id}")
