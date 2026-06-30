@@ -4,15 +4,19 @@ Sessions are DB-backed (app/db.py) and carried in an HttpOnly cookie. Same-origi
 fetches send it automatically, so the vanilla-JS UI needs no token plumbing.
 """
 
+import os
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, Response
 
 from .. import db
+from ..config import SESSION_MAX_AGE_SECONDS
 
 COOKIE_NAME = "ca_session"
-# 30 days; sessions also live until logout / row deletion.
-COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+COOKIE_MAX_AGE = SESSION_MAX_AGE_SECONDS
+COOKIE_SECURE = os.environ.get("CODEATLAS_COOKIE_SECURE", "true").lower() not in {
+    "0", "false", "no",
+}
 
 
 def set_session_cookie(response: Response, token: str) -> None:
@@ -21,6 +25,7 @@ def set_session_cookie(response: Response, token: str) -> None:
         token,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
+        secure=COOKIE_SECURE,
         samesite="lax",
         path="/",
     )

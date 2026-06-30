@@ -10,7 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from typing import List, Optional
 
-from .config import DB_PATH, DEFAULT_WORKSPACE
+from .config import DB_PATH, DEFAULT_WORKSPACE, SESSION_MAX_AGE_SECONDS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS repos (
     workspace             TEXT UNIQUE NOT NULL, -- folder under data/workspaces/
     status                TEXT NOT NULL DEFAULT 'new'
                           CHECK (status IN ('new', 'cloned', 'indexed', 'published')),
-    allow_shared_fallback INTEGER NOT NULL DEFAULT 1,  -- 0 = never use shared Kimi tier
+    allow_shared_fallback INTEGER NOT NULL DEFAULT 0,  -- 0 = never use shared Kimi tier
     created_at            TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS repo_access (
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -64,6 +65,7 @@ def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
@@ -75,6 +77,11 @@ def connect():
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        session_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "expires_at" not in session_columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
 
 
 def user_count() -> int:
@@ -143,7 +150,9 @@ def create_session(user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     with connect() as conn:
         conn.execute(
-            "INSERT INTO sessions (token, user_id) VALUES (?, ?)", (token, user_id)
+            "INSERT INTO sessions (token, user_id, expires_at) "
+            "VALUES (?, ?, datetime('now', ?))",
+            (token, user_id, f"+{SESSION_MAX_AGE_SECONDS} seconds"),
         )
     return token
 
@@ -154,7 +163,8 @@ def get_session_user(token: str) -> Optional[dict]:
     with connect() as conn:
         row = conn.execute(
             "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id "
-            "WHERE s.token = ?",
+            "WHERE s.token = ? "
+            "AND (s.expires_at IS NULL OR s.expires_at > datetime('now'))",
             (token,),
         ).fetchone()
         return dict(row) if row else None
@@ -173,9 +183,10 @@ def create_repo(slug: str, name: str, source_url: str, clone_method: str,
                 workspace: str, status: str = "new") -> dict:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO repos (slug, name, source_url, clone_method, workspace, status) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (slug, name, source_url, clone_method, workspace, status),
+            "INSERT INTO repos "
+            "(slug, name, source_url, clone_method, workspace, status, allow_shared_fallback) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (slug, name, source_url, clone_method, workspace, status, 0),
         )
         row = conn.execute("SELECT * FROM repos WHERE id = ?", (cur.lastrowid,)).fetchone()
         return dict(row)
@@ -242,9 +253,10 @@ def seed_default_repo() -> None:
         return
     with connect() as conn:
         conn.execute(
-            "INSERT INTO repos (slug, name, source_url, clone_method, workspace, status) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("default", "Default (demo)", None, None, DEFAULT_WORKSPACE, "published"),
+            "INSERT INTO repos "
+            "(slug, name, source_url, clone_method, workspace, status, allow_shared_fallback) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("default", "Default (demo)", None, None, DEFAULT_WORKSPACE, "published", 0),
         )
 
 

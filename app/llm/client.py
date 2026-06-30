@@ -10,8 +10,11 @@ limit, timeout). Admins can disable tier 3 per repo for sensitive codebases so
 private code is never sent to the shared endpoint.
 """
 
+import ipaddress
 import json
 import os
+import socket
+from urllib.parse import urlparse
 
 import requests
 
@@ -23,6 +26,14 @@ AGENT_ENABLED = os.environ.get("CODEATLAS_AGENT_ENABLED", "true").lower() not in
 }
 AGENT_MAX_ROUNDS = max(1, int(os.environ.get("CODEATLAS_AGENT_MAX_ROUNDS", "8")))
 AGENT_MAX_TOOL_CALLS = max(1, int(os.environ.get("CODEATLAS_AGENT_MAX_TOOL_CALLS", "24")))
+LLM_ALLOWED_HOSTS = {
+    host.strip().lower().rstrip(".")
+    for host in os.environ.get("CODEATLAS_LLM_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+}
+LLM_ALLOW_LOCAL_BASE_URLS = os.environ.get(
+    "CODEATLAS_LLM_ALLOW_LOCAL_BASE_URLS", "false"
+).lower() in {"1", "true", "yes"}
 
 SYSTEM_PROMPT = (
     "You are CodeAtlas, a codebase investigation assistant. "
@@ -75,6 +86,45 @@ def _require_answer(answer: str, provider: str) -> str:
     if not answer:
         raise RuntimeError(f"{provider} returned an empty answer.")
     return answer
+
+
+def _validate_outbound_base_url(base_url: str) -> None:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("base_url must be an absolute http or https URL")
+
+    hostname = parsed.hostname.lower().rstrip(".")
+    if LLM_ALLOWED_HOSTS and hostname not in LLM_ALLOWED_HOSTS:
+        raise RuntimeError("base_url host is not in CODEATLAS_LLM_ALLOWED_HOSTS")
+
+    try:
+        addresses = {
+            item[4][0].split("%", 1)[0]
+            for item in socket.getaddrinfo(hostname, parsed.port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError("base_url host could not be resolved") from exc
+
+    if not addresses:
+        raise RuntimeError("base_url host could not be resolved")
+
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise RuntimeError("base_url host resolved to an invalid IP address") from exc
+
+        if ip.is_loopback and LLM_ALLOW_LOCAL_BASE_URLS:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise RuntimeError("base_url host resolves to a non-public IP address")
 
 
 def _openai_tools(tool_definitions: list[dict]) -> list[dict]:
@@ -151,7 +201,10 @@ def _final_openai_answer(
             "max_tokens": 1800,
         },
         timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
     )
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if response.status_code >= 400:
         raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
     return _require_answer(
@@ -187,7 +240,10 @@ def _openai_agent(
                 "max_tokens": 1800,
             },
             timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError(f"{model} returned a redirect, which is not allowed")
         _tool_request_error(response, model)
         message = response.json()["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
@@ -260,7 +316,10 @@ def _anthropic_agent(
                 "tools": tools,
             },
             timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError(f"{model} returned a redirect, which is not allowed")
         _tool_request_error(response, model)
         data = response.json()
         blocks = data.get("content") or []
@@ -313,7 +372,10 @@ def _anthropic_agent(
             "messages": messages,
         },
         timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
     )
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if response.status_code >= 400:
         raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
     answer = "".join(
@@ -441,7 +503,10 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
             "max_tokens": 1400,
         },
         timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
     )
+    if 300 <= resp.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if resp.status_code >= 400:
         raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
     answer = resp.json()["choices"][0]["message"].get("content", "")
@@ -464,7 +529,10 @@ def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> s
             "messages": [{"role": "user", "content": build_prompt(context)}],
         },
         timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
     )
+    if 300 <= resp.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if resp.status_code >= 400:
         raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
     data = resp.json()
@@ -522,6 +590,7 @@ def _call_with_creds(creds: dict, context: dict) -> str:
         raise RuntimeError("missing base_url")
     if not api_key:
         raise RuntimeError("missing api_key")
+    _validate_outbound_base_url(base_url)
 
     if provider in {"anthropic", "anthropic_compatible", "claude"}:
         return _anthropic_chat(base_url, api_key, model or "claude-sonnet-4-5", context)
@@ -537,6 +606,7 @@ def _call_agent_with_creds(creds: dict, question: str, toolbox) -> dict:
         raise RuntimeError("missing base_url")
     if not api_key:
         raise RuntimeError("missing api_key")
+    _validate_outbound_base_url(base_url)
 
     if provider in {"anthropic", "anthropic_compatible", "claude"}:
         return _anthropic_agent(

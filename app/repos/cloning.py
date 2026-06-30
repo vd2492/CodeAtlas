@@ -6,10 +6,40 @@ host's existing git/SSH credentials or `gh auth login`.
 
 import shutil
 import subprocess
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..config import repo_clone_dir, workspace_dir
 
 CLONE_TIMEOUT = 600
+SENSITIVE_URL_QUERY_KEYS = {
+    "access_token", "api_key", "apikey", "auth", "authorization", "oauth_token",
+    "password", "passwd", "private_token", "token",
+}
+
+
+def sanitize_clone_url(source_url: str) -> str:
+    """Remove URL credentials from the value persisted to the DB and audit log."""
+    if "://" not in source_url:
+        return source_url
+    parsed = urlsplit(source_url)
+    sanitized_netloc = parsed.netloc.rsplit("@", 1)[-1]
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    sanitized_query_pairs = [
+        (key, "[redacted]" if key.lower() in SENSITIVE_URL_QUERY_KEYS else value)
+        for key, value in query_pairs
+    ]
+    if (
+        sanitized_netloc == parsed.netloc
+        and sanitized_query_pairs == query_pairs
+    ):
+        return source_url
+    return urlunsplit((
+        parsed.scheme,
+        sanitized_netloc,
+        parsed.path,
+        urlencode(sanitized_query_pairs),
+        parsed.fragment,
+    ))
 
 
 def clone_repo(source_url: str, method: str, workspace: str):

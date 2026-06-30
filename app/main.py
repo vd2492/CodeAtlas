@@ -151,7 +151,9 @@ def read_source_excerpt(
         path.relative_to(source_root)
     except ValueError:
         return None
-    if not path.is_file():
+    if not path.is_file() or RepositoryToolbox.is_sensitive_path_for_root(
+        path, source_root
+    ):
         return None
 
     try:
@@ -213,10 +215,11 @@ def _iter_source_files(source_root: Path):
                 continue
 
             try:
+                rel_path = path.relative_to(source_root).as_posix()
+                path = RepositoryToolbox.resolve_path_for_root(source_root, rel_path)
                 if path.stat().st_size > MAX_SOURCE_SCAN_BYTES:
                     continue
-                rel_path = path.relative_to(source_root).as_posix()
-            except OSError:
+            except (OSError, ValueError):
                 continue
 
             scanned += 1
@@ -514,8 +517,9 @@ def _search_source_files(source_root: Path, terms: list[str], limit: int = 8) ->
                 score += 420.0
 
         try:
+            path = RepositoryToolbox.resolve_path_for_root(source_root, rel_path)
             text = path.read_text(errors="replace")
-        except OSError:
+        except (OSError, ValueError):
             continue
 
         text_lower = text.lower()

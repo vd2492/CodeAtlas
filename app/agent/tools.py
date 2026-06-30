@@ -218,24 +218,38 @@ class RepositoryToolbox:
             parsed = default
         return min(maximum, max(minimum, parsed))
 
-    def _resolve_path(self, relative_path: str, require_directory: bool = False) -> Path:
+    @classmethod
+    def resolve_path_for_root(
+        cls,
+        source_root: Path,
+        relative_path: str,
+        require_directory: bool = False,
+    ) -> Path:
         clean = str(relative_path or "").strip().lstrip("/")
-        candidate = (self.source_root / clean).resolve()
+        candidate = (source_root / clean).resolve()
         try:
-            candidate.relative_to(self.source_root)
+            candidate.relative_to(source_root)
         except ValueError as exc:
             raise ValueError("path is outside the authorized repository") from exc
         if require_directory and not candidate.is_dir():
             raise ValueError(f"directory not found: {clean or '.'}")
         if not require_directory and not candidate.is_file():
             raise ValueError(f"file not found: {clean}")
-        if not require_directory and self._is_sensitive_path(candidate):
+        if not require_directory and cls.is_sensitive_path_for_root(candidate, source_root):
             raise ValueError("reading likely credential/secret files is not allowed")
         return candidate
 
-    def _is_sensitive_path(self, path: Path) -> bool:
+    def _resolve_path(self, relative_path: str, require_directory: bool = False) -> Path:
+        return self.resolve_path_for_root(
+            self.source_root,
+            relative_path,
+            require_directory=require_directory,
+        )
+
+    @staticmethod
+    def is_sensitive_path_for_root(path: Path, source_root: Path) -> bool:
         try:
-            relative = path.relative_to(self.source_root)
+            relative = path.relative_to(source_root)
         except ValueError:
             return True
         lower_name = path.name.lower()
@@ -246,6 +260,9 @@ class RepositoryToolbox:
         }:
             return True
         return any(part == ".git" for part in relative.parts)
+
+    def _is_sensitive_path(self, path: Path) -> bool:
+        return self.is_sensitive_path_for_root(path, self.source_root)
 
     def call(self, name: str, arguments: dict | None) -> str:
         """Validate, execute, bound, and JSON-encode one model-requested tool call."""

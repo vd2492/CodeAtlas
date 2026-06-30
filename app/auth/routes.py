@@ -6,6 +6,9 @@ access.
 """
 
 import json
+import os
+import time
+from collections import defaultdict
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -25,6 +28,41 @@ from .sessions import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+LOGIN_RATE_LIMIT = int(os.environ.get("CODEATLAS_LOGIN_RATE_LIMIT", "10"))
+LOGIN_RATE_WINDOW_SECONDS = int(
+    os.environ.get("CODEATLAS_LOGIN_RATE_WINDOW_SECONDS", "300")
+)
+_login_failures: "dict[str, list[float]]" = defaultdict(list)
+
+
+def enforce_login_rate_limit(username: str) -> None:
+    now = time.monotonic()
+    key = (username or "").strip().lower()
+    hits = [
+        timestamp
+        for timestamp in _login_failures[key]
+        if now - timestamp < LOGIN_RATE_WINDOW_SECONDS
+    ]
+    _login_failures[key] = hits
+    if len(hits) >= LOGIN_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Too many failed login attempts. Please wait "
+                f"{LOGIN_RATE_WINDOW_SECONDS} seconds and retry."
+            ),
+        )
+
+
+def record_login_failure(username: str) -> None:
+    key = (username or "").strip().lower()
+    _login_failures[key].append(time.monotonic())
+
+
+def clear_login_failures(username: str) -> None:
+    key = (username or "").strip().lower()
+    _login_failures.pop(key, None)
 
 
 def load_user_llm(user_id: int) -> Optional[dict]:
@@ -93,10 +131,13 @@ def bootstrap(creds: Credentials, response: Response):
 
 @router.post("/login")
 def login(creds: Credentials, response: Response):
+    enforce_login_rate_limit(creds.username)
     user = db.get_user_by_username(creds.username)
     if not user or not verify_password(creds.password, user["password_hash"]):
+        record_login_failure(creds.username)
         db.record_audit(creds.username, "login_failed")
         raise HTTPException(status_code=401, detail="Invalid username or password.")
+    clear_login_failures(creds.username)
     token = db.create_session(user["id"])
     set_session_cookie(response, token)
     db.record_audit(user["username"], "login")

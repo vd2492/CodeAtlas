@@ -161,7 +161,10 @@ class AgentLoopTests(unittest.TestCase):
             "model": "model",
         }
         context = {"llm_context_preview": {"question": "How does login work?"}}
-        with patch("app.llm.client.requests.post", side_effect=responses):
+        with patch(
+            "app.llm.client.socket.getaddrinfo",
+            return_value=[(None, None, None, None, ("93.184.216.34", 443))],
+        ), patch("app.llm.client.requests.post", side_effect=responses):
             result = client._attempt_with_creds(
                 creds,
                 context,

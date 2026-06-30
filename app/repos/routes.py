@@ -20,7 +20,7 @@ from ..retrieval.config_schema import (
     load_retrieval_config,
     save_retrieval_config,
 )
-from .cloning import clone_repo, remove_workspace
+from .cloning import clone_repo, remove_workspace, sanitize_clone_url
 from .indexing import index_repo
 
 router = APIRouter(prefix="/admin/repos", tags=["admin-repos"])
@@ -78,14 +78,17 @@ def add_repo(req: AddRepoRequest, admin: dict = Depends(require_admin)):
         raise HTTPException(status_code=409, detail=f"slug '{req.slug}' already exists.")
 
     workspace = req.slug
-    repo = db.create_repo(req.slug, req.name, req.source_url, req.clone_method, workspace)
+    stored_source_url = sanitize_clone_url(req.source_url)
+    repo = db.create_repo(
+        req.slug, req.name, stored_source_url, req.clone_method, workspace
+    )
     try:
         clone_repo(req.source_url, req.clone_method, workspace)
     except Exception as exc:
         db.set_repo_status(req.slug, "new")  # leave row; surface the error
         raise HTTPException(status_code=400, detail=f"Clone failed: {exc}")
     db.set_repo_status(req.slug, "cloned")
-    db.record_audit(admin["username"], "add_repo", req.slug, req.source_url)
+    db.record_audit(admin["username"], "add_repo", req.slug, stored_source_url)
     return {"repo": db.get_repo_by_slug(req.slug)}
 
 
@@ -178,8 +181,11 @@ def update_repo_details(slug: str, req: UpdateRepoRequest, admin: dict = Depends
         raise HTTPException(status_code=400, detail="name cannot be empty.")
     if name is None and req.source_url is None:
         raise HTTPException(status_code=400, detail="nothing to update.")
-    db.update_repo(slug, name=name, source_url=req.source_url)
-    db.record_audit(admin["username"], "update_repo", slug, name or req.source_url)
+    stored_source_url = (
+        sanitize_clone_url(req.source_url) if req.source_url is not None else None
+    )
+    db.update_repo(slug, name=name, source_url=stored_source_url)
+    db.record_audit(admin["username"], "update_repo", slug, name or stored_source_url)
     return {"repo": db.get_repo_by_slug(slug)}
 
 
