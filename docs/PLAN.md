@@ -11,6 +11,8 @@ optional cost is the shared LLM tier.
   `repo/` (clone), `graph/graph.json` (index), `retrieval_config.json` (tuning).
 - **graphify** for structural indexing (no LLM needed).
 - **LLM fallback chain**: user key → Ollama → shared endpoint.
+- **Agentic retrieval**: tool-capable models iteratively search/read source and
+  graph data; unsupported models retain the one-shot RAG fallback.
 - **Safe tuning**: retrieval is config-driven (`RetrievalConfig`); admins never
   edit or run backend code from the browser.
 
@@ -93,6 +95,23 @@ optional cost is the shared LLM tier.
   returned, clearing falls back to `shared:`, rate limit trips at the cap, and
   user deletion guards hold.
 
+### Phase 6 — Agentic retrieval MVP ✅
+- Added workspace-scoped, read-only tools for source search, ranged file reads,
+  directory listing, graph definitions/references, and caller discovery.
+- Added native multi-turn tool loops for OpenAI-compatible Chat Completions,
+  Anthropic Messages, and Ollama Chat. Each loop has round/tool/output budgets.
+- Provider behavior is backward compatible: a model that rejects or skips tools
+  uses the existing compact-context answer path on the same provider.
+- `/repo/ask-llm` now reports `retrieval_mode`, tool counts, and a compact
+  `agent_trace`; the Ask UI shows the investigation steps.
+- Hardened reads with workspace containment, symlink resolution, secret-file
+  blocking, source-size limits, and no write/execute tools.
+- Optimized graph node ranking to use source metadata already stored on nodes
+  instead of rescanning the complete relation list for each candidate.
+- Added unit coverage for all three provider protocols, fallback behavior,
+  hybrid search, graph traversal, bounded reads, secret blocking, and path
+  traversal.
+
 ## Safe retrieval config (admin-tunable, no code execution)
 
 `app/retrieval/config_schema.py :: RetrievalConfig`
@@ -109,5 +128,6 @@ optional cost is the shared LLM tier.
 
 ## Security notes
 - No browser-driven code execution — tuning is data only.
+- Agent tools are read-only, workspace-contained, and budget-limited.
 - Private repos: prefer user-key or Ollama; disable shared fallback per repo.
 - Secrets via env/`.env` (gitignored); BYOK creds encrypted at rest (Phase 5).

@@ -16,8 +16,9 @@ Everything runs on your own box. Private code never has to leave it.
   the GitHub CLI) and indexes it into a structural graph of files, symbols, and
   relations — no LLM needed for indexing.
 - **Ask grounded questions.** Users ask in natural language ("How does login
-  work?", "Which files are involved in this feature?") and get answers built
-  from the graph plus real source excerpts, with file/line references.
+  work?", "Which files are involved in this feature?") and the selected model
+  iteratively searches the graph, follows symbols, and reads real source before
+  answering with file/line references.
 - **Per-repo, config-driven tuning.** Admins improve retrieval quality with
   safe, data-only knobs (stopwords, synonyms, keyword boosts, preferred
   components/methods, context/excerpt sizes). No code is ever executed from the
@@ -65,6 +66,23 @@ Each tier falls through on absence *or* failure. The shared tier can be disabled
 per repository (`allow_shared_fallback`), so sensitive code is never sent to a
 shared endpoint.
 
+### Agentic retrieval
+
+Tool-capable models receive six read-only repository tools:
+
+- `search_code`, `read_file`, and `list_directory`
+- `find_definition`, `find_references`, and `get_callers`
+
+The model can search, inspect the result, follow a relation, and read additional
+source over several rounds. Tools are workspace-scoped, path traversal and
+likely secret files are blocked, and all reads have line/byte limits. If an
+endpoint does not support tool calling—or the selected model answers without
+using a tool—CodeAtlas automatically uses the original one-shot context path for
+that provider.
+
+The API response reports `retrieval_mode` (`agentic` or `one_shot`) and a compact
+`agent_trace`; the Ask UI displays this investigation under Grounded Evidence.
+
 ## How a repository goes live
 
 `Clone → Index → Test → Tune → Publish → Grant access`
@@ -87,13 +105,14 @@ and ask away.
 
 ```
 app/
+  agent/tools.py     workspace-scoped source + graph tools for the LLM
   main.py            FastAPI app + query/answer endpoints, startup wiring
   config.py          paths & per-workspace layout
   db.py              SQLite: users, repos, repo_access, sessions, audit_log
   auth/              sessions, password hashing, BYOK key encryption, auth routes
   repos/             clone (https/ssh/gh), indexing, admin lifecycle routes
   retrieval/         ranker, context builder, per-repo RetrievalConfig
-  llm/client.py      BYOK → Ollama → shared fallback chain
+  llm/client.py      agent loops + BYOK → Ollama → shared fallback chain
   static/            landing page, user Ask UI, admin console
 data/                gitignored: sqlite db, cloned repos, per-workspace graphs/config, secret key
 docs/PLAN.md         build plan / phase history

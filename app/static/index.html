@@ -1014,8 +1014,8 @@
       result.innerHTML = `
         <h2>Thinking…</h2>
         <div class="loading-steps">
-          <div class="step"><span class="spinner"></span> Building graph context…</div>
-          <div class="step"><span class="dot-pulse"></span> Asking the configured LLM…</div>
+          <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
+          <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
         </div>
       `;
 
@@ -1043,11 +1043,23 @@
 
         const nodes = data.context?.context_nodes || [];
         const sourceHits = data.context?.source_hits || [];
+        const agentTrace = data.agent_trace || [];
 
-        const contextSection = (nodes.length || sourceHits.length) ? `
+        const contextSection = (nodes.length || sourceHits.length || agentTrace.length) ? `
           <details>
-            <summary>Grounded Context Used <span class="badge">${nodes.length + sourceHits.length}</span></summary>
+            <summary>Grounded Evidence <span class="badge">${agentTrace.length || (nodes.length + sourceHits.length)}</span></summary>
             <div class="details-body">
+              ${agentTrace.length ? `
+                <div class="group-label">Agent investigation</div>
+                <ul>
+                  ${agentTrace.map(step => `
+                    <li>
+                      <b>${escapeHtml(step.tool || 'tool')}</b>
+                      <div class="src">${escapeHtml(JSON.stringify(step.arguments || {}))}</div>
+                    </li>
+                  `).join('')}
+                </ul>
+              ` : ''}
               ${nodes.length ? `
                 <div class="group-label">Graph nodes</div>
                 <ul>
@@ -1077,9 +1089,12 @@
         const prov = data.provider_used || '';
         const provLabel = prov.startsWith('user:') ? 'your key'
           : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
+        const retrievalLabel = data.retrieval_mode === 'agentic'
+          ? `agentic retrieval · ${data.agent_tool_calls || agentTrace.length} tool calls`
+          : 'one-shot retrieval fallback';
         result.innerHTML = `
           <h2>CodeAtlas Answer</h2>
-          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)}</p>
+          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
