@@ -54,6 +54,7 @@
     .pill.cloned, .pill.new { color: var(--warn); border-color: rgba(245,166,35,.4); }
     /* action buttons: solid primary, filled-neutral secondary, danger */
     .actions { white-space: nowrap; }
+    #repoTable .actions { white-space: normal; min-width: 190px; }
     .actions button {
       padding: 6px 13px; font-size: 12px; font-weight: 600; margin: 2px 5px 2px 0;
       border-radius: 8px; border: 1px solid transparent; cursor: pointer;
@@ -97,6 +98,13 @@
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .mono, code { font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .branch-detail { font-size: 11px; color: var(--muted); line-height: 1.55; margin-top: 3px; }
+    .branch-settings { display:grid; gap:5px; min-width:150px; }
+    .branch-settings label { display:flex; align-items:center; gap:6px; margin:0; white-space:nowrap; }
+    .branch-settings input[type="checkbox"] { width:auto; }
+    .branch-settings input[type="number"] { width:82px; padding:5px 7px; }
+    #branchPanel { overflow-x:auto; }
+    #branchTable { min-width:850px; }
     @media (max-width: 720px){ .grid2 { grid-template-columns: 1fr; } }
   </style>
   <script>
@@ -163,6 +171,26 @@
         <tr><th>User</th><th>Role</th><th>Granted</th><th></th></tr>
       </thead><tbody></tbody></table>
       <div id="memberEmpty" class="muted" style="font-size:12px;"></div>
+    </div>
+
+    <!-- Branch panel (shown when "Branches" is clicked on a repo) -->
+    <div id="branchPanel" class="panel hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <h2 style="margin:0">Branches of <span id="branchRepo"></span></h2>
+        <button class="ghost" id="closeBranches">Close</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:8px 0 14px;">
+        Approve remote branches before users can select them. Each successful index is activated atomically.
+      </p>
+      <div class="row" style="align-items:end;margin-bottom:12px;">
+        <div><label>Available remote branch</label><select id="remoteBranch"></select></div>
+        <div style="flex:0 0 auto"><button id="discoverBranches" class="ghost">Fetch branches</button></div>
+        <div style="flex:0 0 auto"><button id="approveBranch">Approve &amp; index</button></div>
+      </div>
+      <table id="branchTable"><thead>
+        <tr><th>Branch</th><th>Indexed version</th><th>Freshness</th><th>Settings</th><th>Actions</th></tr>
+      </thead><tbody></tbody></table>
+      <div id="branchEmpty" class="muted" style="font-size:12px;"></div>
     </div>
 
     <div class="grid2">
@@ -368,6 +396,7 @@ async function refreshRepos() {
     if (r.status === "cloned") act.appendChild(btn("Index", () => doIndex(r.slug)));
     if (r.status === "indexed") act.appendChild(btn("Publish", () => doPublish(r.slug)));
     act.appendChild(btn("Edit", () => doEditRepo(r), true));
+    act.appendChild(btn("Branches", () => showBranches(r.slug), true));
     act.appendChild(btn("Grant", () => doGrant(r.slug), true));
     act.appendChild(btn("Members", () => showMembers(r.slug), true));
     if (r.slug !== "default") act.appendChild(btn("Delete", () => doDelete(r.slug), "danger"));
@@ -465,6 +494,174 @@ async function doRevoke(slug, username) {
   try { await api(`/admin/repos/${slug}/revoke`, { method: "POST", body: JSON.stringify({ username }) }); flash(`Revoked ${username} ✕ ${slug}`, true); showMembers(slug); refreshAudit(); }
   catch (e) { flash(e.message); }
 }
+
+let curBranchesSlug = null;
+let branchPollTimer = null;
+
+function stopBranchPolling() {
+  if (branchPollTimer) clearTimeout(branchPollTimer);
+  branchPollTimer = null;
+}
+
+$("closeBranches").onclick = () => {
+  stopBranchPolling();
+  $("branchPanel").classList.add("hidden");
+};
+
+function branchFreshnessLabel(branch) {
+  if (branch.index_status === "indexing" || branch.job_running) {
+    return ({
+      fetching: "Fetching",
+      preparing: "Preparing",
+      indexing: "Indexing",
+    })[branch.job_stage] || "Working";
+  }
+  if (branch.index_status === "failed" && !branch.available) return "Index failed";
+  if (branch.freshness_status === "behind") {
+    return `${branch.behind_count || 1} commit${branch.behind_count === 1 ? "" : "s"} behind`;
+  }
+  const labels = {
+    up_to_date: "Up to date",
+    diverged: "Remote changed / diverged",
+    checking: "Checking",
+    remote_unavailable: "Remote unavailable",
+    unknown: "Not checked",
+  };
+  return labels[branch.freshness_status] || branch.freshness_status;
+}
+
+async function showBranches(slug) {
+  stopBranchPolling();
+  curBranchesSlug = slug;
+  $("branchRepo").textContent = slug;
+  $("branchPanel").classList.remove("hidden");
+  await refreshBranchRows();
+}
+
+async function refreshBranchRows() {
+  if (!curBranchesSlug || $("branchPanel").classList.contains("hidden")) return;
+  try {
+    const { branches } = await api(`/admin/repos/${curBranchesSlug}/branches`);
+    const tbody = $("branchTable").querySelector("tbody");
+    tbody.innerHTML = "";
+    $("branchEmpty").textContent = branches.length ? "" : "No approved branches.";
+    let running = false;
+    for (const branch of branches) {
+      running = running || branch.job_running || branch.index_status === "indexing";
+      const tr = document.createElement("tr");
+      const shortIndexed = branch.indexed_commit_sha ? branch.indexed_commit_sha.slice(0, 12) : "not indexed";
+      const shortRemote = branch.remote_commit_sha ? branch.remote_commit_sha.slice(0, 12) : "unknown";
+      tr.innerHTML = `
+        <td><strong>${esc(branch.name)}</strong>${branch.is_legacy ? ' <span class="pill">default</span>' : ""}</td>
+        <td><span class="mono">${esc(shortIndexed)}</span><div class="branch-detail">Indexed: ${esc(branch.indexed_at || "never")}</div></td>
+        <td><span class="pill ${branch.freshness_status === "up_to_date" ? "published" : "cloned"}">${esc(branchFreshnessLabel(branch))}</span>
+          <div class="branch-detail">Remote: <span class="mono">${esc(shortRemote)}</span><br>Checked: ${esc(branch.last_checked_at || "never")}${branch.last_error ? `<br>${esc(branch.last_error)}` : ""}</div></td>
+        <td class="branch-settings-cell"></td>
+        <td class="actions branch-actions"></td>`;
+
+      const settings = document.createElement("div");
+      settings.className = "branch-settings";
+      const userSync = document.createElement("input"); userSync.type = "checkbox"; userSync.checked = branch.allow_user_sync;
+      const autoSync = document.createElement("input"); autoSync.type = "checkbox"; autoSync.checked = branch.auto_sync;
+      const strict = document.createElement("input"); strict.type = "checkbox"; strict.checked = branch.strict_freshness;
+      const interval = document.createElement("input"); interval.type = "number"; interval.min = "60"; interval.max = "86400"; interval.value = branch.freshness_interval_seconds;
+      const settingLabel = (text, input) => {
+        const label = document.createElement("label"); label.append(input, document.createTextNode(text)); return label;
+      };
+      settings.append(
+        settingLabel("Users may sync", userSync),
+        settingLabel("Auto index", autoSync),
+        settingLabel("Strict freshness", strict),
+        settingLabel("Check seconds", interval),
+      );
+      const saveSettings = async () => {
+        try {
+          await api(`/admin/repos/${curBranchesSlug}/branches/${branch.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              allow_user_sync: userSync.checked,
+              auto_sync: autoSync.checked,
+              strict_freshness: strict.checked,
+              freshness_interval_seconds: Number(interval.value) || 300,
+            }),
+          });
+          flash(`Updated ${branch.name}`, true);
+        } catch (e) { flash(e.message); refreshBranchRows(); }
+      };
+      userSync.onchange = autoSync.onchange = strict.onchange = interval.onchange = saveSettings;
+      tr.querySelector(".branch-settings-cell").appendChild(settings);
+
+      const actions = tr.querySelector(".branch-actions");
+      const syncButton = btn(branch.job_running ? "Working…" : "Sync & index now", () => syncBranch(branch.id));
+      syncButton.disabled = branch.job_running;
+      actions.appendChild(syncButton);
+      if (!branch.is_legacy) actions.appendChild(btn("Remove", () => removeBranch(branch), "danger"));
+      tbody.appendChild(tr);
+    }
+    if (running) branchPollTimer = setTimeout(refreshBranchRows, 1500);
+  } catch (e) { flash(e.message); }
+}
+
+async function discoverBranches() {
+  if (!curBranchesSlug) return;
+  $("discoverBranches").disabled = true;
+  try {
+    const { branches } = await api(`/admin/repos/${curBranchesSlug}/branches/discover`, { method: "POST" });
+    const select = $("remoteBranch");
+    select.innerHTML = "";
+    for (const branch of branches.filter(item => !item.approved)) {
+      const option = document.createElement("option");
+      option.value = branch.name;
+      option.textContent = `${branch.name} · ${branch.commit_sha.slice(0, 12)}`;
+      select.appendChild(option);
+    }
+    if (!select.options.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "All remote branches are approved";
+      select.appendChild(option);
+    }
+    flash(`Found ${branches.length} remote branches`, true);
+  } catch (e) { flash(e.message); }
+  finally { $("discoverBranches").disabled = false; }
+}
+
+async function approveSelectedBranch() {
+  const name = $("remoteBranch").value;
+  if (!curBranchesSlug || !name) return;
+  $("approveBranch").disabled = true;
+  try {
+    await api(`/admin/repos/${curBranchesSlug}/branches`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    flash(`Approved ${name}; indexing started`, true);
+    await discoverBranches();
+    await refreshBranchRows();
+  } catch (e) { flash(e.message); }
+  finally { $("approveBranch").disabled = false; }
+}
+
+async function syncBranch(branchId) {
+  try {
+    const data = await api(`/admin/repos/${curBranchesSlug}/branches/${branchId}/sync`, { method: "POST" });
+    flash(data.accepted ? "Synchronization started" : "Synchronization is already running", true);
+    refreshBranchRows();
+  } catch (e) { flash(e.message); }
+}
+
+async function removeBranch(branch) {
+  if (!(await modalConfirm("Remove branch", `Remove approved branch "${branch.name}" and its indexed versions?`))) return;
+  try {
+    await api(`/admin/repos/${curBranchesSlug}/branches/${branch.id}`, { method: "DELETE" });
+    flash(`Removed ${branch.name}`, true);
+    refreshBranchRows();
+  } catch (e) { flash(e.message); }
+}
+
+$("discoverBranches").onclick = discoverBranches;
+$("approveBranch").onclick = approveSelectedBranch;
+
 async function doPrivacy(slug, allow) {
   try { await api(`/admin/repos/${slug}/privacy`, { method: "PATCH", body: JSON.stringify({ allow_shared_fallback: allow }) });
         flash(`Shared LLM ${allow ? "enabled" : "disabled"} for ${slug}`, true); refreshRepos(); refreshAudit(); }

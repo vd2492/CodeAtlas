@@ -38,6 +38,12 @@ from .llm.client import generate
 from .auth.routes import router as auth_router, load_user_llm
 from .auth.security import hash_password
 from .auth.sessions import require_user
+from .repos.branch_routes import router as branch_router
+from .repos.branches import (
+    ensure_legacy_repo_branches,
+    start_branch_services,
+    stop_branch_services,
+)
 from .repos.routes import router as repos_router
 
 app = FastAPI(title="CodeAtlas", version="0.2.0")
@@ -47,6 +53,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Multi-tenant routers (auth + admin repo lifecycle).
 app.include_router(auth_router)
 app.include_router(repos_router)
+app.include_router(branch_router)
 
 
 @app.on_event("startup")
@@ -55,11 +62,18 @@ def _startup() -> None:
     configured) seed an admin so the instance is usable on first boot."""
     db.init_db()
     db.seed_default_repo()
+    ensure_legacy_repo_branches()
+    start_branch_services()
     seed_default_retrieval_config()
     admin_user = os.environ.get("CODEATLAS_ADMIN_USER")
     admin_pass = os.environ.get("CODEATLAS_ADMIN_PASS")
     if admin_user and admin_pass and db.user_count() == 0:
         db.create_user(admin_user, hash_password(admin_pass), role="admin")
+
+
+@app.on_event("shutdown")
+def _shutdown() -> None:
+    stop_branch_services()
 
 
 def workspace_source_root(workspace: str) -> Path:
@@ -120,13 +134,52 @@ def enforce_rate_limit(user_id: int) -> None:
 
 
 def authorized_workspace(
-    workspace: str = DEFAULT_WORKSPACE, user: dict = Depends(require_user)
+    workspace: str = DEFAULT_WORKSPACE,
+    branch: Optional[int] = None,
+    user: dict = Depends(require_user),
 ) -> str:
     """Resolve + permission-check the target workspace for a query. Admins reach
     every workspace; users only reach repos granted to them."""
-    if user["role"] != "admin" and not db.user_has_repo(user["id"], workspace):
+    repo = db.get_repo_by_workspace(workspace)
+    authorization_workspace = repo["workspace"] if repo else workspace
+    if (
+        user["role"] != "admin"
+        and not db.user_has_repo(user["id"], authorization_workspace)
+    ):
         raise HTTPException(status_code=403, detail="You do not have access to this repository.")
+    if branch is not None:
+        selected = db.get_repo_branch(branch)
+        if not selected or not repo or selected["repo_id"] != repo["id"]:
+            raise HTTPException(status_code=404, detail="Repository branch not found.")
+        if not selected.get("workspace") or selected["index_status"] not in {
+            "ready", "indexing",
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail="The selected branch has not been indexed successfully yet.",
+            )
+        return selected["workspace"]
+    if repo and workspace == repo["workspace"]:
+        selected = db.get_legacy_repo_branch(repo["id"])
+        if selected and selected.get("workspace"):
+            return selected["workspace"]
     return workspace
+
+
+def enforce_strict_branch_freshness(workspace: str) -> None:
+    branch = db.get_repo_branch_by_workspace(workspace)
+    if (
+        branch
+        and branch["strict_freshness"]
+        and branch["freshness_status"] != "up_to_date"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This branch requires a fresh index. Use Sync & index now "
+                "before asking a question."
+            ),
+        )
 
 
 def read_source_excerpt(
@@ -610,6 +663,11 @@ def _graph_stats(workspace: str) -> "tuple[int, str | None]":
     """Live (node_count, dominant_language) for a workspace's graph, cached by
     file mtime so the public landing page reflects real indexing without
     re-reading large graphs on every hit."""
+    repo = db.get_repo_by_workspace(workspace)
+    if repo and workspace == repo["workspace"]:
+        branch = db.get_legacy_repo_branch(repo["id"])
+        if branch and branch.get("workspace"):
+            workspace = branch["workspace"]
     path = graph_path(workspace)
     try:
         mtime = path.stat().st_mtime
@@ -735,6 +793,7 @@ def _flow(topic: str, workspace: str):
 
 @app.post("/repo/ask")
 def ask(request: AskRequest, workspace: str = Depends(authorized_workspace)):
+    enforce_strict_branch_freshness(workspace)
     q = request.question.lower()
     available_flows = discover_flows(graph_path(workspace))
 
@@ -1197,6 +1256,21 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         question=question,
         toolbox=toolbox,
     )
+    branch = db.get_repo_branch_by_workspace(workspace)
+    repository_version = None
+    if branch:
+        repository_version = {
+            "repository": branch["repo_name"],
+            "repository_slug": branch["repo_slug"],
+            "branch_id": branch["id"],
+            "branch": branch["name"],
+            "commit_sha": branch.get("indexed_commit_sha"),
+            "remote_commit_sha": branch.get("remote_commit_sha"),
+            "indexed_at": branch.get("indexed_at"),
+            "freshness_status": branch["freshness_status"],
+            "behind_count": branch.get("behind_count", 0),
+            "last_checked_at": branch.get("last_checked_at"),
+        }
     return {
         "question": question,
         "answer": result["answer"],
@@ -1211,6 +1285,7 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
             else {}
         ),
         "context": context,
+        "repository_version": repository_version,
     }
 
 
@@ -1221,6 +1296,7 @@ def ask_llm_endpoint(
     user: dict = Depends(require_user),
 ):
     enforce_rate_limit(user["id"])
+    enforce_strict_branch_freshness(workspace)
     repo = db.get_repo_by_workspace(workspace)
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
     # Tier 1: an explicit per-request key wins; otherwise the user's stored BYOK key.

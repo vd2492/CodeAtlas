@@ -25,6 +25,10 @@ Everything runs on your own box. Private code never has to leave it.
   browser.
 - **Access control.** Users log in and only see repositories an admin has
   explicitly granted them; every query is permission-checked.
+- **Branch-aware, freshness-tracked answers.** Admins approve remote branches,
+  CodeAtlas indexes each branch in an isolated Git worktree, and users can select
+  the exact indexed branch and commit before asking. Freshness checks and
+  **Sync & index now** keep the active graph aligned with the remote branch.
 - **Bring your own LLM key (BYOK).** Each user can store their own LLM key
   (encrypted at rest) to be used as their first-choice model.
 
@@ -53,6 +57,8 @@ to boot; the relevant groups are:
   fully private tier.
 - **Paths / source root** — optional overrides for data directory and the source
   tree used to pull code excerpts into answers.
+- **Branch synchronization** — worker count, freshness polling, user-triggered
+  sync cooldown, and old-version retention.
 
 See `.env.example` for the full list of keys and inline notes.
 
@@ -85,12 +91,13 @@ The API response reports `retrieval_mode` (`agentic` or `one_shot`) and a compac
 
 ## How a repository goes live
 
-`Clone → Index → Test → Tune → Publish → Grant access`
+`Clone → Approve branches → Index → Test → Tune → Publish → Grant access`
 
-An admin clones and indexes a repo, tests retrieval and answer quality against
-it, tunes the per-repo config until answers are good, publishes the workspace,
-and grants access to selected users. Users then log in, pick an authorized repo,
-and ask away.
+An admin clones a repo, approves and indexes its remote branches, tests retrieval
+and answer quality, tunes the per-repo config until answers are good, publishes
+the workspace, and grants access to selected users. Users then log in, pick an
+authorized repo and indexed branch, inspect its commit/freshness metadata, and
+ask away.
 
 ## Architecture
 
@@ -110,7 +117,7 @@ app/
   config.py          paths & per-workspace layout
   db.py              SQLite: users, repos, repo_access, sessions, audit_log
   auth/              sessions, password hashing, BYOK key encryption, auth routes
-  repos/             clone (https/ssh/gh), indexing, admin lifecycle routes
+  repos/             clone, branch worktrees, freshness jobs, indexing, lifecycle routes
   retrieval/         ranker, context builder, per-repo RetrievalConfig
   llm/client.py      agent loops + BYOK → Ollama → shared fallback chain
   static/            landing page, user Ask UI, admin console
@@ -121,10 +128,11 @@ docs/PLAN.md         build plan / phase history
 ## Roles
 
 - **Admin** — clone & index repos, test and tune retrieval, publish, manage
-  users and per-repo access, toggle the shared-LLM privacy setting, and review
-  an audit log of privileged actions.
+  approved branches and sync settings, manage users and per-repo access, toggle
+  the shared-LLM privacy setting, and review an audit log of privileged actions.
 - **User** — log in with admin-provided credentials, see only authorized repos,
-  optionally set their own LLM key, and ask grounded questions.
+  select an indexed branch, optionally request an authorized refresh, optionally
+  set their own LLM key, and ask grounded questions.
 
 ## Security & privacy
 

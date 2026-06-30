@@ -21,6 +21,12 @@ from ..retrieval.config_schema import (
     save_retrieval_config,
 )
 from .cloning import clone_repo, remove_workspace, sanitize_clone_url
+from .branches import (
+    copy_config_to_active_branch_workspaces,
+    ensure_repo_branch,
+    record_legacy_index,
+    remove_repo_branch_workspaces,
+)
 from .indexing import index_repo
 
 router = APIRouter(prefix="/admin/repos", tags=["admin-repos"])
@@ -88,6 +94,7 @@ def add_repo(req: AddRepoRequest, admin: dict = Depends(require_admin)):
         db.set_repo_status(req.slug, "new")  # leave row; surface the error
         raise HTTPException(status_code=400, detail=f"Clone failed: {exc}")
     db.set_repo_status(req.slug, "cloned")
+    ensure_repo_branch(db.get_repo_by_slug(req.slug))
     db.record_audit(admin["username"], "add_repo", req.slug, stored_source_url)
     return {"repo": db.get_repo_by_slug(req.slug)}
 
@@ -103,6 +110,7 @@ def index_repo_route(slug: str, admin: dict = Depends(require_admin)):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Indexing failed: {exc}")
     db.set_repo_status(slug, "indexed")
+    record_legacy_index(db.get_repo_by_slug(slug))
     db.record_audit(admin["username"], "index_repo", slug)
     return {"repo": db.get_repo_by_slug(slug)}
 
@@ -124,6 +132,7 @@ def update_retrieval_config(slug: str, config: dict, admin: dict = Depends(requi
     repo = _require_repo(slug)
     parsed = RetrievalConfig.from_dict(config)
     save_retrieval_config(repo["workspace"], parsed)
+    copy_config_to_active_branch_workspaces(repo)
     return {"config": parsed.to_dict()}
 
 
@@ -210,6 +219,7 @@ def delete_repo(slug: str, admin: dict = Depends(require_admin)):
     repo = _require_repo(slug)
     if repo["workspace"] == DEFAULT_WORKSPACE:
         raise HTTPException(status_code=400, detail="The default demo repo cannot be deleted.")
+    remove_repo_branch_workspaces(repo)
     db.delete_repo(slug)
     remove_workspace(repo["workspace"])
     db.record_audit(admin["username"], "delete_repo", slug)
@@ -225,9 +235,11 @@ def test_repo(slug: str, req: TestRequest, admin: dict = Depends(require_admin))
     from ..main import answer_question
 
     try:
+        branch = db.get_legacy_repo_branch(repo["id"])
+        workspace = branch["workspace"] if branch and branch.get("workspace") else repo["workspace"]
         return answer_question(
             req.question,
-            workspace=repo["workspace"],
+            workspace=workspace,
             allow_shared_fallback=bool(repo["allow_shared_fallback"]),
         )
     except RuntimeError as error:

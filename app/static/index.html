@@ -100,9 +100,11 @@
       display: flex;
       align-items: center;
       gap: 16px;
-      margin-bottom: 40px;
+      margin-bottom: 14px;
+      flex-wrap: nowrap;
     }
     .header-spacer { flex: 1; }
+    .header-context { display:flex; gap:8px; min-width:0; }
 
     .theme-toggle {
       flex: none;
@@ -717,13 +719,29 @@
       flex: none;
       padding: 9px 12px; border-radius: 11px;
       border: 1px solid var(--border-strong); background: var(--card);
-      color: var(--text); font-size: 13px; outline: none; max-width: 220px;
+      color: var(--text); font-size: 13px; outline: none; max-width: 165px;
     }
     .repo-picker:disabled {
       opacity: 1;
       cursor: default;
       color: var(--text);
       -webkit-text-fill-color: var(--text);
+    }
+    .branch-status {
+      display:flex; align-items:center; justify-content:space-between; gap:14px;
+      min-width:0; margin-bottom:26px; padding:10px 12px 10px 14px;
+      border:1px solid var(--border); border-radius:12px; background:var(--card);
+    }
+    .branch-status.hidden { display:none; }
+    .branch-status-copy { min-width:0; overflow-wrap:anywhere; }
+    .branch-status-title { font-size:13px; font-weight:700; }
+    .branch-status-detail { color:var(--muted); font-size:11px; margin-top:3px; }
+    .branch-status button { flex:none; padding:8px 12px; font-size:12px; }
+    @media (max-width: 900px) {
+      .header { flex-wrap:wrap; }
+      .header-spacer { display:none; }
+      .header-context { order:3; width:100%; }
+      .header-context .repo-picker { flex:1; max-width:none; width:50%; }
     }
   </style>
   <script>
@@ -762,7 +780,10 @@
         <div class="subtitle">Graph-powered codebase intelligence</div>
       </div>
       <div class="header-spacer"></div>
-      <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
+      <div class="header-context">
+        <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
+        <select id="branchPicker" class="repo-picker" onchange="onBranchChange()" title="Indexed branch" style="display:none;"></select>
+      </div>
       <button class="theme-toggle" onclick="logout()" aria-label="Sign out" title="Sign out">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
       </button>
@@ -776,6 +797,13 @@
         </svg>
       </button>
     </header>
+    <div id="branchStatusBar" class="branch-status hidden">
+      <div class="branch-status-copy">
+        <div id="branchStatusTitle" class="branch-status-title"></div>
+        <div id="branchStatusDetail" class="branch-status-detail"></div>
+      </div>
+      <button id="syncBranchBtn" type="button" onclick="syncSelectedBranch()">Sync &amp; index now</button>
+    </div>
 
     <!-- LLM choice -->
     <section class="card llm-card span-2">
@@ -863,13 +891,20 @@
 
     // ---------- Auth + active workspace ----------
     let WORKSPACE = null;
+    let BRANCH_ID = null;
+    let BRANCHES = [];
+    let BRANCH_POLL_TIMER = null;
     let LLM_MODE = 'mimo';
     let PERSONAL_KEY_CONFIGURED = false;
     let CONVERSATION_HISTORY = [];
 
     function wsUrl(path) {
       const sep = path.includes('?') ? '&' : '?';
-      return WORKSPACE ? `${path}${sep}workspace=${encodeURIComponent(WORKSPACE)}` : path;
+      if (!WORKSPACE) return path;
+      const workspaceUrl = `${path}${sep}workspace=${encodeURIComponent(WORKSPACE)}`;
+      return BRANCH_ID
+        ? `${workspaceUrl}&branch=${encodeURIComponent(BRANCH_ID)}`
+        : workspaceUrl;
     }
 
     function requireWorkspace(targetId = 'result') {
@@ -938,6 +973,149 @@
       } catch (e) { errEl.textContent = String(e); }
     }
 
+    function stopBranchPolling() {
+      if (BRANCH_POLL_TIMER) clearTimeout(BRANCH_POLL_TIMER);
+      BRANCH_POLL_TIMER = null;
+    }
+
+    function rememberedBranchId() {
+      if (!WORKSPACE) return '';
+      try { return localStorage.getItem(`codeatlas-selected-branch:${WORKSPACE}`) || ''; }
+      catch (e) { return ''; }
+    }
+
+    function rememberBranchId(branchId) {
+      if (!WORKSPACE) return;
+      try {
+        if (branchId) localStorage.setItem(`codeatlas-selected-branch:${WORKSPACE}`, String(branchId));
+        else localStorage.removeItem(`codeatlas-selected-branch:${WORKSPACE}`);
+      } catch (e) {}
+    }
+
+    function freshnessLabel(branch) {
+      if (branch.job_running || branch.index_status === 'indexing') {
+        return ({
+          fetching: 'Fetching',
+          preparing: 'Preparing',
+          indexing: 'Indexing',
+        })[branch.job_stage] || 'Working';
+      }
+      if (branch.index_status === 'failed' && !branch.available) return 'Index failed';
+      if (branch.freshness_status === 'behind') {
+        const count = branch.behind_count || 1;
+        return `${count} commit${count === 1 ? '' : 's'} behind`;
+      }
+      return ({
+        up_to_date: 'Up to date',
+        checking: 'Checking remote',
+        diverged: 'Remote changed / diverged',
+        remote_unavailable: 'Remote unavailable',
+        unknown: 'Freshness not checked',
+      })[branch.freshness_status] || branch.freshness_status;
+    }
+
+    function updateBranchStatus() {
+      const bar = document.getElementById('branchStatusBar');
+      const branch = BRANCHES.find(item => item.id === BRANCH_ID);
+      if (!branch) {
+        bar.classList.add('hidden');
+        return;
+      }
+      const commit = branch.indexed_commit_sha
+        ? branch.indexed_commit_sha.slice(0, 12)
+        : 'not indexed';
+      document.getElementById('branchStatusTitle').textContent =
+        `${branch.name} · ${commit} · ${freshnessLabel(branch)}`;
+      document.getElementById('branchStatusDetail').textContent =
+        `Indexed: ${branch.indexed_at || 'never'} · Remote checked: ${branch.last_checked_at || 'never'}`
+        + (branch.last_error ? ` · ${branch.last_error}` : '');
+      const button = document.getElementById('syncBranchBtn');
+      button.disabled = !branch.can_sync || branch.job_running;
+      button.textContent = branch.job_running ? 'Syncing…' : 'Sync & index now';
+      bar.classList.remove('hidden');
+    }
+
+    async function loadBranches() {
+      stopBranchPolling();
+      const picker = document.getElementById('branchPicker');
+      if (!WORKSPACE) {
+        BRANCH_ID = null;
+        BRANCHES = [];
+        picker.style.display = 'none';
+        updateBranchStatus();
+        return;
+      }
+      try {
+        const res = await fetch(`/repo/branches?workspace=${encodeURIComponent(WORKSPACE)}`);
+        if (handle401(res)) return;
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Unable to load branches');
+        BRANCHES = data.branches || [];
+        const previous = BRANCH_ID || Number(rememberedBranchId()) || null;
+        picker.innerHTML = '';
+        for (const branch of BRANCHES) {
+          const option = document.createElement('option');
+          option.value = String(branch.id);
+          option.textContent = `${branch.name}${branch.indexed_commit_sha ? ` · ${branch.indexed_commit_sha.slice(0, 8)}` : ' · not indexed'}`;
+          option.disabled = !branch.available;
+          picker.appendChild(option);
+        }
+        const selected = BRANCHES.find(branch => branch.id === previous && branch.available)
+          || BRANCHES.find(branch => branch.is_legacy && branch.available)
+          || BRANCHES.find(branch => branch.available)
+          || null;
+        BRANCH_ID = selected ? selected.id : null;
+        picker.style.display = BRANCHES.length ? 'block' : 'none';
+        picker.disabled = BRANCHES.length <= 1;
+        if (selected) picker.value = String(selected.id);
+        rememberBranchId(BRANCH_ID);
+        updateBranchStatus();
+        if (BRANCHES.some(branch => branch.job_running)) {
+          BRANCH_POLL_TIMER = setTimeout(loadBranches, 1500);
+        }
+      } catch (error) {
+        BRANCH_ID = null;
+        BRANCHES = [];
+        picker.style.display = 'none';
+        updateBranchStatus();
+      }
+    }
+
+    async function syncSelectedBranch() {
+      if (!WORKSPACE || !BRANCH_ID) return;
+      const button = document.getElementById('syncBranchBtn');
+      button.disabled = true;
+      button.textContent = 'Starting…';
+      try {
+        const res = await fetch(
+          `/repo/branches/${encodeURIComponent(BRANCH_ID)}/sync?workspace=${encodeURIComponent(WORKSPACE)}`,
+          { method: 'POST' },
+        );
+        if (handle401(res)) return;
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Unable to synchronize branch');
+        await loadBranches();
+      } catch (error) {
+        const detail = document.getElementById('branchStatusDetail');
+        detail.textContent = String(error);
+        button.disabled = false;
+        button.textContent = 'Sync & index now';
+      }
+    }
+
+    function onBranchChange() {
+      const picker = document.getElementById('branchPicker');
+      BRANCH_ID = Number(picker.value) || null;
+      rememberBranchId(BRANCH_ID);
+      CONVERSATION_HISTORY = [];
+      document.getElementById('summary').innerHTML = '';
+      document.getElementById('searchResults').innerHTML = '';
+      document.getElementById('result').innerHTML =
+        '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question about this branch, or use a tool to explore its graph.</p></div>';
+      updateBranchStatus();
+      loadFlowButtons();
+    }
+
     function populateRepos(repos) {
       const picker = document.getElementById('repoPicker');
       const usable = (repos || []).filter(r => r.status === 'published');
@@ -950,6 +1128,7 @@
         picker.innerHTML = '<option>No repositories granted</option>';
         picker.disabled = true;
         WORKSPACE = null;
+        BRANCH_ID = null;
         CONVERSATION_HISTORY = [];
         rememberSelectedRepo(null);
         return;
@@ -981,6 +1160,7 @@
         picker.disabled = true;
         picker.title = 'Select a repository from the home page';
         WORKSPACE = null;
+        BRANCH_ID = null;
         rememberSelectedRepo(null);
 
         document.getElementById('result').innerHTML = requested
@@ -993,6 +1173,7 @@
     function onRepoChange() {
       const picker = document.getElementById('repoPicker');
       WORKSPACE = picker.value || null;
+      BRANCH_ID = null;
       CONVERSATION_HISTORY = [];
       const selectedOption = picker.selectedOptions[0];
       const selectedRepo = WORKSPACE ? {
@@ -1004,7 +1185,7 @@
       document.getElementById('searchResults').innerHTML = '';
       document.getElementById('result').innerHTML =
         '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question about this repository, or use a tool to explore the graph.</p></div>';
-      loadFlowButtons();
+      loadBranches().then(loadFlowButtons);
     }
 
     async function initAuth() {
@@ -1012,6 +1193,7 @@
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
       populateRepos(data.repos);
+      await loadBranches();
       await loadFlowButtons();
       await loadLlmStatus();
       return true;
@@ -1026,6 +1208,8 @@
     async function logout() {
       try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
       WORKSPACE = null;
+      BRANCH_ID = null;
+      stopBranchPolling();
       CONVERSATION_HISTORY = [];
       window.location.href = '/';   // back to the landing page
     }
@@ -1514,6 +1698,10 @@ If the current message refers to the recent exchange, use that context and inves
         const retrievalLabel = data.retrieval_mode === 'agentic'
           ? `agentic retrieval · ${data.agent_tool_calls || agentTrace.length} tool calls`
           : 'one-shot retrieval fallback';
+        const version = data.repository_version || null;
+        const versionLabel = version
+          ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${version.indexed_at || 'unknown'} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${version.last_checked_at}` : ''}`
+          : '';
         CONVERSATION_HISTORY.push({
           question: userQuestion,
           answer: String(data.answer || ''),
@@ -1523,6 +1711,7 @@ If the current message refers to the recent exchange, use that context and inves
           ${followUpComposer()}
           <h2>CodeAtlas Answer</h2>
           <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
+          ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
