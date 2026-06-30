@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import db
+from .agent import RepositoryToolbox
 from .config import DEFAULT_WORKSPACE, graph_path, repo_clone_dir
 from .retrieval.flow_map import (
     TOPICS,
@@ -1183,16 +1184,28 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     context = build_context(question, limit=16, workspace=workspace)
+    toolbox = RepositoryToolbox(workspace)
     result = generate(
         context,
         user_llm=user_llm,
         allow_shared_fallback=allow_shared_fallback,
         llm_mode=llm_mode,
+        question=question,
+        toolbox=toolbox,
     )
     return {
         "question": question,
         "answer": result["answer"],
         "provider_used": result["provider_used"],
+        "retrieval_mode": result.get("retrieval_mode", "one_shot"),
+        "agent_trace": result.get("agent_trace", []),
+        "agent_rounds": result.get("rounds"),
+        "agent_tool_calls": result.get("tool_calls", 0),
+        **(
+            {"agent_fallback_reason": result["agent_fallback_reason"]}
+            if result.get("agent_fallback_reason")
+            else {}
+        ),
         "context": context,
     }
 

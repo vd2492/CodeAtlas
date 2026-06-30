@@ -249,8 +249,18 @@ def format_link(link: dict) -> dict:
     }
 
 
-def node_payload(node_id: str, links: list[dict]) -> dict:
-    source_file, source_location = meta_for(node_id, links)
+def node_payload(node_id: str, links: list[dict], node: dict = None) -> dict:
+    """Build a source-aware node payload.
+
+    Current graphify nodes already carry source metadata. Prefer it so ranking
+    does not repeatedly scan the full relation list for every candidate; retain
+    the relation lookup for older graph files.
+    """
+    node = node or {}
+    source_file = node.get("source_file")
+    source_location = node.get("source_location")
+    if not source_file or not source_location:
+        source_file, source_location = meta_for(node_id, links)
 
     return {
         "name": readable_name(node_id),
@@ -331,7 +341,7 @@ def search_nodes(query: str, nodes: list[dict], links: list[dict], limit: int = 
         if score <= 0:
             continue
 
-        payload = node_payload(node_id, links)
+        payload = node_payload(node_id, links, node)
         payload["score"] = score
 
         existing = best_by_name.get(payload["name"])
@@ -425,7 +435,7 @@ def rank_nodes_for_query(
         if matched:
             for term in matched:
                 doc_freq[term] += 1
-            candidates.append((node_id, name, matched))
+            candidates.append((node_id, name, matched, node))
 
     total = max(1, len(candidates))
     weight = {
@@ -434,7 +444,7 @@ def rank_nodes_for_query(
     }
 
     best_by_name = {}
-    for node_id, name, matched in candidates:
+    for node_id, name, matched, node in candidates:
         base = sum(weight[term] * quality for term, quality in matched.items())
         if base <= 0:
             continue
@@ -450,7 +460,7 @@ def rank_nodes_for_query(
         if "." in name:
             score -= 4
 
-        payload = node_payload(node_id, links)
+        payload = node_payload(node_id, links, node)
         payload["score"] = round(score, 2)
 
         existing = best_by_name.get(payload["name"])
