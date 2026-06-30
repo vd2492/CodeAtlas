@@ -387,6 +387,33 @@
   const scoped = document.getElementById("scoped");
   const fmt = (n) => (n || 0).toLocaleString();
   const escHtml = (s) => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+  let selectedRepoSlug = null;
+
+  try {
+    selectedRepoSlug =
+      localStorage.getItem("codeatlas-selected-repo") ||
+      sessionStorage.getItem("codeatlas-selected-repo") ||
+      null;
+  } catch (e) {}
+
+  function setSelectedRepo(slug) {
+    selectedRepoSlug = slug || null;
+    try {
+      if (selectedRepoSlug) {
+        localStorage.setItem("codeatlas-selected-repo", selectedRepoSlug);
+      } else {
+        localStorage.removeItem("codeatlas-selected-repo");
+        sessionStorage.removeItem("codeatlas-selected-repo");
+      }
+    } catch (e) {}
+
+    document.querySelectorAll('a[href="/app"], a[data-app-link]').forEach(link => {
+      link.dataset.appLink = "true";
+      link.href = selectedRepoSlug
+        ? `/app?repo=${encodeURIComponent(selectedRepoSlug)}`
+        : "/app";
+    });
+  }
 
   function renderCatalog(data) {
     const repos = (data && data.repos) || [];
@@ -398,6 +425,7 @@
 
     grid.innerHTML = "";
     if (!repos.length) {
+      setSelectedRepo(null);
       grid.style.gridTemplateColumns = "1fr";
       const m = document.createElement("div");
       m.className = "repo-card";
@@ -417,27 +445,49 @@
       const meta = [r.language || "indexed", fmt(r.nodes) + " nodes"].join(" · ");
       const c = document.createElement("div");
       c.className = "repo-card";
+      c.dataset.repoSlug = r.slug;
+      c.setAttribute("role", "link");
+      c.setAttribute("tabindex", "0");
+      c.setAttribute("aria-label", `Open ${r.name}`);
       c.innerHTML = `
         <div class="repo-top">
           <span class="repo-name"><span class="lang-dot" style="background:${color};box-shadow:0 0 8px ${color}66"></span>${escHtml(r.name)}</span>
           <span class="pill">authorized</span>
         </div>
         <div class="repo-meta"><span>${r.slug}</span><span class="sep">·</span><span>${meta}</span></div>`;
-      c.onclick = () => {
-        const wasSel = c.classList.contains("sel");
+      const openSelectedRepo = () => {
         document.querySelectorAll(".repo-card").forEach(x => {
           x.classList.remove("sel");
           const p = x.querySelector(".pill"); if (p) p.textContent = "authorized";
         });
-        if (!wasSel) {
-          c.classList.add("sel"); c.querySelector(".pill").textContent = "selected";
-          scoped.innerHTML = `// scoped to <span class="on">${escHtml(r.name)}</span> — sign in to start asking`;
-        } else {
-          scoped.textContent = "// select a repository to scope your questions";
+        c.classList.add("sel");
+        c.querySelector(".pill").textContent = "selected";
+        scoped.innerHTML = `// scoped to <span class="on">${escHtml(r.name)}</span> — opening sign in`;
+        setSelectedRepo(r.slug);
+        window.location.assign(`/app?repo=${encodeURIComponent(r.slug)}`);
+      };
+      c.onclick = openSelectedRepo;
+      c.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openSelectedRepo();
         }
       };
       grid.appendChild(c);
+
+      if (selectedRepoSlug === r.slug) {
+        c.classList.add("sel");
+        c.querySelector(".pill").textContent = "selected";
+        scoped.innerHTML = `// scoped to <span class="on">${escHtml(r.name)}</span> — sign in to start asking`;
+      }
     });
+
+    if (selectedRepoSlug && !repos.some(repo => repo.slug === selectedRepoSlug)) {
+      setSelectedRepo(null);
+      scoped.textContent = "// select a repository to scope your questions";
+    } else {
+      setSelectedRepo(selectedRepoSlug);
+    }
   }
 
   fetch("/public/catalog")

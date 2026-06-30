@@ -84,12 +84,15 @@
       -webkit-font-smoothing: antialiased;
       line-height: 1.5;
       transition: background-color 0.3s ease, color 0.3s ease;
+      overflow-x: hidden;
     }
 
     .container {
+      width: 100%;
       max-width: 920px;
       margin: 0 auto;
       padding: 48px 24px 96px;
+      min-width: 0;
     }
 
     /* ---------- Header ---------- */
@@ -157,7 +160,7 @@
     .subtitle { color: var(--muted); font-size: 14px; margin-top: 2px; }
 
     /* ---------- Hero ask ---------- */
-    .hero { margin-bottom: 36px; }
+    .hero { margin-bottom: 16px; }
     .hero-label {
       font-size: 13px;
       font-weight: 600;
@@ -234,13 +237,15 @@
     /* ---------- Cards / tools grid ---------- */
     .tools {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 16px;
       margin-bottom: 16px;
     }
-    .tools .span-2 { grid-column: 1 / -1; }
+    .tools .span-2 { grid-column: 1 / -1; min-width: 0; }
 
     .card {
+      min-width: 0;
+      max-width: 100%;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -267,7 +272,7 @@
     .row { display: flex; gap: 10px; flex-wrap: wrap; }
 
     .llm-card {
-      margin-bottom: 16px;
+      margin-bottom: 24px;
     }
     .llm-options,
     .personal-llm {
@@ -353,8 +358,71 @@
     }
 
     /* ---------- Result panel ---------- */
-    .result-card { padding: 26px 28px; }
-    #result { font-size: 15px; }
+    .result-card {
+      padding: 26px 28px;
+      margin-bottom: 16px;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .follow-up-panel {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      margin-bottom: 24px;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+    }
+    .follow-up-label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    .follow-up-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      padding: 8px 8px 8px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 13px;
+      background: var(--input-bg);
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .follow-up-box:focus-within {
+      border-color: rgba(95, 227, 154, 0.5);
+      box-shadow: 0 0 0 3px rgba(95, 227, 154, 0.09);
+    }
+    #followUpQuestion {
+      flex: 1;
+      min-width: 0;
+      max-width: 100%;
+      padding: 10px 2px;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+    }
+    #followUpQuestion::placeholder { color: var(--faint); }
+    .follow-up-hint {
+      margin: 7px 2px 0;
+      color: var(--faint);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    #result {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      font-size: 15px;
+      overflow: hidden;
+    }
     #result h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; }
     #result h3 {
       font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;
@@ -363,11 +431,23 @@
     #result p { margin: 8px 0; }
     #result ul { margin: 8px 0; padding-left: 0; list-style: none; }
     #result li {
+      min-width: 0;
+      max-width: 100%;
       padding: 10px 0;
       border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     #result li:last-child { border-bottom: 0; }
     #result b { color: var(--text); font-weight: 700; }
+    #result p,
+    #result h2,
+    #result h3,
+    #result summary {
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
 
     .empty-state { color: var(--muted); }
     .empty-state .eyebrow { color: var(--accent); font-weight: 600; font-size: 13px; }
@@ -377,23 +457,104 @@
       font-size: 12.5px;
       font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
       margin-top: 4px;
+      max-width: 100%;
+      overflow-wrap: anywhere;
       word-break: break-word;
     }
 
     pre {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
       word-break: break-word;
       background: var(--pre-bg);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 16px;
-      overflow: auto;
+      overflow-x: hidden;
+      overflow-y: auto;
       max-height: 520px;
       font-size: 13px;
       color: var(--muted);
     }
 
-    .answer { white-space: pre-wrap; line-height: 1.7; color: var(--answer); }
+    .answer {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      line-height: 1.7;
+      color: var(--answer);
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .answer-text {
+      min-width: 0;
+      max-width: 100%;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .answer code {
+      display: inline;
+      max-width: 100%;
+      padding: 0.12em 0.35em;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      background: var(--pre-bg);
+      font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      font-size: 0.88em;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .answer pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      font-size: inherit;
+      white-space: pre-wrap;
+    }
+    .answer-table-wrap {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      margin: 14px 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--pre-bg);
+    }
+    .answer table {
+      width: 100%;
+      max-width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 13px;
+    }
+    .answer th,
+    .answer td {
+      min-width: 0;
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .answer th {
+      color: var(--text);
+      font-weight: 700;
+      background: rgba(148, 163, 184, 0.07);
+    }
+    .answer tr:last-child td { border-bottom: 0; }
+    .answer th:last-child,
+    .answer td:last-child { border-right: 0; }
 
     /* ---------- Pills / chips ---------- */
     .pill {
@@ -406,6 +567,10 @@
       border: 1px solid var(--border);
       color: var(--pill-text);
       font-size: 13px;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
       transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     }
 
@@ -449,6 +614,9 @@
 
     /* ---------- Details / grounded context ---------- */
     details {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
       margin-top: 20px;
       border: 1px solid var(--border);
       border-radius: 14px;
@@ -456,6 +624,8 @@
       overflow: hidden;
     }
     details summary {
+      min-width: 0;
+      max-width: 100%;
       cursor: pointer;
       list-style: none;
       padding: 14px 18px;
@@ -473,12 +643,19 @@
     details summary::after {
       content: "▾";
       margin-left: auto;
+      flex: none;
       transition: transform 0.2s ease;
       color: var(--faint);
     }
     details[open] summary::after { transform: rotate(180deg); }
     details summary:hover { color: var(--text); }
-    .details-body { padding: 4px 18px 16px; }
+    .details-body {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      padding: 4px 18px 16px;
+      overflow: hidden;
+    }
     .details-body ul { margin: 0; }
 
     .badge {
@@ -501,6 +678,15 @@
       .tools { grid-template-columns: 1fr; }
       .result-card { padding: 20px; }
       .title { font-size: 22px; }
+      .follow-up-box {
+        align-items: stretch;
+        flex-direction: column;
+        padding: 10px;
+      }
+      .follow-up-box .btn-primary { width: 100%; }
+      .answer table { font-size: 12px; }
+      .answer th,
+      .answer td { padding: 7px 6px; }
     }
     /* ---------- Auth overlay + repo picker ---------- */
     .overlay {
@@ -532,6 +718,12 @@
       padding: 9px 12px; border-radius: 11px;
       border: 1px solid var(--border-strong); background: var(--card);
       color: var(--text); font-size: 13px; outline: none; max-width: 220px;
+    }
+    .repo-picker:disabled {
+      opacity: 1;
+      cursor: default;
+      color: var(--text);
+      -webkit-text-fill-color: var(--text);
     }
   </style>
   <script>
@@ -585,21 +777,6 @@
       </button>
     </header>
 
-    <!-- Main ask -->
-    <section class="hero">
-      <div class="hero-label">Ask CodeAtlas</div>
-      <div class="ask-box">
-        <span class="ask-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="7"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-        </span>
-        <input id="question" placeholder="Ask anything about this codebase…" autocomplete="off" />
-        <button class="btn-primary" onclick="ask()">Ask</button>
-      </div>
-    </section>
-
     <!-- LLM choice -->
     <section class="card llm-card span-2">
       <div class="card-head"><span class="card-dot"></span><h2 class="card-title">My LLM key</h2></div>
@@ -614,6 +791,21 @@
       </div>
       <div id="keyStatus" class="src"></div>
       <div id="keyErr" class="login-err"></div>
+    </section>
+
+    <!-- Main ask -->
+    <section class="hero">
+      <div class="hero-label">Ask CodeAtlas</div>
+      <div class="ask-box">
+        <span class="ask-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+        </span>
+        <input id="question" placeholder="Ask anything about this codebase…" autocomplete="off" />
+        <button class="btn-primary" onclick="ask()">Ask</button>
+      </div>
     </section>
 
     <!-- Result -->
@@ -673,14 +865,58 @@
     let WORKSPACE = null;
     let LLM_MODE = 'mimo';
     let PERSONAL_KEY_CONFIGURED = false;
+    let CONVERSATION_HISTORY = [];
 
     function wsUrl(path) {
       const sep = path.includes('?') ? '&' : '?';
       return WORKSPACE ? `${path}${sep}workspace=${encodeURIComponent(WORKSPACE)}` : path;
     }
 
+    function requireWorkspace(targetId = 'result') {
+      if (WORKSPACE) return true;
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.innerHTML =
+          '<div class="error-box"><h2>Select a repository</h2><p>Choose an authorized repository before using CodeAtlas.</p></div>';
+      }
+      const picker = document.getElementById('repoPicker');
+      if (picker) picker.focus();
+      return false;
+    }
+
     function showLogin(show) {
       document.getElementById('loginOverlay').style.display = show ? 'grid' : 'none';
+    }
+
+    function requestedRepoIdentity() {
+      const params = new URLSearchParams(window.location.search);
+      const fromUrl = params.get('repo') || params.get('workspace');
+      if (fromUrl) return fromUrl;
+      try {
+        return (
+          localStorage.getItem('codeatlas-selected-repo') ||
+          sessionStorage.getItem('codeatlas-selected-repo') ||
+          ''
+        );
+      } catch (e) {
+        return '';
+      }
+    }
+
+    function rememberSelectedRepo(repo) {
+      try {
+        if (repo) {
+          localStorage.setItem('codeatlas-selected-repo', repo.slug);
+        } else {
+          localStorage.removeItem('codeatlas-selected-repo');
+          sessionStorage.removeItem('codeatlas-selected-repo');
+        }
+      } catch (e) {}
+
+      const nextUrl = repo
+        ? `/app?repo=${encodeURIComponent(repo.slug)}`
+        : '/app';
+      window.history.replaceState({}, '', nextUrl);
     }
 
     async function doLogin() {
@@ -705,24 +941,65 @@
     function populateRepos(repos) {
       const picker = document.getElementById('repoPicker');
       const usable = (repos || []).filter(r => r.status === 'published');
+      const requested = requestedRepoIdentity();
+      const requestedRepo = usable.find(
+        repo => repo.slug === requested || repo.workspace === requested
+      );
       picker.innerHTML = '';
       if (usable.length === 0) {
         picker.innerHTML = '<option>No repositories granted</option>';
         picker.disabled = true;
         WORKSPACE = null;
+        CONVERSATION_HISTORY = [];
+        rememberSelectedRepo(null);
         return;
       }
-      picker.disabled = false;
-      for (const r of usable) {
+
+      const scopedRepo = requestedRepo || (
+        usable.length === 1 && !requested ? usable[0] : null
+      );
+
+      if (scopedRepo) {
         const o = document.createElement('option');
-        o.value = r.workspace; o.textContent = r.name;
+        o.value = scopedRepo.workspace;
+        o.textContent = scopedRepo.name;
+        o.dataset.slug = scopedRepo.slug;
         picker.appendChild(o);
+        picker.value = scopedRepo.workspace;
+        picker.disabled = true;
+        picker.title = `Scoped to ${scopedRepo.name}`;
+        WORKSPACE = scopedRepo.workspace;
+        rememberSelectedRepo(scopedRepo);
+      } else {
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = requested
+          ? 'Repository not authorized'
+          : 'Select a repo on the home page';
+        placeholder.selected = true;
+        picker.appendChild(placeholder);
+        picker.disabled = true;
+        picker.title = 'Select a repository from the home page';
+        WORKSPACE = null;
+        rememberSelectedRepo(null);
+
+        document.getElementById('result').innerHTML = requested
+          ? '<div class="error-box"><h2>Repository unavailable</h2><p>The repository selected before login is not authorized for this account. Return to the home page and select a repository available to this account.</p></div>'
+          : '<div class="error-box"><h2>Select a repository</h2><p>Return to the home page, select the repository you want to use, then open the Ask UI.</p></div>';
       }
-      WORKSPACE = usable[0].workspace;
+      CONVERSATION_HISTORY = [];
     }
 
     function onRepoChange() {
-      WORKSPACE = document.getElementById('repoPicker').value;
+      const picker = document.getElementById('repoPicker');
+      WORKSPACE = picker.value || null;
+      CONVERSATION_HISTORY = [];
+      const selectedOption = picker.selectedOptions[0];
+      const selectedRepo = WORKSPACE ? {
+        slug: selectedOption.dataset.slug || WORKSPACE,
+        workspace: WORKSPACE,
+      } : null;
+      rememberSelectedRepo(selectedRepo);
       document.getElementById('summary').innerHTML = '';
       document.getElementById('searchResults').innerHTML = '';
       document.getElementById('result').innerHTML =
@@ -749,6 +1026,7 @@
     async function logout() {
       try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
       WORKSPACE = null;
+      CONVERSATION_HISTORY = [];
       window.location.href = '/';   // back to the landing page
     }
 
@@ -838,8 +1116,87 @@
         .replace(/__/g, '');
     }
 
+    function renderInlineAnswer(value) {
+      return escapeHtml(value).replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    }
+
+    function tableCells(line) {
+      let value = String(line ?? '').trim();
+      if (value.startsWith('|')) value = value.slice(1);
+      if (value.endsWith('|')) value = value.slice(0, -1);
+      return value.split('|').map(cell => cell.trim());
+    }
+
+    function isTableSeparator(line) {
+      const cells = tableCells(line);
+      return cells.length > 1 && cells.every(cell =>
+        /^:?-{3,}:?$/.test(cell.replace(/\s/g, ''))
+      );
+    }
+
     function renderAnswer(value) {
-      return escapeHtml(cleanAnswerText(value));
+      const lines = cleanAnswerText(value).replace(/\r\n?/g, '\n').split('\n');
+      const rendered = [];
+      let textLines = [];
+
+      const flushText = () => {
+        if (!textLines.length) return;
+        rendered.push(`<div class="answer-text">${renderInlineAnswer(textLines.join('\n'))}</div>`);
+        textLines = [];
+      };
+
+      for (let index = 0; index < lines.length;) {
+        const line = lines[index];
+
+        if (line.trim().startsWith('```')) {
+          flushText();
+          const codeLines = [];
+          index += 1;
+          while (index < lines.length && !lines[index].trim().startsWith('```')) {
+            codeLines.push(lines[index]);
+            index += 1;
+          }
+          if (index < lines.length) index += 1;
+          rendered.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+          continue;
+        }
+
+        if (
+          index + 1 < lines.length &&
+          line.includes('|') &&
+          isTableSeparator(lines[index + 1])
+        ) {
+          flushText();
+          const headers = tableCells(line);
+          const rows = [];
+          index += 2;
+
+          while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+            rows.push(tableCells(lines[index]));
+            index += 1;
+          }
+
+          rendered.push(`
+            <div class="answer-table-wrap">
+              <table>
+                <thead><tr>${headers.map(cell => `<th>${renderInlineAnswer(cell)}</th>`).join('')}</tr></thead>
+                <tbody>
+                  ${rows.map(row => `
+                    <tr>${headers.map((_, cellIndex) => `<td>${renderInlineAnswer(row[cellIndex] || '')}</td>`).join('')}</tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `);
+          continue;
+        }
+
+        textLines.push(line);
+        index += 1;
+      }
+
+      flushText();
+      return rendered.join('');
     }
 
     function nodeChip(item) {
@@ -849,6 +1206,7 @@
     }
 
     async function loadNode(encodedNodeId) {
+      if (!requireWorkspace()) return;
       const res = await fetch(wsUrl(`/repo/nodes/${encodedNodeId}`));
       if (handle401(res)) return;
       const data = await res.json();
@@ -902,6 +1260,7 @@
     });
 
     async function loadSummary() {
+      if (!requireWorkspace('summary')) return;
       const res = await fetch(wsUrl('/repo/summary'));
       if (handle401(res)) return;
       const data = await res.json();
@@ -925,6 +1284,7 @@
     }
 
     async function loadFlow(topic) {
+      if (!requireWorkspace()) return;
       const res = await fetch(wsUrl(`/repo/flows/${topic}`));
       if (handle401(res)) return;
       const data = await res.json();
@@ -969,6 +1329,7 @@
       const q = document.getElementById('search').value.trim();
       const target = document.getElementById('searchResults');
       if (!q) { target.innerHTML = ''; return; }
+      if (!requireWorkspace('searchResults')) return;
 
       target.innerHTML = `<div class="step" style="margin-top:14px;"><span class="spinner"></span> Searching graph…</div>`;
 
@@ -1006,10 +1367,71 @@
     }
 
 
-    async function ask() {
-      const question = document.getElementById('question').value.trim();
-      if (!question) return;
+    function followUpComposer() {
+      return `
+        <div class="follow-up-panel">
+          <label class="follow-up-label" for="followUpQuestion">Ask a follow-up question</label>
+          <div class="follow-up-box">
+            <input
+              id="followUpQuestion"
+              placeholder="Ask about this answer, or enter a different question…"
+              autocomplete="off"
+            />
+            <button type="button" class="btn-primary" onclick="askFollowUp()">Ask follow-up</button>
+          </div>
+          <p class="follow-up-hint">Related questions use the recent answer as context; unrelated questions are handled independently.</p>
+        </div>
+      `;
+    }
 
+    function bindFollowUpInput() {
+      const input = document.getElementById('followUpQuestion');
+      if (!input) return;
+      input.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          askFollowUp();
+        }
+      });
+    }
+
+    function contextualFollowUp(question) {
+      if (!CONVERSATION_HISTORY.length) return question;
+      const context = CONVERSATION_HISTORY.slice(-2).map((exchange, index) => `
+Exchange ${index + 1}
+Question: ${exchange.question.slice(0, 1200)}
+Answer: ${exchange.answer.slice(0, 5000)}
+      `.trim()).join('\n\n');
+
+      return `
+Recent conversation context:
+${context}
+
+Current user message:
+${question}
+
+If the current message refers to the recent exchange, use that context and investigate the repository further as needed. If it is a new or unrelated question, answer it independently. Always verify code claims with repository tools and current source evidence.
+      `.trim();
+    }
+
+    async function ask() {
+      const input = document.getElementById('question');
+      const question = input.value.trim();
+      if (!question) return;
+      if (!requireWorkspace()) return;
+      CONVERSATION_HISTORY = [];
+      await submitQuestion(question, question);
+    }
+
+    async function askFollowUp() {
+      const input = document.getElementById('followUpQuestion');
+      const question = input ? input.value.trim() : '';
+      if (!question) return;
+      if (!requireWorkspace()) return;
+      await submitQuestion(contextualFollowUp(question), question);
+    }
+
+    async function submitQuestion(requestQuestion, userQuestion) {
       const result = document.getElementById('result');
       result.innerHTML = `
         <h2>Thinking…</h2>
@@ -1025,7 +1447,7 @@
         const res = await fetch(wsUrl('/repo/ask-llm'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, llm_mode: LLM_MODE })
+          body: JSON.stringify({ question: requestQuestion, llm_mode: LLM_MODE })
         });
 
         if (handle401(res)) return;
@@ -1092,12 +1514,19 @@
         const retrievalLabel = data.retrieval_mode === 'agentic'
           ? `agentic retrieval · ${data.agent_tool_calls || agentTrace.length} tool calls`
           : 'one-shot retrieval fallback';
+        CONVERSATION_HISTORY.push({
+          question: userQuestion,
+          answer: String(data.answer || ''),
+        });
+        CONVERSATION_HISTORY = CONVERSATION_HISTORY.slice(-3);
         result.innerHTML = `
+          ${followUpComposer()}
           <h2>CodeAtlas Answer</h2>
           <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
+        bindFollowUpInput();
       } catch (error) {
         result.innerHTML = `
           <div class="error-box">
