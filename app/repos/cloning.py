@@ -63,6 +63,13 @@ def clone_repo(source_url: str, method: str, workspace: str):
     return dest
 
 
+def remove_repo_clone(workspace: str):
+    """Remove only a repository working copy while preserving its graph/config."""
+    target = repo_clone_dir(workspace)
+    shutil.rmtree(target, ignore_errors=True)
+    return target
+
+
 def remove_workspace(workspace: str):
     """Delete a workspace's entire directory (clone + graph + config) from disk.
     Used by the admin "delete repository" flow; safe if the dir is missing."""

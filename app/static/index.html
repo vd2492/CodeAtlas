@@ -713,6 +713,21 @@
       border: 1px solid var(--border-strong); background: var(--input-bg);
       color: var(--text); font-size: 14px; outline: none;
     }
+    .login-password { position: relative; }
+    .login-card .login-password input { padding-right: 68px; }
+    .login-password-toggle {
+      position: absolute; top: 50%; right: 7px; transform: translateY(-50%);
+      padding: 5px 8px; border: 0; border-radius: 7px;
+      color: var(--muted); background: transparent; font-size: 12px;
+      box-shadow: none;
+    }
+    .login-password-toggle:hover {
+      color: var(--text); background: rgba(148, 163, 184, 0.12);
+      border: 0; transform: translateY(-50%);
+    }
+    .login-password-toggle:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 1px;
+    }
     .login-card .btn-primary { width: 100%; margin-top: 18px; justify-content: center; }
     .login-err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 16px; }
     .repo-picker {
@@ -763,10 +778,15 @@
     <div class="login-card">
       <h2>Sign in to CodeAtlas</h2>
       <p>Ask grounded questions about repositories you've been granted.</p>
-      <label>Username</label>
+      <label for="loginUser">Username</label>
       <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()" />
-      <label>Password</label>
-      <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+      <label for="loginPass">Password</label>
+      <div class="login-password">
+        <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+        <button id="loginPasswordToggle" class="login-password-toggle" type="button"
+          aria-controls="loginPass" aria-pressed="false" aria-label="Show password"
+          onclick="toggleLoginPassword()">Show</button>
+      </div>
       <div id="loginErr" class="login-err"></div>
       <button class="btn-primary" onclick="doLogin()">Sign in</button>
     </div>
@@ -898,6 +918,18 @@
     let PERSONAL_KEY_CONFIGURED = false;
     let CONVERSATION_HISTORY = [];
 
+    function formatLocalTimestamp(value, fallback) {
+      if (!value) return fallback;
+      const raw = String(value).trim();
+      const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+      const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+      const date = new Date(hasTimezone ? normalized : `${normalized}Z`);
+      if (Number.isNaN(date.getTime())) return raw;
+      const pad = part => String(part).padStart(2, '0');
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+        + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    }
+
     function wsUrl(path) {
       const sep = path.includes('?') ? '&' : '?';
       if (!WORKSPACE) return path;
@@ -920,7 +952,23 @@
     }
 
     function showLogin(show) {
+      if (show) setLoginPasswordVisibility(false);
       document.getElementById('loginOverlay').style.display = show ? 'grid' : 'none';
+    }
+
+    function setLoginPasswordVisibility(visible) {
+      const password = document.getElementById('loginPass');
+      const toggle = document.getElementById('loginPasswordToggle');
+      password.type = visible ? 'text' : 'password';
+      toggle.textContent = visible ? 'Hide' : 'Show';
+      toggle.setAttribute('aria-pressed', String(visible));
+      toggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+    }
+
+    function toggleLoginPassword() {
+      setLoginPasswordVisibility(
+        document.getElementById('loginPass').type === 'password'
+      );
     }
 
     function requestedRepoIdentity() {
@@ -1027,7 +1075,7 @@
       document.getElementById('branchStatusTitle').textContent =
         `${branch.name} · ${commit} · ${freshnessLabel(branch)}`;
       document.getElementById('branchStatusDetail').textContent =
-        `Indexed: ${branch.indexed_at || 'never'} · Remote checked: ${branch.last_checked_at || 'never'}`
+        `Indexed: ${formatLocalTimestamp(branch.indexed_at, 'never')} · Remote checked: ${formatLocalTimestamp(branch.last_checked_at, 'never')}`
         + (branch.last_error ? ` · ${branch.last_error}` : '');
       const button = document.getElementById('syncBranchBtn');
       button.disabled = !branch.can_sync || branch.job_running;
@@ -1700,7 +1748,7 @@ If the current message refers to the recent exchange, use that context and inves
           : 'one-shot retrieval fallback';
         const version = data.repository_version || null;
         const versionLabel = version
-          ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${version.indexed_at || 'unknown'} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${version.last_checked_at}` : ''}`
+          ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
           : '';
         CONVERSATION_HISTORY.push({
           question: userQuestion,

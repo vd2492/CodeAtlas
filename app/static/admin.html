@@ -94,6 +94,7 @@
     .msg { padding: 9px 12px; border-radius: 8px; margin: 10px 0; font-size: 13px; display:none; }
     .msg.err { background: rgba(255,80,80,.12); color: #ff9a9a; display:block; }
     .msg.ok { background: rgba(62,207,142,.12); color: var(--ok); display:block; }
+    .user-edit-error { min-height:18px; color:#ff9a9a; font-size:12px; }
     .hidden { display: none; }
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .mono, code { font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
@@ -103,6 +104,9 @@
     .branch-settings label { display:flex; align-items:center; gap:6px; margin:0; white-space:nowrap; }
     .branch-settings input[type="checkbox"] { width:auto; }
     .branch-settings input[type="number"] { width:82px; padding:5px 7px; }
+    .branch-picker { display:grid; gap:6px; }
+    .branch-picker label { margin-bottom:-2px; }
+    .branch-filter-meta { margin-left:7px; color:var(--muted); font-size:11px; font-weight:400; }
     #branchPanel { overflow-x:auto; }
     #branchTable { min-width:850px; }
     @media (max-width: 720px){ .grid2 { grid-template-columns: 1fr; } }
@@ -139,6 +143,44 @@
         <button id="modalOk">OK</button>
       </div>
     </div>
+  </div>
+
+  <div id="userEditModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
+    <form id="userEditForm" class="panel" style="width:400px;max-width:92vw;margin:0;">
+      <h2 style="margin:0 0 8px;color:var(--fg);">Edit user credentials</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, password, or both.</p>
+      <label for="editUsername">Username</label>
+      <input id="editUsername" autocomplete="off" />
+      <label for="editPassword">New password</label>
+      <input id="editPassword" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current password" />
+      <div id="userEditError" class="user-edit-error" style="margin-top:8px;"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+        <button type="button" class="ghost" id="userEditCancel">Cancel</button>
+        <button type="submit" id="userEditSave">Save changes</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="recloneModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
+    <form id="recloneForm" class="panel" style="width:440px;max-width:92vw;margin:0;">
+      <h2 style="margin:0 0 8px;color:var(--fg);">Restore repository clone</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 10px;">
+        Reclone the missing working copy. The current graph and published access remain available.
+      </p>
+      <label for="recloneSourceUrl">Source URL</label>
+      <input id="recloneSourceUrl" placeholder="https://github.com/org/repo.git or owner/repo" autocomplete="off" />
+      <label for="recloneMethod">Clone method</label>
+      <select id="recloneMethod">
+        <option value="https">https</option>
+        <option value="ssh">ssh</option>
+        <option value="gh">gh (GitHub CLI)</option>
+      </select>
+      <div id="recloneError" class="user-edit-error" style="margin-top:8px;"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+        <button type="button" class="ghost" id="recloneCancel">Cancel</button>
+        <button type="submit" id="recloneSave">Reclone</button>
+      </div>
+    </form>
   </div>
 
   <!-- AUTH GATE -->
@@ -183,9 +225,15 @@
         Approve remote branches before users can select them. Each successful index is activated atomically.
       </p>
       <div class="row" style="align-items:end;margin-bottom:12px;">
-        <div><label>Available remote branch</label><select id="remoteBranch"></select></div>
+        <div class="branch-picker">
+          <label for="remoteBranchFilter">Available remote branch<span id="remoteBranchMatches" class="branch-filter-meta" aria-live="polite"></span></label>
+          <input id="remoteBranchFilter" type="search" placeholder="Fetch branches to search" autocomplete="off" spellcheck="false" disabled />
+          <select id="remoteBranch" aria-label="Filtered remote branches" disabled>
+            <option value="">Fetch branches to load options</option>
+          </select>
+        </div>
         <div style="flex:0 0 auto"><button id="discoverBranches" class="ghost">Fetch branches</button></div>
-        <div style="flex:0 0 auto"><button id="approveBranch">Approve &amp; index</button></div>
+        <div style="flex:0 0 auto"><button id="approveBranch" disabled>Approve &amp; index</button></div>
       </div>
       <table id="branchTable"><thead>
         <tr><th>Branch</th><th>Indexed version</th><th>Freshness</th><th>Settings</th><th>Actions</th></tr>
@@ -229,9 +277,9 @@
     <h2>Test retrieval &amp; answers</h2>
     <div class="panel">
       <div class="row">
-        <div><label>Repository</label><select id="testRepo"></select></div>
+        <div><label>Repository</label><select id="testRepo"><option value="" selected disabled>Select repository</option></select></div>
         <div style="flex:3"><label>Question</label><input id="testQ" placeholder="How does X work?"/></div>
-        <div style="flex:0 0 auto"><button id="testBtn">Ask</button></div>
+        <div style="flex:0 0 auto"><button id="testBtn" disabled>Ask</button></div>
       </div>
       <div id="testOut" class="hidden">
         <p class="muted" style="font-size:12px">Provider: <span id="testProvider"></span></p>
@@ -243,9 +291,9 @@
     <h2>Retrieval config (per repo)</h2>
     <div class="panel">
       <div class="row">
-        <div><label>Repository</label><select id="cfgRepo"></select></div>
-        <div style="flex:0 0 auto"><button id="cfgLoad" class="ghost">Load</button></div>
-        <div style="flex:0 0 auto"><button id="cfgSave">Save</button></div>
+        <div><label>Repository</label><select id="cfgRepo"><option value="" selected disabled>Select repository</option></select></div>
+        <div style="flex:0 0 auto"><button id="cfgLoad" class="ghost" disabled>Load</button></div>
+        <div style="flex:0 0 auto"><button id="cfgSave" disabled>Save</button></div>
       </div>
       <p class="muted" style="font-size:12px">Safe, data-only knobs (stopwords, synonyms, boosts, limits…). Persisted and applied per workspace.</p>
       <textarea id="cfgText" spellcheck="false"></textarea>
@@ -268,6 +316,19 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let REPOS = [];
+let CURRENT_USER = null;
+
+function formatLocalTimestamp(value, fallback = "") {
+  if (!value) return fallback;
+  const raw = String(value).trim();
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const date = new Date(hasTimezone ? normalized : `${normalized}Z`);
+  if (Number.isNaN(date.getTime())) return raw;
+  const pad = part => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 
 function toggleTheme() {
   const isLight = document.documentElement.getAttribute("data-theme") === "light";
@@ -357,6 +418,7 @@ function showAuth(bootstrapped) {
 }
 
 async function showConsole(me) {
+  CURRENT_USER = me.user;
   $("authPanel").classList.add("hidden");
   $("console").classList.remove("hidden");
   $("whoami").textContent = me.user.username + " · admin";
@@ -364,6 +426,13 @@ async function showConsole(me) {
   await refreshRepos();
   await refreshUsers();
   await refreshAudit();
+}
+
+function updateRepoToolActions() {
+  $("testBtn").disabled = !$("testRepo").value;
+  const configSelected = Boolean($("cfgRepo").value);
+  $("cfgLoad").disabled = !configSelected;
+  $("cfgSave").disabled = !configSelected;
 }
 
 async function refreshRepos() {
@@ -396,6 +465,7 @@ async function refreshRepos() {
     if (r.status === "cloned") act.appendChild(btn("Index", () => doIndex(r.slug)));
     if (r.status === "indexed") act.appendChild(btn("Publish", () => doPublish(r.slug)));
     act.appendChild(btn("Edit", () => doEditRepo(r), true));
+    if (!r.clone_available) act.appendChild(btn("Reclone", () => openRecloneRepo(r), true));
     act.appendChild(btn("Branches", () => showBranches(r.slug), true));
     act.appendChild(btn("Grant", () => doGrant(r.slug), true));
     act.appendChild(btn("Members", () => showMembers(r.slug), true));
@@ -403,13 +473,23 @@ async function refreshRepos() {
     tbody.appendChild(tr);
   }
   for (const sel of [$("testRepo"), $("cfgRepo")]) {
+    const previous = sel.value;
     sel.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select repository";
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    sel.appendChild(placeholder);
     for (const r of repos) {
       const o = document.createElement("option");
       o.value = r.slug; o.textContent = `${r.name} (${r.status})`;
       sel.appendChild(o);
     }
+    if (repos.some(repo => repo.slug === previous)) sel.value = previous;
+    else if (sel.id === "cfgRepo") $("cfgText").value = "";
   }
+  updateRepoToolActions();
 }
 
 async function refreshUsers() {
@@ -421,11 +501,82 @@ async function refreshUsers() {
       const row = document.createElement("div");
       row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);";
       row.innerHTML = `<span style="flex:1">${esc(u.username)} <span class="muted">· ${u.role}</span></span>`;
+      row.appendChild(btn("Edit", () => openUserEdit(u), true));
       row.appendChild(btn("Delete", () => doDeleteUser(u.username), true));
       el.appendChild(row);
     }
   } catch (e) {}
 }
+
+let editingUser = null;
+
+function openUserEdit(user) {
+  editingUser = user;
+  $("editUsername").value = user.username;
+  $("editPassword").value = "";
+  $("userEditError").textContent = "";
+  $("userEditModal").style.display = "grid";
+  setTimeout(() => {
+    $("editUsername").focus();
+    $("editUsername").select();
+  }, 30);
+}
+
+function closeUserEdit() {
+  $("userEditModal").style.display = "none";
+  editingUser = null;
+}
+
+$("userEditCancel").onclick = closeUserEdit;
+$("userEditForm").onsubmit = async event => {
+  event.preventDefault();
+  if (!editingUser) return;
+  const username = $("editUsername").value.trim();
+  const password = $("editPassword").value;
+  const error = $("userEditError");
+  error.textContent = "";
+  if (!username) {
+    error.textContent = "Username is required.";
+    return;
+  }
+
+  const body = {};
+  if (username !== editingUser.username) body.username = username;
+  if (password) body.password = password;
+  if (!Object.keys(body).length) {
+    error.textContent = "Change the username or enter a new password.";
+    return;
+  }
+
+  $("userEditSave").disabled = true;
+  try {
+    const { user } = await api(`/auth/admin/users/${editingUser.id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+    if (CURRENT_USER && CURRENT_USER.id === user.id) {
+      CURRENT_USER = user;
+      $("whoami").textContent = `${user.username} · admin`;
+    }
+    closeUserEdit();
+    flash(`Updated credentials for ${user.username}`, true);
+    refreshUsers();
+    refreshAudit();
+  } catch (e) {
+    error.textContent = e.message;
+  } finally {
+    $("userEditSave").disabled = false;
+  }
+};
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && $("userEditModal").style.display === "grid") {
+    closeUserEdit();
+  }
+  if (event.key === "Escape" && $("recloneModal").style.display === "grid") {
+    closeRecloneRepo();
+  }
+});
 
 async function doDeleteUser(username) {
   if (!(await modalConfirm("Delete user", `Delete user "${username}"? Their sessions and grants are removed.`))) return;
@@ -455,6 +606,67 @@ async function doEditRepo(r) {
   } catch (e) { flash(e.message); }
 }
 
+let recloneRepoTarget = null;
+
+function openRecloneRepo(repo) {
+  recloneRepoTarget = repo;
+  $("recloneSourceUrl").value = repo.source_url || "";
+  $("recloneMethod").value = ["https", "ssh", "gh"].includes(repo.clone_method)
+    ? repo.clone_method
+    : "https";
+  $("recloneError").textContent = "";
+  $("recloneModal").style.display = "grid";
+  setTimeout(() => $("recloneSourceUrl").focus(), 30);
+}
+
+function closeRecloneRepo() {
+  $("recloneModal").style.display = "none";
+  recloneRepoTarget = null;
+}
+
+$("recloneCancel").onclick = closeRecloneRepo;
+$("recloneForm").onsubmit = async event => {
+  event.preventDefault();
+  if (!recloneRepoTarget) return;
+  const repo = recloneRepoTarget;
+  const sourceUrl = $("recloneSourceUrl").value.trim();
+  const cloneMethod = $("recloneMethod").value;
+  const error = $("recloneError");
+  error.textContent = "";
+  if (!sourceUrl) {
+    error.textContent = "Source URL is required.";
+    return;
+  }
+
+  $("recloneSave").disabled = true;
+  $("recloneSave").textContent = "Cloning…";
+  try {
+    await api(`/admin/repos/${repo.slug}/reclone`, {
+      method: "POST",
+      body: JSON.stringify({
+        source_url: sourceUrl,
+        clone_method: cloneMethod,
+      }),
+    });
+    closeRecloneRepo();
+    flash(`Restored clone for ${repo.slug}`, true);
+    await refreshRepos();
+    if (curBranchesSlug === repo.slug) {
+      remoteBranchCandidates = [];
+      remoteBranchesLoaded = false;
+      $("remoteBranchFilter").value = "";
+      renderRemoteBranchOptions();
+      await refreshBranchRows();
+    }
+    refreshAudit();
+  } catch (e) {
+    error.textContent = e.message;
+  } finally {
+    $("recloneSave").disabled = false;
+    $("recloneSave").textContent = "Reclone";
+  }
+};
+
 async function doIndex(slug) {
   flash("Indexing " + slug + "…", true);
   try { await api(`/admin/repos/${slug}/index`, { method: "POST" }); flash("Indexed " + slug, true); refreshRepos(); }
@@ -483,7 +695,7 @@ async function showMembers(slug) {
     $("memberEmpty").textContent = members.length ? "" : "No users granted yet (admins always have access).";
     for (const m of members) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${esc(m.username)}</td><td class="muted">${m.role}</td><td class="muted">${esc(m.granted_at||"")}</td><td></td>`;
+      tr.innerHTML = `<td>${esc(m.username)}</td><td class="muted">${m.role}</td><td class="muted">${esc(formatLocalTimestamp(m.granted_at))}</td><td></td>`;
       tr.querySelector("td:last-child").appendChild(btn("Revoke", () => doRevoke(slug, m.username), true));
       tbody.appendChild(tr);
     }
@@ -497,6 +709,9 @@ async function doRevoke(slug, username) {
 
 let curBranchesSlug = null;
 let branchPollTimer = null;
+let remoteBranchCandidates = [];
+let remoteBranchesLoaded = false;
+let approvingRemoteBranch = false;
 
 function stopBranchPolling() {
   if (branchPollTimer) clearTimeout(branchPollTimer);
@@ -532,7 +747,14 @@ function branchFreshnessLabel(branch) {
 
 async function showBranches(slug) {
   stopBranchPolling();
+  const repositoryChanged = curBranchesSlug !== slug;
   curBranchesSlug = slug;
+  if (repositoryChanged) {
+    remoteBranchCandidates = [];
+    remoteBranchesLoaded = false;
+    $("remoteBranchFilter").value = "";
+    renderRemoteBranchOptions();
+  }
   $("branchRepo").textContent = slug;
   $("branchPanel").classList.remove("hidden");
   await refreshBranchRows();
@@ -553,9 +775,9 @@ async function refreshBranchRows() {
       const shortRemote = branch.remote_commit_sha ? branch.remote_commit_sha.slice(0, 12) : "unknown";
       tr.innerHTML = `
         <td><strong>${esc(branch.name)}</strong>${branch.is_legacy ? ' <span class="pill">default</span>' : ""}</td>
-        <td><span class="mono">${esc(shortIndexed)}</span><div class="branch-detail">Indexed: ${esc(branch.indexed_at || "never")}</div></td>
+        <td><span class="mono">${esc(shortIndexed)}</span><div class="branch-detail">Indexed: ${esc(formatLocalTimestamp(branch.indexed_at, "never"))}</div></td>
         <td><span class="pill ${branch.freshness_status === "up_to_date" ? "published" : "cloned"}">${esc(branchFreshnessLabel(branch))}</span>
-          <div class="branch-detail">Remote: <span class="mono">${esc(shortRemote)}</span><br>Checked: ${esc(branch.last_checked_at || "never")}${branch.last_error ? `<br>${esc(branch.last_error)}` : ""}</div></td>
+          <div class="branch-detail">Remote: <span class="mono">${esc(shortRemote)}</span><br>Checked: ${esc(formatLocalTimestamp(branch.last_checked_at, "never"))}${branch.last_error ? `<br>${esc(branch.last_error)}` : ""}</div></td>
         <td class="branch-settings-cell"></td>
         <td class="actions branch-actions"></td>`;
 
@@ -602,25 +824,58 @@ async function refreshBranchRows() {
   } catch (e) { flash(e.message); }
 }
 
+function renderRemoteBranchOptions() {
+  const filter = $("remoteBranchFilter");
+  const select = $("remoteBranch");
+  const query = filter.value.trim().toLowerCase();
+  const matches = remoteBranchCandidates.filter(branch =>
+    branch.name.toLowerCase().includes(query)
+    || String(branch.commit_sha || "").toLowerCase().includes(query)
+  );
+
+  select.innerHTML = "";
+  for (const branch of matches) {
+    const option = document.createElement("option");
+    option.value = branch.name;
+    option.textContent = `${branch.name} · ${branch.commit_sha.slice(0, 12)}`;
+    select.appendChild(option);
+  }
+
+  if (!matches.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = !remoteBranchesLoaded
+      ? "Fetch branches to load options"
+      : remoteBranchCandidates.length
+        ? "No matching remote branches"
+        : "All remote branches are approved";
+    select.appendChild(option);
+  }
+
+  const canSearch = remoteBranchesLoaded && remoteBranchCandidates.length > 0;
+  filter.disabled = !canSearch;
+  filter.placeholder = canSearch
+    ? "Type a branch name or commit SHA"
+    : remoteBranchesLoaded
+      ? "All remote branches are approved"
+      : "Fetch branches to search";
+  select.disabled = !matches.length;
+  $("approveBranch").disabled = approvingRemoteBranch || !matches.length;
+  $("remoteBranchMatches").textContent = canSearch
+    ? `${matches.length} of ${remoteBranchCandidates.length} branches`
+    : "";
+}
+
 async function discoverBranches() {
   if (!curBranchesSlug) return;
   $("discoverBranches").disabled = true;
   try {
     const { branches } = await api(`/admin/repos/${curBranchesSlug}/branches/discover`, { method: "POST" });
-    const select = $("remoteBranch");
-    select.innerHTML = "";
-    for (const branch of branches.filter(item => !item.approved)) {
-      const option = document.createElement("option");
-      option.value = branch.name;
-      option.textContent = `${branch.name} · ${branch.commit_sha.slice(0, 12)}`;
-      select.appendChild(option);
-    }
-    if (!select.options.length) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "All remote branches are approved";
-      select.appendChild(option);
-    }
+    remoteBranchCandidates = branches.filter(item => !item.approved);
+    remoteBranchesLoaded = true;
+    $("remoteBranchFilter").value = "";
+    renderRemoteBranchOptions();
+    if (remoteBranchCandidates.length) $("remoteBranchFilter").focus();
     flash(`Found ${branches.length} remote branches`, true);
   } catch (e) { flash(e.message); }
   finally { $("discoverBranches").disabled = false; }
@@ -628,7 +883,8 @@ async function discoverBranches() {
 
 async function approveSelectedBranch() {
   const name = $("remoteBranch").value;
-  if (!curBranchesSlug || !name) return;
+  if (!curBranchesSlug || !name || approvingRemoteBranch) return;
+  approvingRemoteBranch = true;
   $("approveBranch").disabled = true;
   try {
     await api(`/admin/repos/${curBranchesSlug}/branches`, {
@@ -639,7 +895,10 @@ async function approveSelectedBranch() {
     await discoverBranches();
     await refreshBranchRows();
   } catch (e) { flash(e.message); }
-  finally { $("approveBranch").disabled = false; }
+  finally {
+    approvingRemoteBranch = false;
+    $("approveBranch").disabled = !$("remoteBranch").value;
+  }
 }
 
 async function syncBranch(branchId) {
@@ -661,6 +920,17 @@ async function removeBranch(branch) {
 
 $("discoverBranches").onclick = discoverBranches;
 $("approveBranch").onclick = approveSelectedBranch;
+$("remoteBranchFilter").oninput = renderRemoteBranchOptions;
+$("remoteBranchFilter").onkeydown = event => {
+  if (event.key === "Enter" && $("remoteBranch").value) {
+    event.preventDefault();
+    approveSelectedBranch();
+  }
+  if (event.key === "Escape" && event.currentTarget.value) {
+    event.currentTarget.value = "";
+    renderRemoteBranchOptions();
+  }
+};
 
 async function doPrivacy(slug, allow) {
   try { await api(`/admin/repos/${slug}/privacy`, { method: "PATCH", body: JSON.stringify({ allow_shared_fallback: allow }) });
@@ -681,7 +951,7 @@ async function refreshAudit() {
     tbody.innerHTML = "";
     for (const a of audit) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="muted" style="white-space:nowrap">${esc(a.created_at||"")}</td>`
+      tr.innerHTML = `<td class="muted" style="white-space:nowrap">${esc(formatLocalTimestamp(a.created_at))}</td>`
         + `<td>${esc(a.actor_username||"—")}</td><td>${esc(a.action)}</td>`
         + `<td class="muted">${esc(a.target||"")}</td><td class="muted">${esc(a.detail||"")}</td>`;
       tbody.appendChild(tr);
@@ -711,6 +981,7 @@ $("addUserBtn").onclick = async () => {
 
 $("testBtn").onclick = async () => {
   const slug = $("testRepo").value, question = $("testQ").value;
+  if (!slug) return flash("Select a repository.");
   if (!question) return;
   $("testBtn").disabled = true; $("testOut").classList.add("hidden");
   flash("Asking…", true);
@@ -721,20 +992,28 @@ $("testBtn").onclick = async () => {
     $("testOut").classList.remove("hidden");
     flash("Done", true);
   } catch (e) { flash(e.message); }
-  finally { $("testBtn").disabled = false; }
+  finally { updateRepoToolActions(); }
 };
 
 $("cfgLoad").onclick = async () => {
   const slug = $("cfgRepo").value;
+  if (!slug) return flash("Select a repository.");
   try { const { config } = await api(`/admin/repos/${slug}/config`); $("cfgText").value = JSON.stringify(config, null, 2); }
   catch (e) { flash(e.message); }
 };
 $("cfgSave").onclick = async () => {
   const slug = $("cfgRepo").value;
+  if (!slug) return flash("Select a repository.");
   let parsed;
   try { parsed = JSON.parse($("cfgText").value); } catch (e) { return flash("Invalid JSON: " + e.message); }
   try { await api(`/admin/repos/${slug}/config`, { method: "PUT", body: JSON.stringify(parsed) }); flash("Config saved", true); }
   catch (e) { flash(e.message); }
+};
+
+$("testRepo").onchange = updateRepoToolActions;
+$("cfgRepo").onchange = () => {
+  $("cfgText").value = "";
+  updateRepoToolActions();
 };
 
 boot().catch(e => flash(e.message));

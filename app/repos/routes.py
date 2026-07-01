@@ -14,18 +14,19 @@ from pydantic import BaseModel
 
 from .. import db
 from ..auth.sessions import require_admin
-from ..config import DEFAULT_WORKSPACE
+from ..config import DEFAULT_WORKSPACE, repo_clone_dir
 from ..retrieval.config_schema import (
     RetrievalConfig,
     load_retrieval_config,
     save_retrieval_config,
 )
-from .cloning import clone_repo, remove_workspace, sanitize_clone_url
+from .cloning import clone_repo, remove_repo_clone, remove_workspace, sanitize_clone_url
 from .branches import (
     copy_config_to_active_branch_workspaces,
     ensure_repo_branch,
     record_legacy_index,
     remove_repo_branch_workspaces,
+    restore_branches_after_reclone,
 )
 from .indexing import index_repo
 
@@ -54,6 +55,11 @@ class UpdateRepoRequest(BaseModel):
     source_url: Optional[str] = None
 
 
+class RecloneRepoRequest(BaseModel):
+    source_url: Optional[str] = None
+    clone_method: Optional[str] = None
+
+
 class TestRequest(BaseModel):
     question: str
 
@@ -65,9 +71,17 @@ def _require_repo(slug: str) -> dict:
     return repo
 
 
+def _repo_with_clone_state(repo: dict) -> dict:
+    clone = repo_clone_dir(repo["workspace"])
+    return {
+        **repo,
+        "clone_available": clone.is_dir() and (clone / ".git").exists(),
+    }
+
+
 @router.get("")
 def list_repos(admin: dict = Depends(require_admin)):
-    return {"repos": db.list_repos()}
+    return {"repos": [_repo_with_clone_state(repo) for repo in db.list_repos()]}
 
 
 @router.post("")
@@ -97,6 +111,58 @@ def add_repo(req: AddRepoRequest, admin: dict = Depends(require_admin)):
     ensure_repo_branch(db.get_repo_by_slug(req.slug))
     db.record_audit(admin["username"], "add_repo", req.slug, stored_source_url)
     return {"repo": db.get_repo_by_slug(req.slug)}
+
+
+@router.post("/{slug}/reclone")
+def reclone_repo(
+    slug: str,
+    req: RecloneRepoRequest,
+    admin: dict = Depends(require_admin),
+):
+    """Restore a missing working copy without replacing the current graph."""
+    repo = _require_repo(slug)
+    clone_path = repo_clone_dir(repo["workspace"])
+    if clone_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="Repository clone path already exists; refusing to overwrite it.",
+        )
+
+    source_url = (
+        (req.source_url or "").strip()
+        or (repo.get("source_url") or "").strip()
+    )
+    clone_method = (
+        (req.clone_method or "").strip()
+        or (repo.get("clone_method") or "").strip()
+    )
+    if not source_url:
+        raise HTTPException(status_code=400, detail="source_url is required.")
+    if clone_method not in ("https", "ssh", "gh"):
+        raise HTTPException(
+            status_code=400,
+            detail="clone_method must be https, ssh, or gh.",
+        )
+
+    try:
+        clone_repo(source_url, clone_method, repo["workspace"])
+        stored_source_url = sanitize_clone_url(source_url)
+        db.update_repo(
+            slug,
+            source_url=stored_source_url,
+            clone_method=clone_method,
+        )
+        if repo["status"] == "new":
+            db.set_repo_status(slug, "cloned")
+        restored = db.get_repo_by_slug(slug)
+        ensure_repo_branch(restored)
+        restore_branches_after_reclone(restored)
+    except Exception as exc:
+        remove_repo_clone(repo["workspace"])
+        raise HTTPException(status_code=400, detail=f"Reclone failed: {exc}")
+
+    db.record_audit(admin["username"], "reclone_repo", slug, stored_source_url)
+    return {"repo": _repo_with_clone_state(db.get_repo_by_slug(slug))}
 
 
 @router.post("/{slug}/index")
