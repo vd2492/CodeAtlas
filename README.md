@@ -106,9 +106,11 @@ ask away.
 - **Frontend:** vanilla HTML/CSS/JS — a marketing landing page, a user Ask UI,
   and an admin console (dark/light themed).
 - **Indexing:** a structural graph extractor (no LLM required).
-- **Retrieval:** keyword + graph ranking driven by a per-workspace
-  `RetrievalConfig`; builds a compact context of nodes, relations, and source
-  excerpts that is handed to the LLM.
+- **Retrieval:** agentic, read-only repository investigation for tool-capable
+  models—searching code, reading bounded file excerpts, and following
+  definitions, references, callers, and graph relationships. A per-workspace
+  `RetrievalConfig` seeds the investigation, with automatic fallback to
+  one-shot keyword + graph ranking when agentic tool use is unavailable.
 
 ```
 app/
