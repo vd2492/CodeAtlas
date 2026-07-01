@@ -117,6 +117,29 @@ def ensure_legacy_repo_branches() -> None:
         ensure_repo_branch(repo)
 
 
+def restore_branches_after_reclone(repo: dict) -> None:
+    """Clear missing-clone errors and bind a graph-only placeholder branch."""
+    source = repo_clone_dir(repo["workspace"])
+    branch_name, commit = _current_branch_and_commit(source)
+    legacy = db.get_legacy_repo_branch(repo["id"])
+    if (
+        legacy
+        and legacy["name"] == "default"
+        and not legacy.get("indexed_commit_sha")
+        and commit
+        and not db.get_repo_branch_by_name(repo["id"], branch_name)
+    ):
+        db.bind_repo_branch_to_clone(legacy["id"], branch_name, commit)
+
+    for branch in db.list_repo_branches(repo["id"]):
+        db.update_repo_branch_state(
+            branch["id"],
+            job_stage="idle",
+            freshness_status="unknown",
+        )
+        db.clear_repo_branch_error(branch["id"])
+
+
 def discover_remote_branches(repo: dict) -> list[dict]:
     source = repo_clone_dir(repo["workspace"])
     if not source.is_dir():

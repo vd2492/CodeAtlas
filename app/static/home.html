@@ -25,6 +25,7 @@
     --dot:rgba(12,30,50,0.05); --nav-bg:rgba(255,255,255,0.8); --vig:rgba(244,247,251,0.6);
   }
   *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
   html,body{margin:0;background:var(--bg);color:var(--txt);
     font-family:"Space Grotesk",-apple-system,BlinkMacSystemFont,sans-serif;
     -webkit-font-smoothing:antialiased;line-height:1.5;
@@ -107,6 +108,7 @@
 
   /* generic section spacing */
   .sec{padding:74px 0;border-top:1px solid var(--b1);}
+  #authorized-repositories{scroll-margin-top:64px;}
   h2{font-size:clamp(24px,3.4vw,34px);letter-spacing:-0.02em;font-weight:600;margin:0 0 10px;}
   .lead{color:var(--muted);max-width:620px;margin:0 0 34px;font-size:15px;}
 
@@ -146,6 +148,7 @@
     .steps-box .step{border-bottom:1px solid var(--b1);}}
   @media(max-width:480px){.steps-box{grid-template-columns:1fr;}
     .steps-box .step{border-right:0 !important;}}
+  @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto;}}
 
   /* roles */
   .roles{grid-template-columns:repeat(auto-fit,minmax(300px,1fr));}
@@ -240,7 +243,7 @@
       team ask grounded questions about the code — with answers that cite real files and lines.
       No data leaves your box.</p>
     <div class="cta-row">
-      <a class="btn btn-solid" href="/app">Sign in to ask →</a>
+      <a class="btn btn-solid" href="#authorized-repositories">Sign in to ask →</a>
       <a class="btn btn-ghost" href="/admin.html">Open admin console</a>
     </div>
     <div class="statline mono">
@@ -252,7 +255,7 @@
 </section>
 
 <!-- 3. AUTHORIZED REPOSITORIES -->
-<section class="sec">
+<section class="sec" id="authorized-repositories">
   <div class="wrap">
     <div class="eyebrow">ACCESS-SCOPED</div>
     <h2>Authorized repositories</h2>
@@ -289,7 +292,6 @@
           <li><span class="tick">▹</span>Tune safely per-repo</li>
           <li><span class="tick">▹</span>Manage users &amp; repository access</li>
         </ul>
-        <a class="btn btn-solid" href="/admin.html" style="justify-content:center">Open admin console</a>
       </div>
       <div class="role user">
         <div class="role-tag">For users</div>
@@ -301,7 +303,6 @@
           <li><span class="tick">▹</span>Get grounded answers with source references</li>
           <li><span class="tick">▹</span>Understand flows, files &amp; architecture without manual digging</li>
         </ul>
-        <a class="btn btn-blue" href="/app" style="justify-content:center">Sign in to ask</a>
       </div>
     </div>
   </div>

@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -11,6 +12,7 @@ from fastapi import HTTPException
 from app import config, db, main
 from app.repos import branches
 from app.repos import branch_routes
+from app.repos import routes as repo_routes
 
 
 def run_git(cwd: Path, *args: str) -> str:
@@ -106,6 +108,47 @@ class BranchIndexingTests(unittest.TestCase):
         self.assertEqual(branch["workspace"], "sample")
         self.assertEqual(branch["index_status"], "ready")
         self.assertTrue(config.graph_path("sample").exists())
+
+    def test_reclone_restores_missing_clone_without_replacing_graph(self):
+        clone = config.repo_clone_dir("sample")
+        graph = config.graph_path("sample")
+        graph_before = graph.read_text()
+        with db.connect() as connection:
+            connection.execute(
+                "UPDATE repo_branches SET name = 'default', "
+                "indexed_commit_sha = NULL, remote_commit_sha = NULL, "
+                "allow_user_sync = 0, freshness_status = 'remote_unavailable', "
+                "last_error = 'Repository clone is not available' WHERE id = ?",
+                (self.legacy["id"],),
+            )
+        shutil.rmtree(clone)
+
+        result = repo_routes.reclone_repo(
+            self.repo["slug"],
+            repo_routes.RecloneRepoRequest(),
+            {"username": "admin"},
+        )
+
+        self.assertTrue(result["repo"]["clone_available"])
+        self.assertTrue((clone / ".git").exists())
+        self.assertEqual(graph.read_text(), graph_before)
+        restored = db.get_repo_branch(self.legacy["id"])
+        self.assertEqual(restored["name"], "main")
+        self.assertEqual(restored["freshness_status"], "unknown")
+        self.assertIsNone(restored["last_error"])
+        self.assertTrue(restored["allow_user_sync"])
+        self.assertIn(
+            "main",
+            {item["name"] for item in branches.discover_remote_branches(self.repo)},
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            repo_routes.reclone_repo(
+                self.repo["slug"],
+                repo_routes.RecloneRepoRequest(),
+                {"username": "admin"},
+            )
+        self.assertEqual(raised.exception.status_code, 409)
 
     def test_remote_branch_discovery_and_atomic_version_activation(self):
         first_commit = self.add_remote_branch_commit("develop", "develop-v1")

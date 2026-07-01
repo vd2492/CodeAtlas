@@ -5,10 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app import db, main
 from app.auth import routes as auth_routes
+from app.auth.security import hash_password, verify_password
 from app.llm import client
 from app.repos.cloning import sanitize_clone_url
 
@@ -145,6 +146,62 @@ class SecurityGuardTests(unittest.TestCase):
             auth_routes.clear_login_failures("admin")
             auth_routes.enforce_login_rate_limit("admin")
         auth_routes._login_failures.clear()
+
+    def test_admin_can_update_username_and_password(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ):
+            db.init_db()
+            admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
+            target = db.create_user("reader", hash_password("old-pass"), role="user")
+            repo = db.create_repo(
+                "sample",
+                "Sample",
+                "https://example.test/sample.git",
+                "https",
+                "sample",
+                status="published",
+            )
+            db.grant_access(target["id"], repo["id"])
+
+            result = auth_routes.update_user_credentials(
+                target["id"],
+                auth_routes.UpdateUserRequest(
+                    username="renamed-reader",
+                    password="new-pass",
+                ),
+                admin,
+            )
+
+            self.assertEqual(result["user"]["username"], "renamed-reader")
+            self.assertEqual(result["user"]["role"], "user")
+            self.assertIsNone(db.get_user_by_username("reader"))
+            updated = db.get_user_by_username("renamed-reader")
+            self.assertTrue(verify_password("new-pass", updated["password_hash"]))
+            self.assertFalse(verify_password("old-pass", updated["password_hash"]))
+            self.assertEqual(
+                [repo["slug"] for repo in db.list_repos_for_user(target["id"])],
+                ["sample"],
+            )
+
+            logged_in = auth_routes.login(
+                auth_routes.Credentials(
+                    username="renamed-reader",
+                    password="new-pass",
+                ),
+                Response(),
+            )
+            self.assertEqual(logged_in["user"]["id"], target["id"])
+            with self.assertRaises(HTTPException) as raised:
+                auth_routes.login(
+                    auth_routes.Credentials(
+                        username="reader",
+                        password="old-pass",
+                    ),
+                    Response(),
+                )
+            self.assertEqual(raised.exception.status_code, 401)
+            auth_routes._login_failures.clear()
 
 
 if __name__ == "__main__":

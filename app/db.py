@@ -174,6 +174,25 @@ def list_users() -> List[dict]:
         return [dict(r) for r in rows]
 
 
+def update_user_credentials(
+    user_id: int, username: str, password_hash: Optional[str] = None
+) -> Optional[dict]:
+    """Update login credentials without changing the user's id, role, or grants."""
+    with connect() as conn:
+        if password_hash is None:
+            conn.execute(
+                "UPDATE users SET username = ? WHERE id = ?",
+                (username, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET username = ?, password_hash = ? WHERE id = ?",
+                (username, password_hash, user_id),
+            )
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def admin_count() -> int:
     with connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
@@ -274,8 +293,12 @@ def set_repo_status(slug: str, status: str) -> None:
         conn.execute("UPDATE repos SET status = ? WHERE slug = ?", (status, slug))
 
 
-def update_repo(slug: str, name: Optional[str] = None,
-                source_url: Optional[str] = None) -> None:
+def update_repo(
+    slug: str,
+    name: Optional[str] = None,
+    source_url: Optional[str] = None,
+    clone_method: Optional[str] = None,
+) -> None:
     """Update editable repo details. slug/workspace are immutable (on-disk
     identity) and not changed here."""
     sets, vals = [], []
@@ -283,6 +306,8 @@ def update_repo(slug: str, name: Optional[str] = None,
         sets.append("name = ?"); vals.append(name)
     if source_url is not None:
         sets.append("source_url = ?"); vals.append(source_url)
+    if clone_method is not None:
+        sets.append("clone_method = ?"); vals.append(clone_method)
     if not sets:
         return
     vals.append(slug)
@@ -456,6 +481,22 @@ def clear_repo_branch_error(branch_id: int) -> None:
             "UPDATE repo_branches SET last_error = NULL, "
             "updated_at = datetime('now') WHERE id = ?",
             (branch_id,),
+        )
+
+
+def bind_repo_branch_to_clone(
+    branch_id: int,
+    name: str,
+    remote_commit_sha: str,
+) -> None:
+    """Attach a graph-only legacy branch record to a newly restored Git clone."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE repo_branches SET name = ?, remote_commit_sha = ?, "
+            "freshness_status = 'unknown', allow_user_sync = 1, "
+            "last_error = NULL, last_checked_at = datetime('now'), "
+            "updated_at = datetime('now') WHERE id = ?",
+            (name, remote_commit_sha, branch_id),
         )
 
 

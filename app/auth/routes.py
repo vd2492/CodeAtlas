@@ -102,6 +102,11 @@ class CreateUserRequest(BaseModel):
     grant_slugs: Optional[List[str]] = None
 
 
+class UpdateUserRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
 class LlmCredsRequest(BaseModel):
     api_key: str
     provider: Optional[str] = None   # auto-sniffed from the key if omitted
@@ -189,6 +194,51 @@ def create_user(req: CreateUserRequest, admin: dict = Depends(require_admin)):
             db.record_audit(admin["username"], "grant", slug, req.username)
             granted.append(slug)
     return {"user": _public_user(user), "granted": granted}
+
+
+@router.patch("/admin/users/{user_id}")
+def update_user_credentials(
+    user_id: int,
+    req: UpdateUserRequest,
+    admin: dict = Depends(require_admin),
+):
+    target = db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if req.username is None and req.password is None:
+        raise HTTPException(status_code=400, detail="No credential changes provided.")
+
+    username = req.username.strip() if req.username is not None else target["username"]
+    if not username:
+        raise HTTPException(status_code=400, detail="username is required.")
+    if req.password == "":
+        raise HTTPException(status_code=400, detail="password cannot be empty.")
+    if username == target["username"] and req.password is None:
+        raise HTTPException(status_code=400, detail="No credential changes provided.")
+
+    existing = db.get_user_by_username(username)
+    if existing and existing["id"] != user_id:
+        raise HTTPException(status_code=409, detail="username already exists.")
+
+    password_hash = hash_password(req.password) if req.password is not None else None
+    updated = db.update_user_credentials(user_id, username, password_hash)
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    changes = []
+    if username != target["username"]:
+        changes.append(f"username={username}")
+    if req.password is not None:
+        changes.append("password=updated")
+    db.record_audit(
+        admin["username"],
+        "update_user",
+        target["username"],
+        ", ".join(changes),
+    )
+    clear_login_failures(target["username"])
+    clear_login_failures(username)
+    return {"user": _public_user(updated)}
 
 
 @router.delete("/admin/users/{username}")
