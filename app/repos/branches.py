@@ -140,10 +140,24 @@ def restore_branches_after_reclone(repo: dict) -> None:
         db.clear_repo_branch_error(branch["id"])
 
 
+def _remote_default_branch(source: Path) -> str | None:
+    result = _git(source, "ls-remote", "--symref", "origin", "HEAD", check=False)
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] == "ref:" and parts[2] == "HEAD":
+            ref = parts[1]
+            if ref.startswith("refs/heads/"):
+                return ref[len("refs/heads/"):]
+    return None
+
+
 def discover_remote_branches(repo: dict) -> list[dict]:
     source = repo_clone_dir(repo["workspace"])
     if not source.is_dir():
         raise RuntimeError("Repository clone is not available.")
+    default_branch = _remote_default_branch(source)
+    if default_branch:
+        db.set_repo_default_branch(repo["id"], default_branch)
     result = _git(source, "ls-remote", "--heads", "origin")
     branches = []
     for line in result.stdout.splitlines():
@@ -153,6 +167,7 @@ def discover_remote_branches(repo: dict) -> list[dict]:
         branches.append({
             "name": parts[1][len("refs/heads/"):],
             "commit_sha": parts[0],
+            "is_default": parts[1] == f"refs/heads/{default_branch}",
         })
     branches.sort(key=lambda item: item["name"])
     return branches
@@ -171,7 +186,11 @@ def approve_repo_branch(repo: dict, branch_name: str) -> dict:
     existing = db.get_repo_branch_by_name(repo["id"], branch_name)
     if existing:
         return db.get_repo_branch(existing["id"])
-    branch = db.create_repo_branch(repo["id"], branch_name)
+    branch = db.create_repo_branch(
+        repo["id"],
+        branch_name,
+        is_default=bool(available[branch_name].get("is_default")),
+    )
     db.update_repo_branch_settings(
         branch["id"],
         allow_user_sync=True,

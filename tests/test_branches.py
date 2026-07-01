@@ -178,6 +178,27 @@ class BranchIndexingTests(unittest.TestCase):
         )
         self.assertEqual(resolved, synced["workspace"])
 
+    def test_remote_default_branch_badge_follows_remote_head(self):
+        self.add_remote_branch_commit("develop", "develop-v1")
+        approved = branches.approve_repo_branch(self.repo, "develop")
+        self.assertFalse(approved["is_default"])
+
+        run_git(
+            self.root,
+            "--git-dir",
+            str(self.remote),
+            "symbolic-ref",
+            "HEAD",
+            "refs/heads/develop",
+        )
+        discovered = branches.discover_remote_branches(self.repo)
+
+        defaults = {item["name"] for item in discovered if item["is_default"]}
+        self.assertEqual(defaults, {"develop"})
+        self.assertTrue(db.get_repo_branch(approved["id"])["is_default"])
+        self.assertFalse(db.get_repo_branch(self.legacy["id"])["is_default"])
+        self.assertEqual(db.list_repo_branches(self.repo["id"])[0]["name"], "develop")
+
     def _grant_user(self) -> int:
         user = db.create_user("reader", "hash", role="user")
         db.grant_access(user["id"], self.repo["id"])

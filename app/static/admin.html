@@ -890,7 +890,7 @@ async function refreshBranchRows() {
       const shortIndexed = branch.indexed_commit_sha ? branch.indexed_commit_sha.slice(0, 12) : "not indexed";
       const shortRemote = branch.remote_commit_sha ? branch.remote_commit_sha.slice(0, 12) : "unknown";
       tr.innerHTML = `
-        <td><strong>${esc(branch.name)}</strong>${branch.is_legacy ? ' <span class="pill">default</span>' : ""}</td>
+        <td><strong>${esc(branch.name)}</strong>${branch.is_default ? ' <span class="pill">default</span>' : ""}${branch.is_legacy ? ' <span class="pill">original</span>' : ""}</td>
         <td><span class="mono">${esc(shortIndexed)}</span><div class="branch-detail">Indexed: ${esc(formatLocalTimestamp(branch.indexed_at, "never"))}</div></td>
         <td><span class="pill ${branch.freshness_status === "up_to_date" ? "published" : "cloned"}">${esc(branchFreshnessLabel(branch))}</span>
           <div class="branch-detail">Remote: <span class="mono">${esc(shortRemote)}</span><br>Checked: ${esc(formatLocalTimestamp(branch.last_checked_at, "never"))}${branch.last_error ? `<br>${esc(branch.last_error)}` : ""}</div></td>
@@ -953,7 +953,7 @@ function renderRemoteBranchOptions() {
   for (const branch of matches) {
     const option = document.createElement("option");
     option.value = branch.name;
-    option.textContent = `${branch.name} · ${branch.commit_sha.slice(0, 12)}`;
+    option.textContent = `${branch.name} · ${branch.commit_sha.slice(0, 12)}${branch.is_default ? " · default" : ""}`;
     select.appendChild(option);
   }
 
@@ -992,6 +992,7 @@ async function discoverBranches() {
     $("remoteBranchFilter").value = "";
     renderRemoteBranchOptions();
     if (remoteBranchCandidates.length) $("remoteBranchFilter").focus();
+    await refreshBranchRows();
     flash(`Found ${branches.length} remote branches`, true);
   } catch (e) { flash(e.message); }
   finally { $("discoverBranches").disabled = false; }

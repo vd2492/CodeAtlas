@@ -1109,6 +1109,7 @@
           picker.appendChild(option);
         }
         const selected = BRANCHES.find(branch => branch.id === previous && branch.available)
+          || BRANCHES.find(branch => branch.is_default && branch.available)
           || BRANCHES.find(branch => branch.is_legacy && branch.available)
           || BRANCHES.find(branch => branch.available)
           || null;

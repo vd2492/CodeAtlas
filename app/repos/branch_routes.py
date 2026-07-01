@@ -80,6 +80,7 @@ def _branch_payload(branch: dict, admin: bool = False) -> dict:
         "strict_freshness": bool(branch["strict_freshness"]),
         "freshness_interval_seconds": branch["freshness_interval_seconds"],
         "is_legacy": bool(branch["is_legacy"]),
+        "is_default": bool(branch.get("is_default", 0)),
         "available": bool(
             branch.get("workspace") and branch["index_status"] in {"ready", "indexing"}
         ),

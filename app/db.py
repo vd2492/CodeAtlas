@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS repo_branches (
     strict_freshness           INTEGER NOT NULL DEFAULT 0,
     freshness_interval_seconds INTEGER NOT NULL DEFAULT 300,
     is_legacy                  INTEGER NOT NULL DEFAULT 0,
+    is_default                 INTEGER NOT NULL DEFAULT 0,
     created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (repo_id, name)
@@ -134,6 +135,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE repo_branches "
                 "ADD COLUMN behind_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "is_default" not in branch_columns:
+            conn.execute(
+                "ALTER TABLE repo_branches "
+                "ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
             )
 
 
@@ -355,13 +361,14 @@ def create_repo_branch(
     freshness_status: str = "unknown",
     indexed_at: str = None,
     is_legacy: bool = False,
+    is_default: bool = False,
 ) -> dict:
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO repo_branches "
             "(repo_id, name, workspace, indexed_commit_sha, index_status, "
-            "freshness_status, indexed_at, is_legacy) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "freshness_status, indexed_at, is_legacy, is_default) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 repo_id,
                 name,
@@ -371,6 +378,7 @@ def create_repo_branch(
                 freshness_status,
                 indexed_at,
                 1 if is_legacy else 0,
+                1 if is_default else 0,
             ),
         )
         row = conn.execute(
@@ -426,10 +434,19 @@ def list_repo_branches(repo_id: int) -> List[dict]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT * FROM repo_branches WHERE repo_id = ? "
-            "ORDER BY is_legacy DESC, name",
+            "ORDER BY is_default DESC, is_legacy DESC, name",
             (repo_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def set_repo_default_branch(repo_id: int, branch_name: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE repo_branches SET is_default = CASE WHEN name = ? THEN 1 ELSE 0 END, "
+            "updated_at = datetime('now') WHERE repo_id = ?",
+            (branch_name, repo_id),
+        )
 
 
 def list_all_repo_branches() -> List[dict]:
