@@ -82,6 +82,9 @@ class SecurityGuardTests(unittest.TestCase):
             with patch.object(db, "DB_PATH", database):
                 db.init_db()
                 self.assertEqual(db.get_session_user("old-token")["username"], "existing")
+                self.assertEqual(
+                    db.get_session_user("old-token")["user_type"], "dev_team"
+                )
 
                 token = db.create_session(1)
                 with db.connect() as current:
@@ -175,6 +178,7 @@ class SecurityGuardTests(unittest.TestCase):
 
             self.assertEqual(result["user"]["username"], "renamed-reader")
             self.assertEqual(result["user"]["role"], "user")
+            self.assertEqual(result["user"]["user_type"], "dev_team")
             self.assertIsNone(db.get_user_by_username("reader"))
             updated = db.get_user_by_username("renamed-reader")
             self.assertTrue(verify_password("new-pass", updated["password_hash"]))
@@ -202,6 +206,50 @@ class SecurityGuardTests(unittest.TestCase):
                 )
             self.assertEqual(raised.exception.status_code, 401)
             auth_routes._login_failures.clear()
+
+    def test_admin_can_create_and_edit_product_team_user(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ):
+            db.init_db()
+            admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
+
+            created = auth_routes.create_user(
+                auth_routes.CreateUserRequest(
+                    username="product-reader",
+                    password="reader-pass",
+                    user_type="product_team",
+                ),
+                admin,
+            )
+            self.assertEqual(created["user"]["user_type"], "product_team")
+
+            updated = auth_routes.update_user_credentials(
+                created["user"]["id"],
+                auth_routes.UpdateUserRequest(user_type="dev_team"),
+                admin,
+            )
+            self.assertEqual(updated["user"]["username"], "product-reader")
+            self.assertEqual(updated["user"]["user_type"], "dev_team")
+
+    def test_product_team_type_reaches_llm_answer_pipeline(self):
+        request = main.AskRequest(question="What happens during checkout?")
+        user = {"id": 7, "user_type": "product_team"}
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 0},
+        ), patch.object(
+            main, "load_user_llm", return_value=None
+        ), patch.object(
+            main, "answer_question", return_value={"answer": "A simple answer."}
+        ) as answer:
+            result = main.ask_llm_endpoint(request, "sample", user)
+
+        self.assertEqual(result["answer"], "A simple answer.")
+        self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
 
 
 if __name__ == "__main__":

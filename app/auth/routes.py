@@ -78,7 +78,12 @@ def load_user_llm(user_id: int) -> Optional[dict]:
 
 
 def _public_user(user: dict) -> dict:
-    return {"id": user["id"], "username": user["username"], "role": user["role"]}
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "user_type": user.get("user_type") or "dev_team",
+    }
 
 
 def _public_repo(repo: dict) -> dict:
@@ -99,12 +104,14 @@ class CreateUserRequest(BaseModel):
     username: str
     password: str
     role: str = "user"
+    user_type: str = "dev_team"
     grant_slugs: Optional[List[str]] = None
 
 
 class UpdateUserRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
+    user_type: Optional[str] = None
 
 
 class LlmCredsRequest(BaseModel):
@@ -181,10 +188,25 @@ def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
 def create_user(req: CreateUserRequest, admin: dict = Depends(require_admin)):
     if req.role not in ("admin", "user"):
         raise HTTPException(status_code=400, detail="role must be 'admin' or 'user'.")
+    if req.user_type not in ("product_team", "dev_team"):
+        raise HTTPException(
+            status_code=400,
+            detail="user_type must be 'product_team' or 'dev_team'.",
+        )
     if db.get_user_by_username(req.username):
         raise HTTPException(status_code=409, detail="username already exists.")
-    user = db.create_user(req.username, hash_password(req.password), role=req.role)
-    db.record_audit(admin["username"], "create_user", req.username, f"role={req.role}")
+    user = db.create_user(
+        req.username,
+        hash_password(req.password),
+        role=req.role,
+        user_type=req.user_type,
+    )
+    db.record_audit(
+        admin["username"],
+        "create_user",
+        req.username,
+        f"role={req.role}, user_type={req.user_type}",
+    )
 
     granted = []
     for slug in req.grant_slugs or []:
@@ -205,23 +227,38 @@ def update_user_credentials(
     target = db.get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
-    if req.username is None and req.password is None:
-        raise HTTPException(status_code=400, detail="No credential changes provided.")
+    if req.username is None and req.password is None and req.user_type is None:
+        raise HTTPException(status_code=400, detail="No user changes provided.")
 
     username = req.username.strip() if req.username is not None else target["username"]
     if not username:
         raise HTTPException(status_code=400, detail="username is required.")
     if req.password == "":
         raise HTTPException(status_code=400, detail="password cannot be empty.")
-    if username == target["username"] and req.password is None:
-        raise HTTPException(status_code=400, detail="No credential changes provided.")
+    user_type = req.user_type or target.get("user_type") or "dev_team"
+    if user_type not in ("product_team", "dev_team"):
+        raise HTTPException(
+            status_code=400,
+            detail="user_type must be 'product_team' or 'dev_team'.",
+        )
+    if (
+        username == target["username"]
+        and req.password is None
+        and user_type == (target.get("user_type") or "dev_team")
+    ):
+        raise HTTPException(status_code=400, detail="No user changes provided.")
 
     existing = db.get_user_by_username(username)
     if existing and existing["id"] != user_id:
         raise HTTPException(status_code=409, detail="username already exists.")
 
     password_hash = hash_password(req.password) if req.password is not None else None
-    updated = db.update_user_credentials(user_id, username, password_hash)
+    updated = db.update_user_credentials(
+        user_id,
+        username,
+        password_hash,
+        user_type=user_type,
+    )
     if not updated:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -230,6 +267,8 @@ def update_user_credentials(
         changes.append(f"username={username}")
     if req.password is not None:
         changes.append("password=updated")
+    if user_type != (target.get("user_type") or "dev_team"):
+        changes.append(f"user_type={user_type}")
     db.record_audit(
         admin["username"],
         "update_user",

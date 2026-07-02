@@ -34,7 +34,11 @@ from .retrieval.relation_utils import (
     search_nodes,
 )
 from .retrieval.config_schema import load_retrieval_config, seed_default_retrieval_config
-from .llm.client import generate
+from .llm.client import (
+    PRODUCT_TEAM_QUERY_SUFFIX,
+    PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+    generate,
+)
 from .auth.routes import router as auth_router, load_user_llm
 from .auth.security import hash_password
 from .auth.sessions import require_user
@@ -1244,17 +1248,30 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
 
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
-                    llm_mode: str = None) -> dict:
+                    llm_mode: str = None, user_type: str = "dev_team") -> dict:
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     context = build_context(question, limit=16, workspace=workspace)
     toolbox = RepositoryToolbox(workspace)
+    response_style_instruction = (
+        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        if user_type == "product_team"
+        else ""
+    )
+    llm_question = (
+        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        if user_type == "product_team"
+        else question
+    )
+    context["response_style_instruction"] = response_style_instruction
+    context["llm_context_preview"]["question"] = llm_question
+    toolbox.response_style_instruction = response_style_instruction
     result = generate(
         context,
         user_llm=user_llm,
         allow_shared_fallback=allow_shared_fallback,
         llm_mode=llm_mode,
-        question=question,
+        question=llm_question,
         toolbox=toolbox,
     )
     branch = db.get_repo_branch_by_workspace(workspace)
@@ -1309,6 +1326,7 @@ def ask_llm_endpoint(
             user_llm=user_llm,
             allow_shared_fallback=allow_shared,
             llm_mode=request.llm_mode,
+            user_type=user.get("user_type") or "dev_team",
         )
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))

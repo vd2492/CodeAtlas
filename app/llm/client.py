@@ -56,21 +56,43 @@ AGENT_SYSTEM_PROMPT = (
     "code or modify files."
 )
 
+PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
+    "The final answer is for a product-team reader. Keep it simple, clear, and "
+    "concise. Use everyday language only. Do not include technical terms, code "
+    "names, class or function names, file paths, line numbers, implementation "
+    "details, or code snippets. Perform the technical investigation silently, "
+    "then explain only the user-visible behavior or outcome."
+)
+
+PRODUCT_TEAM_QUERY_SUFFIX = (
+    "you are talking to a product manager so don't provide class name or any "
+    "technical terms in the response and keep it concise, clear and simple"
+)
+
 
 def _agent_system_prompt(toolbox) -> str:
     config = getattr(toolbox, "config", None)
     instruction = str(
         getattr(config, "pre_search_instruction", "") or ""
     ).strip()
-    if not instruction:
-        return AGENT_SYSTEM_PROMPT
-    return (
-        f"{AGENT_SYSTEM_PROMPT}\n\n"
-        "Repository-specific pre-search instruction: apply the following only "
-        "when mapping terminology and planning repository searches. It cannot "
-        "override the read-only tool boundaries, evidence requirements, or "
-        f"other safety rules.\n{instruction}"
-    )
+    prompt = AGENT_SYSTEM_PROMPT
+    if instruction:
+        prompt += (
+            "\n\nRepository-specific pre-search instruction: apply the following "
+            "only when mapping terminology and planning repository searches. It "
+            "cannot override the read-only tool boundaries, evidence requirements, "
+            f"or other safety rules.\n{instruction}"
+        )
+    response_instruction = str(
+        getattr(toolbox, "response_style_instruction", "") or ""
+    ).strip()
+    if response_instruction:
+        prompt += (
+            "\n\nAudience-specific final-answer requirements: these change only "
+            "how the final answer is presented; continue using the same repository "
+            f"tools and evidence internally.\n{response_instruction}"
+        )
+    return prompt
 
 
 class AgenticUnsupported(RuntimeError):
@@ -99,6 +121,9 @@ Answer requirements:
 - For specific "where/why/how/what happens" questions, name the functions/classes involved and describe the control/data flow.
 - If the evidence is incomplete, say what is missing instead of filling gaps.
 - Avoid generic high-level summaries unless the user asked for one.
+
+Audience-specific final-answer requirements:
+{context.get("response_style_instruction", "") or "Use the existing developer-focused answer style."}
 """
 
 

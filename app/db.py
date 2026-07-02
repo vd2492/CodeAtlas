@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    user_type     TEXT NOT NULL DEFAULT 'dev_team'
+                  CHECK (user_type IN ('product_team', 'dev_team')),
     llm_creds     TEXT,                        -- optional encrypted BYOK creds (JSON)
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -116,6 +118,15 @@ def connect():
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        user_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "user_type" not in user_columns:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN user_type TEXT NOT NULL "
+                "DEFAULT 'dev_team' "
+                "CHECK (user_type IN ('product_team', 'dev_team'))"
+            )
         session_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
         }
@@ -150,11 +161,17 @@ def user_count() -> int:
 
 # --- Users -------------------------------------------------------------------
 
-def create_user(username: str, password_hash: str, role: str = "user") -> dict:
+def create_user(
+    username: str,
+    password_hash: str,
+    role: str = "user",
+    user_type: str = "dev_team",
+) -> dict:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (username, password_hash, role),
+            "INSERT INTO users (username, password_hash, role, user_type) "
+            "VALUES (?, ?, ?, ?)",
+            (username, password_hash, role, user_type),
         )
         row = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
         return dict(row)
@@ -175,25 +192,30 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
 def list_users() -> List[dict]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, username, role, created_at FROM users ORDER BY id"
+            "SELECT id, username, role, user_type, created_at FROM users ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
 
 
 def update_user_credentials(
-    user_id: int, username: str, password_hash: Optional[str] = None
+    user_id: int,
+    username: str,
+    password_hash: Optional[str] = None,
+    user_type: Optional[str] = None,
 ) -> Optional[dict]:
-    """Update login credentials without changing the user's id, role, or grants."""
+    """Update editable user fields without changing their id, role, or grants."""
     with connect() as conn:
         if password_hash is None:
             conn.execute(
-                "UPDATE users SET username = ? WHERE id = ?",
-                (username, user_id),
+                "UPDATE users SET username = ?, "
+                "user_type = COALESCE(?, user_type) WHERE id = ?",
+                (username, user_type, user_id),
             )
         else:
             conn.execute(
-                "UPDATE users SET username = ?, password_hash = ? WHERE id = ?",
-                (username, password_hash, user_id),
+                "UPDATE users SET username = ?, password_hash = ?, "
+                "user_type = COALESCE(?, user_type) WHERE id = ?",
+                (username, password_hash, user_type, user_id),
             )
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return dict(row) if row else None

@@ -3,8 +3,8 @@
 **Self-hostable codebase intelligence.** Host private repositories, index them
 into a queryable graph, safely tune retrieval per repo, control who can access
 each one, and let PMs, QAs, developers, and stakeholders ask grounded questions
-about the code — with answers that cite real files and lines — without giving
-them direct repository access.
+about the code — with answers tailored to their audience — without giving them
+direct repository access.
 
 Everything runs on your own box. Private code never has to leave it.
 
@@ -18,11 +18,19 @@ Everything runs on your own box. Private code never has to leave it.
 - **Ask grounded questions.** Users ask in natural language ("How does login
   work?", "Which files are involved in this feature?") and the selected model
   iteratively searches the graph, follows symbols, and reads real source before
-  answering with file/line references.
+  answering. Dev-team users receive the existing technical response with
+  file/line references; product-team users receive a concise, plain-language
+  explanation without class names or technical terminology.
 - **Per-repo, config-driven tuning.** Admins improve retrieval quality with
   safe, data-only knobs (stopwords, synonyms, keyword boosts, preferred
-  components/methods, context/excerpt sizes). No code is ever executed from the
-  browser.
+  components/methods, context/excerpt sizes, and a pre-search terminology
+  instruction). Configs can be loaded, validated, reset to defaults, and saved
+  per repository. No code is ever executed from the browser.
+- **Audience-aware answers.** Admins assign each account a user type:
+  **Dev team** preserves detailed engineering answers, while **Product team**
+  automatically asks the model for simple, clear, concise answers without
+  internal implementation details. User type can be changed from the existing
+  user-edit flow.
 - **Access control.** Users log in and only see repositories an admin has
   explicitly granted them; every query is permission-checked.
 - **Branch-aware, freshness-tracked answers.** Admins approve remote branches,
@@ -127,7 +135,7 @@ data/                gitignored: sqlite db, cloned repos, per-workspace graphs/c
 docs/PLAN.md         build plan / phase history
 ```
 
-## Roles
+## Roles and user types
 
 - **Admin** — clone & index repos, test and tune retrieval, publish, manage
   approved branches and sync settings, manage users and per-repo access, toggle
@@ -135,6 +143,16 @@ docs/PLAN.md         build plan / phase history
 - **User** — log in with admin-provided credentials, see only authorized repos,
   select an indexed branch, optionally request an authorized refresh, optionally
   set their own LLM key, and ask grounded questions.
+
+Role controls permissions. User type controls only how final LLM answers are
+presented:
+
+- **Dev team** (the default, including existing accounts) — keeps the existing
+  technical answer style and source references.
+- **Product team** — keeps the same repository selection, retrieval, tools,
+  evidence gathering, permissions, and provider fallback chain, but presents the
+  final answer in concise everyday language without class names or technical
+  terms.
 
 ## Security & privacy
 

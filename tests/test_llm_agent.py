@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app import main
 from app.llm import client
 
 
@@ -17,11 +18,12 @@ class FakeResponse:
 
 
 class FakeToolbox:
-    def __init__(self, pre_search_instruction=""):
+    def __init__(self, pre_search_instruction="", response_style_instruction=""):
         self.trace = []
         self.config = SimpleNamespace(
             pre_search_instruction=pre_search_instruction
         )
+        self.response_style_instruction = response_style_instruction
 
     def call(self, name, arguments):
         self.trace.append({"tool": name, "arguments": arguments, "result": {"ok": True}})
@@ -185,6 +187,77 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(result["retrieval_mode"], "one_shot")
         self.assertIn("without using repository tools", result["agent_fallback_reason"])
         self.assertEqual(result["answer"], "Grounded fallback answer.")
+
+    def test_product_team_style_is_added_to_agent_and_one_shot_prompts(self):
+        toolbox = FakeToolbox(
+            response_style_instruction=client.PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        )
+        agent_prompt = client._agent_system_prompt(toolbox)
+        one_shot_prompt = client.build_prompt({
+            "llm_context_preview": {"question": "How does checkout work?"},
+            "response_style_instruction": client.PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+        })
+
+        self.assertIn("everyday language only", agent_prompt)
+        self.assertIn("Do not include technical terms", agent_prompt)
+        self.assertIn("everyday language only", one_shot_prompt)
+
+    def test_product_team_suffix_is_appended_only_to_llm_facing_question(self):
+        context = {
+            "llm_context_preview": {"question": "How does checkout work?"}
+        }
+        toolbox = SimpleNamespace()
+        with patch.object(
+            main, "build_context", return_value=context
+        ), patch.object(
+            main, "RepositoryToolbox", return_value=toolbox
+        ), patch.object(
+            main,
+            "generate",
+            return_value={
+                "answer": "Customers can complete their purchase.",
+                "provider_used": "test",
+            },
+        ) as generate, patch.object(
+            main.db, "get_repo_branch_by_workspace", return_value=None
+        ):
+            result = main.answer_question(
+                "How does checkout work?",
+                workspace="sample",
+                user_type="product_team",
+            )
+
+        llm_question = generate.call_args.kwargs["question"]
+        self.assertTrue(llm_question.endswith(client.PRODUCT_TEAM_QUERY_SUFFIX))
+        self.assertEqual(context["llm_context_preview"]["question"], llm_question)
+        self.assertEqual(result["question"], "How does checkout work?")
+
+    def test_dev_team_question_is_not_modified(self):
+        context = {
+            "llm_context_preview": {"question": "How does checkout work?"}
+        }
+        toolbox = SimpleNamespace()
+        with patch.object(
+            main, "build_context", return_value=context
+        ), patch.object(
+            main, "RepositoryToolbox", return_value=toolbox
+        ), patch.object(
+            main,
+            "generate",
+            return_value={"answer": "Technical answer.", "provider_used": "test"},
+        ) as generate, patch.object(
+            main.db, "get_repo_branch_by_workspace", return_value=None
+        ):
+            main.answer_question(
+                "How does checkout work?",
+                workspace="sample",
+                user_type="dev_team",
+            )
+
+        self.assertEqual(
+            generate.call_args.kwargs["question"],
+            "How does checkout work?",
+        )
 
 
 if __name__ == "__main__":

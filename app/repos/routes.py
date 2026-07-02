@@ -345,6 +345,7 @@ def test_repo(slug: str, req: TestRequest, admin: dict = Depends(require_admin))
             req.question,
             workspace=workspace,
             allow_shared_fallback=bool(repo["allow_shared_fallback"]),
+            user_type=admin.get("user_type") or "dev_team",
         )
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))

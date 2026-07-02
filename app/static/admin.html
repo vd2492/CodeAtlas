@@ -197,12 +197,17 @@
 
   <div id="userEditModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
     <form id="userEditForm" class="panel" style="width:400px;max-width:92vw;margin:0;">
-      <h2 style="margin:0 0 8px;color:var(--fg);">Edit user credentials</h2>
-      <p class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, password, or both.</p>
+      <h2 style="margin:0 0 8px;color:var(--fg);">Edit user</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, password, or user type.</p>
       <label for="editUsername">Username</label>
       <input id="editUsername" autocomplete="off" />
       <label for="editPassword">New password</label>
       <input id="editPassword" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current password" />
+      <label for="editUserType">User type</label>
+      <select id="editUserType">
+        <option value="dev_team">Dev team</option>
+        <option value="product_team">Product team</option>
+      </select>
       <div id="userEditError" class="user-edit-error" style="margin-top:8px;"></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
         <button type="button" class="ghost" id="userEditCancel">Cancel</button>
@@ -382,8 +387,19 @@
           <div><label>Username</label><input id="uName"/></div>
           <div><label>Password</label><input id="uPass" type="password"/></div>
         </div>
-        <label>Role</label>
-        <select id="uRole"><option value="user">user</option><option value="admin">admin</option></select>
+        <div class="row">
+          <div>
+            <label>Role</label>
+            <select id="uRole"><option value="user">user</option><option value="admin">admin</option></select>
+          </div>
+          <div>
+            <label>User type</label>
+            <select id="uUserType">
+              <option value="dev_team">Dev team</option>
+              <option value="product_team">Product team</option>
+            </select>
+          </div>
+        </div>
         <div style="margin-top:12px;"><button id="addUserBtn">Create user</button></div>
         <div id="userList" class="muted" style="font-size:12px;margin-top:10px;"></div>
       </div>
@@ -625,7 +641,8 @@ async function refreshUsers() {
     for (const u of users) {
       const row = document.createElement("div");
       row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);";
-      row.innerHTML = `<span style="flex:1">${esc(u.username)} <span class="muted">· ${u.role}</span></span>`;
+      const userTypeLabel = u.user_type === "product_team" ? "Product team" : "Dev team";
+      row.innerHTML = `<span style="flex:1">${esc(u.username)} <span class="muted">· ${u.role} · ${userTypeLabel}</span></span>`;
       row.appendChild(btn("Edit", () => openUserEdit(u), true));
       row.appendChild(btn("Delete", () => doDeleteUser(u.username), true));
       el.appendChild(row);
@@ -639,6 +656,7 @@ function openUserEdit(user) {
   editingUser = user;
   $("editUsername").value = user.username;
   $("editPassword").value = "";
+  $("editUserType").value = user.user_type || "dev_team";
   $("userEditError").textContent = "";
   $("userEditModal").style.display = "grid";
   setTimeout(() => {
@@ -658,6 +676,7 @@ $("userEditForm").onsubmit = async event => {
   if (!editingUser) return;
   const username = $("editUsername").value.trim();
   const password = $("editPassword").value;
+  const userType = $("editUserType").value;
   const error = $("userEditError");
   error.textContent = "";
   if (!username) {
@@ -668,8 +687,9 @@ $("userEditForm").onsubmit = async event => {
   const body = {};
   if (username !== editingUser.username) body.username = username;
   if (password) body.password = password;
+  if (userType !== (editingUser.user_type || "dev_team")) body.user_type = userType;
   if (!Object.keys(body).length) {
-    error.textContent = "Change the username or enter a new password.";
+    error.textContent = "Change the username, user type, or enter a new password.";
     return;
   }
 
@@ -684,7 +704,7 @@ $("userEditForm").onsubmit = async event => {
       $("whoami").textContent = user.username;
     }
     closeUserEdit();
-    flash(`Updated credentials for ${user.username}`, true);
+    flash(`Updated user ${user.username}`, true);
     refreshUsers();
     refreshAudit();
   } catch (e) {
@@ -1102,7 +1122,12 @@ $("addRepoBtn").onclick = async () => {
 };
 
 $("addUserBtn").onclick = async () => {
-  const body = JSON.stringify({ username: $("uName").value, password: $("uPass").value, role: $("uRole").value });
+  const body = JSON.stringify({
+    username: $("uName").value,
+    password: $("uPass").value,
+    role: $("uRole").value,
+    user_type: $("uUserType").value,
+  });
   try { await api("/auth/admin/users", { method: "POST", body }); flash("User created", true);
         $("uName").value = $("uPass").value = ""; refreshUsers(); refreshAudit(); }
   catch (e) { flash(e.message); }
