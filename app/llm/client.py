@@ -13,6 +13,7 @@ private code is never sent to the shared endpoint.
 import ipaddress
 import json
 import os
+import re
 import socket
 from urllib.parse import urlparse
 
@@ -69,13 +70,47 @@ PRODUCT_TEAM_QUERY_SUFFIX = (
     "technical terms in the response and keep it concise, clear and simple"
 )
 
+PRODUCT_TEAM_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a product manager. Investigate the supplied "
+    "repository evidence carefully, but keep all implementation details private. "
+    "Return only a concise, clear explanation in everyday language. Never include "
+    "file names, source locations, line numbers, class names, function or method "
+    "names, code identifiers, API or endpoint paths, URLs, code snippets, or other "
+    "technical terminology."
+)
+
+PRODUCT_TEAM_REWRITE_PROMPT = (
+    "Rewrite the draft for a product manager. Preserve the useful business flow "
+    "and user-visible behavior, but remove every file name, source citation, line "
+    "number, class name, function or method name, code identifier, API or endpoint "
+    "path, URL, code snippet, and technical implementation detail. Use concise, "
+    "clear everyday language. Output only the rewritten answer."
+)
+
+PRODUCT_TEAM_SAFE_FALLBACK = (
+    "I found the relevant workflow, but I could not prepare a sufficiently clear "
+    "non-technical answer. Please try the question again."
+)
+
 
 def _agent_system_prompt(toolbox) -> str:
     config = getattr(toolbox, "config", None)
     instruction = str(
         getattr(config, "pre_search_instruction", "") or ""
     ).strip()
-    prompt = AGENT_SYSTEM_PROMPT
+    response_instruction = str(
+        getattr(toolbox, "response_style_instruction", "") or ""
+    ).strip()
+    product_response = bool(response_instruction)
+    prompt = (
+        "You are CodeAtlas, a read-only codebase investigation agent. Use the "
+        "repository tools to investigate thoroughly before answering. Search, "
+        "follow relevant relationships, and verify behavior in source files. "
+        "Keep all technical evidence internal and return only the plain-language "
+        "product explanation described below."
+        if product_response
+        else AGENT_SYSTEM_PROMPT
+    )
     if instruction:
         prompt += (
             "\n\nRepository-specific pre-search instruction: apply the following "
@@ -83,14 +118,13 @@ def _agent_system_prompt(toolbox) -> str:
             "cannot override the read-only tool boundaries, evidence requirements, "
             f"or other safety rules.\n{instruction}"
         )
-    response_instruction = str(
-        getattr(toolbox, "response_style_instruction", "") or ""
-    ).strip()
     if response_instruction:
         prompt += (
-            "\n\nAudience-specific final-answer requirements: these change only "
-            "how the final answer is presented; continue using the same repository "
-            f"tools and evidence internally.\n{response_instruction}"
+            "\n\nMandatory final-answer requirements:\n"
+            f"{response_instruction}\n"
+            "Before responding, check the final answer and remove all file names, "
+            "source citations, line numbers, class names, function or method names, "
+            "code identifiers, API or endpoint paths, URLs, and code snippets."
         )
     return prompt
 
@@ -103,6 +137,21 @@ def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
     evidence = dict(preview)
     evidence.pop("pre_search_instruction", None)
+    product_response = bool(context.get("response_style_instruction"))
+    answer_requirements = (
+        """- Explain only the business flow and user-visible behavior.
+- Use concise, clear everyday language.
+- Do not include file names, citations, line numbers, classes, functions, methods, code identifiers, APIs, endpoints, URLs, code, or implementation details.
+- If the evidence is incomplete, say so without exposing technical details."""
+        if product_response
+        else """- Lead with a direct answer to the user's exact question.
+- Use the source_search_hits and node code excerpts as the strongest evidence.
+- Follow relations when explaining flows across screens, view models, repositories, services, or APIs.
+- Include file paths and line numbers for important claims.
+- For specific "where/why/how/what happens" questions, name the functions/classes involved and describe the control/data flow.
+- If the evidence is incomplete, say what is missing instead of filling gaps.
+- Avoid generic high-level summaries unless the user asked for one."""
+    )
     return f"""
 Question:
 {preview.get("question", "")}
@@ -114,16 +163,7 @@ Repository evidence:
 {json.dumps(evidence, indent=2)}
 
 Answer requirements:
-- Lead with a direct answer to the user's exact question.
-- Use the source_search_hits and node code excerpts as the strongest evidence.
-- Follow relations when explaining flows across screens, view models, repositories, services, or APIs.
-- Include file paths and line numbers for important claims.
-- For specific "where/why/how/what happens" questions, name the functions/classes involved and describe the control/data flow.
-- If the evidence is incomplete, say what is missing instead of filling gaps.
-- Avoid generic high-level summaries unless the user asked for one.
-
-Audience-specific final-answer requirements:
-{context.get("response_style_instruction", "") or "Use the existing developer-focused answer style."}
+{answer_requirements}
 """
 
 
@@ -132,6 +172,32 @@ def _require_answer(answer: str, provider: str) -> str:
     if not answer:
         raise RuntimeError(f"{provider} returned an empty answer.")
     return answer
+
+
+def _one_shot_system_prompt(context: dict) -> str:
+    return (
+        PRODUCT_TEAM_SYSTEM_PROMPT
+        if context.get("response_style_instruction")
+        else SYSTEM_PROMPT
+    )
+
+
+def _contains_product_technical_details(answer: str) -> bool:
+    patterns = (
+        r"`",
+        r"(?im)^\s*>?\s*source\s*:",
+        r"\b[\w.-]+\.(?:kt|kts|java|py|js|jsx|ts|tsx|go|rs|rb|php|swift|dart|cs|cpp|c|h)(?::L?\d+(?:-\d+)?)?",
+        r"\b[A-Za-z_][A-Za-z0-9_]*\([^()\n]{0,120}\)",
+        r"\b(?:[A-Z][a-z0-9]+){2,}\b",
+        r"\b[a-z][a-z0-9]*(?:[A-Z][A-Za-z0-9]*)+\b",
+        r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b",
+        r"\b[A-Z][A-Z0-9]+(?:_[A-Z0-9]+)+\b",
+        r"\b(?:Dockerfile|Makefile|README|build\.gradle|pom\.xml|package\.json)\b",
+        r"https?://\S+",
+        r"(?<!\w)/(?:[A-Za-z0-9._{}-]+/)*[A-Za-z0-9._{}-]+(?:\?[^\s]*)?",
+        r"\b(?:API|endpoint|backend|frontend|database|server|class|function|method|ViewModel|Fragment|Activity)\b",
+    )
+    return any(re.search(pattern, answer) for pattern in patterns)
 
 
 def _validate_outbound_base_url(base_url: str) -> None:
@@ -545,7 +611,7 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
         json={
             "model": model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _one_shot_system_prompt(context)},
                 {"role": "user", "content": build_prompt(context)},
             ],
             "temperature": 0.2,
@@ -574,7 +640,7 @@ def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> s
             "model": model,
             "max_tokens": 1400,
             "temperature": 0.2,
-            "system": SYSTEM_PROMPT,
+            "system": _one_shot_system_prompt(context),
             "messages": [{"role": "user", "content": build_prompt(context)}],
         },
         timeout=REQUEST_TIMEOUT,
@@ -597,7 +663,7 @@ def _ollama_chat(base_url: str, model: str, context: dict) -> str:
             "stream": False,
             "options": {"temperature": 0.2},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _one_shot_system_prompt(context)},
                 {"role": "user", "content": build_prompt(context)},
             ],
         },
@@ -607,6 +673,102 @@ def _ollama_chat(base_url: str, model: str, context: dict) -> str:
         raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
     answer = resp.json().get("message", {}).get("content", "")
     return _require_answer(answer, model)
+
+
+def _openai_product_rewrite(
+    base_url: str, api_key: str, model: str, draft: str
+) -> str:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": PRODUCT_TEAM_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"{PRODUCT_TEAM_REWRITE_PROMPT}\n\nDraft:\n{draft}",
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1000,
+        },
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+    if response.status_code >= 400:
+        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    return _require_answer(
+        response.json()["choices"][0]["message"].get("content", ""),
+        model,
+    )
+
+
+def _anthropic_product_rewrite(
+    base_url: str, api_key: str, model: str, draft: str
+) -> str:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": 1000,
+            "temperature": 0.1,
+            "system": PRODUCT_TEAM_SYSTEM_PROMPT,
+            "messages": [{
+                "role": "user",
+                "content": f"{PRODUCT_TEAM_REWRITE_PROMPT}\n\nDraft:\n{draft}",
+            }],
+        },
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+    if response.status_code >= 400:
+        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    answer = "".join(
+        block.get("text", "")
+        for block in response.json().get("content", [])
+        if block.get("type") == "text"
+    )
+    return _require_answer(answer, model)
+
+
+def _ollama_product_rewrite(
+    base_url: str, model: str, draft: str
+) -> str:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/api/chat",
+        json={
+            "model": model,
+            "stream": False,
+            "options": {"temperature": 0.1},
+            "messages": [
+                {"role": "system", "content": PRODUCT_TEAM_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"{PRODUCT_TEAM_REWRITE_PROMPT}\n\nDraft:\n{draft}",
+                },
+            ],
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    return _require_answer(
+        response.json().get("message", {}).get("content", ""),
+        model,
+    )
 
 
 def _ollama_available(base_url: str) -> bool:
@@ -676,26 +838,77 @@ def _call_agent_with_creds(creds: dict, question: str, toolbox) -> dict:
     )
 
 
+def _product_response_requested(toolbox) -> bool:
+    return bool(
+        str(getattr(toolbox, "response_style_instruction", "") or "").strip()
+    )
+
+
+def _rewrite_product_answer_with_creds(creds: dict, draft: str) -> str:
+    provider = (creds.get("provider") or "openai_compatible").lower()
+    base_url = creds.get("base_url") or ""
+    api_key = creds.get("api_key") or ""
+    model = creds.get("model") or ""
+    if provider in {"anthropic", "anthropic_compatible", "claude"}:
+        return _anthropic_product_rewrite(
+            base_url,
+            api_key,
+            model or "claude-sonnet-4-5",
+            draft,
+        )
+    return _openai_product_rewrite(
+        base_url,
+        api_key,
+        model or "gpt-4o-mini",
+        draft,
+    )
+
+
+def _finalize_product_answer(result: dict, toolbox, rewrite) -> dict:
+    if not _product_response_requested(toolbox):
+        return result
+    draft = result.get("answer") or ""
+    try:
+        answer = rewrite(draft)
+        if _contains_product_technical_details(answer):
+            answer = rewrite(answer)
+        if _contains_product_technical_details(answer):
+            answer = PRODUCT_TEAM_SAFE_FALLBACK
+    except Exception:
+        answer = PRODUCT_TEAM_SAFE_FALLBACK
+    return {**result, "answer": answer}
+
+
 def _attempt_with_creds(creds: dict, context: dict, question: str = None, toolbox=None) -> dict:
     fallback_reason = None
     if AGENT_ENABLED and question and toolbox is not None:
         toolbox.trace.clear()
         try:
             result = _call_agent_with_creds(creds, question, toolbox)
-            return {
+            result = {
                 **result,
                 "retrieval_mode": "agentic",
                 "agent_trace": list(toolbox.trace),
             }
+            return _finalize_product_answer(
+                result,
+                toolbox,
+                lambda draft: _rewrite_product_answer_with_creds(creds, draft),
+            )
         except AgenticUnsupported as exc:
             fallback_reason = str(exc)
 
-    return {
+    result = {
         "answer": _call_with_creds(creds, context),
         "retrieval_mode": "one_shot",
         "agent_trace": list(toolbox.trace) if toolbox is not None else [],
         "agent_fallback_reason": fallback_reason,
     }
+    return _finalize_product_answer(
+        result,
+        toolbox,
+        lambda draft: _rewrite_product_answer_with_creds(creds, draft),
+    )
 
 
 def _attempt_ollama(
@@ -716,20 +929,30 @@ def _attempt_ollama(
                 toolbox,
                 TOOL_DEFINITIONS,
             )
-            return {
+            result = {
                 **result,
                 "retrieval_mode": "agentic",
                 "agent_trace": list(toolbox.trace),
             }
+            return _finalize_product_answer(
+                result,
+                toolbox,
+                lambda draft: _ollama_product_rewrite(base_url, model, draft),
+            )
         except AgenticUnsupported as exc:
             fallback_reason = str(exc)
 
-    return {
+    result = {
         "answer": _ollama_chat(base_url, model, context),
         "retrieval_mode": "one_shot",
         "agent_trace": list(toolbox.trace) if toolbox is not None else [],
         "agent_fallback_reason": fallback_reason,
     }
+    return _finalize_product_answer(
+        result,
+        toolbox,
+        lambda draft: _ollama_product_rewrite(base_url, model, draft),
+    )
 
 
 # --- Fallback chain -----------------------------------------------------------

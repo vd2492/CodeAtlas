@@ -200,7 +200,96 @@ class AgentLoopTests(unittest.TestCase):
 
         self.assertIn("everyday language only", agent_prompt)
         self.assertIn("Do not include technical terms", agent_prompt)
-        self.assertIn("everyday language only", one_shot_prompt)
+        self.assertIn("concise, clear everyday language", one_shot_prompt)
+        self.assertNotIn("Include file paths and line numbers", one_shot_prompt)
+        self.assertNotIn("name the functions/classes", one_shot_prompt)
+
+    def test_product_answer_is_rewritten_until_technical_details_are_removed(self):
+        toolbox = FakeToolbox(
+            response_style_instruction=client.PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        )
+        rewrites = iter([
+            "AreaHomeFragment.kt calls initUI() at /manifest/create.",
+            "The user selects the option and follows the guided steps.",
+        ])
+
+        result = client._finalize_product_answer(
+            {"answer": "Source: AreaHomeFragment.kt:10"},
+            toolbox,
+            lambda _draft: next(rewrites),
+        )
+
+        self.assertEqual(
+            result["answer"],
+            "The user selects the option and follows the guided steps.",
+        )
+        self.assertFalse(
+            client._contains_product_technical_details(result["answer"])
+        )
+
+    def test_product_answer_uses_safe_fallback_if_rewrite_stays_technical(self):
+        toolbox = FakeToolbox(
+            response_style_instruction=client.PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        )
+        result = client._finalize_product_answer(
+            {"answer": "AreaHomeFragment.kt:10"},
+            toolbox,
+            lambda _draft: "Call initUI() through /manifest/create.",
+        )
+
+        self.assertEqual(result["answer"], client.PRODUCT_TEAM_SAFE_FALLBACK)
+
+    def test_product_technical_detector_catches_common_leak_formats(self):
+        leaked_details = (
+            "getManifest(shipmentId)",
+            "manifestRepository",
+            "shipment_id",
+            "/manifest",
+            "Dockerfile",
+        )
+
+        for leaked_detail in leaked_details:
+            with self.subTest(leaked_detail=leaked_detail):
+                self.assertTrue(
+                    client._contains_product_technical_details(leaked_detail)
+                )
+
+    def test_product_agent_result_always_goes_through_rewrite_pass(self):
+        toolbox = FakeToolbox(
+            response_style_instruction=client.PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        )
+        creds = {
+            "provider": "openai",
+            "base_url": "https://example.test/v1",
+            "api_key": "key",
+            "model": "model",
+        }
+        with patch.object(
+            client,
+            "_call_agent_with_creds",
+            return_value={
+                "answer": "AreaHomeFragment.kt calls initUI().",
+                "rounds": 2,
+                "tool_calls": 3,
+            },
+        ), patch.object(
+            client,
+            "_rewrite_product_answer_with_creds",
+            return_value="The user selects the option and follows the guided steps.",
+        ) as rewrite:
+            result = client._attempt_with_creds(
+                creds,
+                {"llm_context_preview": {}},
+                question="Explain the workflow.",
+                toolbox=toolbox,
+            )
+
+        rewrite.assert_called_once()
+        self.assertEqual(result["retrieval_mode"], "agentic")
+        self.assertEqual(
+            result["answer"],
+            "The user selects the option and follows the guided steps.",
+        )
 
     def test_product_team_suffix_is_appended_only_to_llm_facing_question(self):
         context = {
@@ -231,6 +320,8 @@ class AgentLoopTests(unittest.TestCase):
         self.assertTrue(llm_question.endswith(client.PRODUCT_TEAM_QUERY_SUFFIX))
         self.assertEqual(context["llm_context_preview"]["question"], llm_question)
         self.assertEqual(result["question"], "How does checkout work?")
+        self.assertEqual(result["context"], {})
+        self.assertEqual(result["agent_trace"], [])
 
     def test_dev_team_question_is_not_modified(self):
         context = {

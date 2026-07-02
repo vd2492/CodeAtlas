@@ -1294,7 +1294,7 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         "answer": result["answer"],
         "provider_used": result["provider_used"],
         "retrieval_mode": result.get("retrieval_mode", "one_shot"),
-        "agent_trace": result.get("agent_trace", []),
+        "agent_trace": [] if user_type == "product_team" else result.get("agent_trace", []),
         "agent_rounds": result.get("rounds"),
         "agent_tool_calls": result.get("tool_calls", 0),
         **(
@@ -1302,7 +1302,7 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
             if result.get("agent_fallback_reason")
             else {}
         ),
-        "context": context,
+        "context": {} if user_type == "product_team" else context,
         "repository_version": repository_version,
     }
 

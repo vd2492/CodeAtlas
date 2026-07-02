@@ -163,13 +163,22 @@
 
     /* ---------- Hero ask ---------- */
     .hero { margin-bottom: 16px; }
+    .hero-heading {
+      display:flex; align-items:center; gap:9px; margin-bottom:14px;
+    }
     .hero-label {
       font-size: 13px;
       font-weight: 600;
       letter-spacing: 0.04em;
       text-transform: uppercase;
       color: var(--accent);
-      margin-bottom: 14px;
+    }
+    .user-mode-badge {
+      display:inline-flex; align-items:center; padding:3px 8px;
+      border:1px solid rgba(95,227,154,0.28); border-radius:999px;
+      background:rgba(95,227,154,0.08); color:var(--muted);
+      font-size:10px; font-weight:700; letter-spacing:0.04em;
+      text-transform:uppercase;
     }
 
     .ask-box {
@@ -843,7 +852,10 @@
 
     <!-- Main ask -->
     <section class="hero">
-      <div class="hero-label">Ask CodeAtlas</div>
+      <div class="hero-heading">
+        <div class="hero-label">Ask CodeAtlas</div>
+        <span id="userModeBadge" class="user-mode-badge">Dev team</span>
+      </div>
       <div class="ask-box">
         <span class="ask-icon" aria-hidden="true">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -917,6 +929,7 @@
     let LLM_MODE = 'mimo';
     let PERSONAL_KEY_CONFIGURED = false;
     let CONVERSATION_HISTORY = [];
+    let CURRENT_USER_TYPE = 'dev_team';
 
     function formatLocalTimestamp(value, fallback) {
       if (!value) return fallback;
@@ -1168,18 +1181,24 @@
     function populateRepos(repos) {
       const picker = document.getElementById('repoPicker');
       const usable = (repos || []).filter(r => r.status === 'published');
+      const hasGrantedRepositories = (repos || []).length > 0;
       const requested = requestedRepoIdentity();
       const requestedRepo = usable.find(
         repo => repo.slug === requested || repo.workspace === requested
       );
       picker.innerHTML = '';
       if (usable.length === 0) {
-        picker.innerHTML = '<option>No repositories granted</option>';
+        picker.innerHTML = hasGrantedRepositories
+          ? '<option>No published repositories available</option>'
+          : '<option>No repositories granted</option>';
         picker.disabled = true;
         WORKSPACE = null;
         BRANCH_ID = null;
         CONVERSATION_HISTORY = [];
         rememberSelectedRepo(null);
+        document.getElementById('result').innerHTML = hasGrantedRepositories
+          ? '<div class="error-box"><h2>No published repositories</h2><p>Your repository access exists, but an administrator must finish indexing and publish the repository before it can be used here.</p></div>'
+          : '<div class="error-box"><h2>No repository access</h2><p>An administrator must grant this account access to a published repository.</p></div>';
         return;
       }
 
@@ -1241,6 +1260,11 @@
       const res = await fetch('/auth/me');
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
+      CURRENT_USER_TYPE = data.user.user_type || 'dev_team';
+      const modeBadge = document.getElementById('userModeBadge');
+      modeBadge.textContent = CURRENT_USER_TYPE === 'product_team'
+        ? 'Product team'
+        : 'Dev team';
       populateRepos(data.repos);
       await loadBranches();
       await loadFlowButtons();
@@ -1258,6 +1282,7 @@
       try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
       WORKSPACE = null;
       BRANCH_ID = null;
+      CURRENT_USER_TYPE = 'dev_team';
       stopBranchPolling();
       CONVERSATION_HISTORY = [];
       window.location.href = '/';   // back to the landing page
@@ -1666,13 +1691,21 @@ If the current message refers to the recent exchange, use that context and inves
 
     async function submitQuestion(requestQuestion, userQuestion) {
       const result = document.getElementById('result');
-      result.innerHTML = `
-        <h2>Thinking…</h2>
-        <div class="loading-steps">
-          <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
-          <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
-        </div>
-      `;
+      result.innerHTML = CURRENT_USER_TYPE === 'product_team'
+        ? `
+          <h2>Thinking…</h2>
+          <div class="loading-steps">
+            <div class="step"><span class="spinner"></span> Understanding the workflow…</div>
+            <div class="step"><span class="dot-pulse"></span> Preparing a clear explanation…</div>
+          </div>
+        `
+        : `
+          <h2>Thinking…</h2>
+          <div class="loading-steps">
+            <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
+            <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
+          </div>
+        `;
 
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -1700,7 +1733,10 @@ If the current message refers to the recent exchange, use that context and inves
         const sourceHits = data.context?.source_hits || [];
         const agentTrace = data.agent_trace || [];
 
-        const contextSection = (nodes.length || sourceHits.length || agentTrace.length) ? `
+        const contextSection = (
+          CURRENT_USER_TYPE !== 'product_team'
+          && (nodes.length || sourceHits.length || agentTrace.length)
+        ) ? `
           <details>
             <summary>Grounded Evidence <span class="badge">${agentTrace.length || (nodes.length + sourceHits.length)}</span></summary>
             <div class="details-body">
@@ -1751,6 +1787,12 @@ If the current message refers to the recent exchange, use that context and inves
         const versionLabel = version
           ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
           : '';
+        const answerMetadata = CURRENT_USER_TYPE === 'product_team'
+          ? '<p class="src" style="margin-top:0">Product team response</p>'
+          : `
+            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
+            ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
+          `;
         CONVERSATION_HISTORY.push({
           question: userQuestion,
           answer: String(data.answer || ''),
@@ -1759,8 +1801,7 @@ If the current message refers to the recent exchange, use that context and inves
         result.innerHTML = `
           ${followUpComposer()}
           <h2>CodeAtlas Answer</h2>
-          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
-          ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
+          ${answerMetadata}
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
