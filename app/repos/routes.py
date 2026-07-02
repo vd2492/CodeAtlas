@@ -88,7 +88,7 @@ def list_repos(admin: dict = Depends(require_admin)):
 
 @router.post("")
 def add_repo(req: AddRepoRequest, admin: dict = Depends(require_admin)):
-    """Register + clone a repo (https/ssh/gh) into a new workspace."""
+    """Register and clone a repo, or retry an incomplete initial clone."""
     if not SLUG_RE.match(req.slug):
         raise HTTPException(
             status_code=400,
@@ -96,23 +96,56 @@ def add_repo(req: AddRepoRequest, admin: dict = Depends(require_admin)):
         )
     if req.clone_method not in ("https", "ssh", "gh"):
         raise HTTPException(status_code=400, detail="clone_method must be https, ssh, or gh.")
-    if db.get_repo_by_slug(req.slug):
+
+    existing = db.get_repo_by_slug(req.slug)
+    retrying = existing is not None
+    if existing and existing["status"] != "new":
         raise HTTPException(status_code=409, detail=f"slug '{req.slug}' already exists.")
 
-    workspace = req.slug
     stored_source_url = sanitize_clone_url(req.source_url)
-    repo = db.create_repo(
-        req.slug, req.name, stored_source_url, req.clone_method, workspace
-    )
+    if existing:
+        workspace = existing["workspace"]
+        # A failed git clone can leave a partial directory behind. Status "new"
+        # means it was never accepted as a complete clone, so it is safe to
+        # replace only that working copy and preserve the repository record.
+        remove_repo_clone(workspace)
+        db.update_repo(
+            req.slug,
+            name=req.name,
+            source_url=stored_source_url,
+            clone_method=req.clone_method,
+        )
+    else:
+        workspace = req.slug
+        if repo_clone_dir(workspace).exists():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Workspace '{workspace}' already contains repository files; "
+                    "refusing to overwrite them."
+                ),
+            )
+        db.create_repo(
+            req.slug, req.name, stored_source_url, req.clone_method, workspace
+        )
+
     try:
         clone_repo(req.source_url, req.clone_method, workspace)
     except Exception as exc:
-        db.set_repo_status(req.slug, "new")  # leave row; surface the error
-        raise HTTPException(status_code=400, detail=f"Clone failed: {exc}")
+        remove_repo_clone(workspace)
+        db.set_repo_status(req.slug, "new")
+        operation = "Recloning" if retrying else "Cloning"
+        raise HTTPException(status_code=400, detail=f"{operation} failed: {exc}")
+
     db.set_repo_status(req.slug, "cloned")
     ensure_repo_branch(db.get_repo_by_slug(req.slug))
-    db.record_audit(admin["username"], "add_repo", req.slug, stored_source_url)
-    return {"repo": db.get_repo_by_slug(req.slug)}
+    db.record_audit(
+        admin["username"],
+        "retry_clone_repo" if retrying else "add_repo",
+        req.slug,
+        stored_source_url,
+    )
+    return {"repo": db.get_repo_by_slug(req.slug), "retried": retrying}
 
 
 @router.post("/{slug}/reclone")

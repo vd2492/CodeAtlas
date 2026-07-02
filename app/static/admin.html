@@ -1115,9 +1115,17 @@ $("addRepoBtn").onclick = async () => {
   });
   $("addRepoBtn").disabled = true;
   flash("Cloning…", true);
-  try { await api("/admin/repos", { method: "POST", body }); flash("Cloned. Now Index it.", true);
-        $("newName").value = $("newSlug").value = $("newUrl").value = ""; refreshRepos(); refreshAudit(); }
-  catch (e) { flash(e.message); }
+  try {
+    const data = await api("/admin/repos", { method: "POST", body });
+    flash(data.retried ? "Recloned successfully. Now Index it." : "Cloned. Now Index it.", true);
+    $("newName").value = $("newSlug").value = $("newUrl").value = "";
+    refreshRepos();
+    refreshAudit();
+  }
+  catch (e) {
+    flash(e.message);
+    refreshRepos();
+  }
   finally { $("addRepoBtn").disabled = false; }
 };
 
