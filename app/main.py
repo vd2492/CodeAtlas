@@ -1203,6 +1203,7 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
         "source_hits": source_hits,
         "llm_context_preview": {
             "instruction": "Answer the user's codebase question using the repo overview, graph context, relations, and source search snippets. Cite source files and line numbers. Prefer evidence from source snippets over names. If the evidence is incomplete, say exactly what could not be verified.",
+            "pre_search_instruction": config.pre_search_instruction,
             "question": question,
             "repo_overview": _repo_overview(nodes, links),
             "nodes": [

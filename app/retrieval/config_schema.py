@@ -8,8 +8,10 @@ workspace (today the builder uses equivalent hardcoded defaults).
 """
 
 import json
+import math
+import uuid
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Mapping
 
 from ..config import DEFAULT_WORKSPACE, retrieval_config_path
 
@@ -21,9 +23,22 @@ DEFAULT_STOPWORDS: List[str] = [
     "of", "to", "for", "and", "or", "with", "this", "that", "about", "flow",
 ]
 
+DEFAULT_PRE_SEARCH_INSTRUCTION = (
+    "First, translate the user's terminology into the codebase's canonical "
+    "terminology. Users often use business or colloquial terms that don't match "
+    "actual class, feature, module, or file names. Before searching or making "
+    "changes, identify the most likely internal name(s), including synonyms, "
+    "abbreviations, legacy names, and business terms. Use the mapped codebase "
+    "names for all subsequent search and reasoning. If multiple mappings are "
+    "possible, consider all likely candidates before proceeding."
+)
+
 
 @dataclass
 class RetrievalConfig:
+    # Free-text guidance for the read-only agent's terminology/search planning.
+    pre_search_instruction: str = DEFAULT_PRE_SEARCH_INSTRUCTION
+
     # Query understanding
     stopwords: List[str] = field(default_factory=lambda: list(DEFAULT_STOPWORDS))
     synonyms: Dict[str, List[str]] = field(default_factory=dict)        # term -> expansions
@@ -52,6 +67,99 @@ class RetrievalConfig:
         return cls(**{k: v for k, v in (data or {}).items() if k in known})
 
 
+class RetrievalConfigValidationError(ValueError):
+    """Raised when an admin-supplied retrieval config has an invalid shape."""
+
+
+def validate_retrieval_config(data: object) -> RetrievalConfig:
+    """Validate JSON data strictly and return the canonical config.
+
+    Missing fields retain their defaults, while unknown fields and mismatched
+    types are rejected so a typo cannot be silently saved and ignored.
+    """
+    if not isinstance(data, dict):
+        raise RetrievalConfigValidationError("Config must be a JSON object.")
+
+    known = set(RetrievalConfig.__dataclass_fields__)
+    unknown = sorted(set(data) - known)
+    if unknown:
+        names = ", ".join(unknown)
+        raise RetrievalConfigValidationError(f"Unknown config field(s): {names}.")
+
+    if "pre_search_instruction" in data:
+        instruction = data["pre_search_instruction"]
+        if not isinstance(instruction, str):
+            raise RetrievalConfigValidationError(
+                "'pre_search_instruction' must be a string."
+            )
+        if len(instruction) > 4000:
+            raise RetrievalConfigValidationError(
+                "'pre_search_instruction' must be 4000 characters or fewer."
+            )
+
+    def string_list(field_name: str) -> None:
+        value = data.get(field_name)
+        if value is None and field_name not in data:
+            return
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise RetrievalConfigValidationError(
+                f"'{field_name}' must be an array of strings."
+            )
+
+    for field_name in ("stopwords", "preferred_components", "preferred_methods"):
+        string_list(field_name)
+
+    synonyms = data.get("synonyms")
+    if synonyms is not None or "synonyms" in data:
+        if not isinstance(synonyms, Mapping) or any(
+            not isinstance(term, str)
+            or not isinstance(expansions, list)
+            or any(not isinstance(expansion, str) for expansion in expansions)
+            for term, expansions in (synonyms.items() if isinstance(synonyms, Mapping) else ())
+        ):
+            raise RetrievalConfigValidationError(
+                "'synonyms' must be an object whose values are arrays of strings."
+            )
+
+    boosts = data.get("keyword_boosts")
+    if boosts is not None or "keyword_boosts" in data:
+        if not isinstance(boosts, Mapping) or any(
+            not isinstance(term, str)
+            or isinstance(multiplier, bool)
+            or not isinstance(multiplier, (int, float))
+            or not math.isfinite(multiplier)
+            or multiplier <= 0
+            for term, multiplier in (boosts.items() if isinstance(boosts, Mapping) else ())
+        ):
+            raise RetrievalConfigValidationError(
+                "'keyword_boosts' must be an object with positive numeric values."
+            )
+
+    for field_name in (
+        "node_limit",
+        "relation_limit",
+        "excerpt_nodes",
+        "excerpt_max_lines",
+        "excerpt_max_chars",
+    ):
+        if field_name not in data:
+            continue
+        value = data[field_name]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RetrievalConfigValidationError(
+                f"'{field_name}' must be a positive integer."
+            )
+
+    if "allow_shared_fallback" in data and not isinstance(
+        data["allow_shared_fallback"], bool
+    ):
+        raise RetrievalConfigValidationError(
+            "'allow_shared_fallback' must be true or false."
+        )
+
+    return RetrievalConfig.from_dict(data)
+
+
 def load_retrieval_config(workspace: str) -> RetrievalConfig:
     path = retrieval_config_path(workspace)
     if path.exists():
@@ -62,7 +170,12 @@ def load_retrieval_config(workspace: str) -> RetrievalConfig:
 def save_retrieval_config(workspace: str, config: RetrievalConfig) -> None:
     path = retrieval_config_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config.to_dict(), indent=2))
+    temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary_path.write_text(json.dumps(config.to_dict(), indent=2))
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 # --- Default workspace seed --------------------------------------------------

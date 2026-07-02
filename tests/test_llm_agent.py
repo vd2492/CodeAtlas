@@ -1,5 +1,6 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.llm import client
@@ -16,8 +17,11 @@ class FakeResponse:
 
 
 class FakeToolbox:
-    def __init__(self):
+    def __init__(self, pre_search_instruction=""):
         self.trace = []
+        self.config = SimpleNamespace(
+            pre_search_instruction=pre_search_instruction
+        )
 
     def call(self, name, arguments):
         self.trace.append({"tool": name, "arguments": arguments, "result": {"ok": True}})
@@ -26,7 +30,9 @@ class FakeToolbox:
 
 class AgentLoopTests(unittest.TestCase):
     def test_openai_agent_executes_tool_then_answers(self):
-        toolbox = FakeToolbox()
+        toolbox = FakeToolbox(
+            "Map customer-facing terms to canonical symbols before searching."
+        )
         responses = [
             FakeResponse({
                 "choices": [{
@@ -65,6 +71,11 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(result["tool_calls"], 1)
         self.assertEqual(result["rounds"], 2)
         self.assertIn("src/auth.py", result["answer"])
+        first_messages = post.call_args_list[0].kwargs["json"]["messages"]
+        self.assertIn(
+            "Map customer-facing terms to canonical symbols",
+            first_messages[0]["content"],
+        )
         second_messages = post.call_args_list[1].kwargs["json"]["messages"]
         self.assertEqual(second_messages[-1]["role"], "tool")
         self.assertEqual(second_messages[-1]["tool_call_id"], "call_1")

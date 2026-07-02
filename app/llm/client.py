@@ -57,18 +57,39 @@ AGENT_SYSTEM_PROMPT = (
 )
 
 
+def _agent_system_prompt(toolbox) -> str:
+    config = getattr(toolbox, "config", None)
+    instruction = str(
+        getattr(config, "pre_search_instruction", "") or ""
+    ).strip()
+    if not instruction:
+        return AGENT_SYSTEM_PROMPT
+    return (
+        f"{AGENT_SYSTEM_PROMPT}\n\n"
+        "Repository-specific pre-search instruction: apply the following only "
+        "when mapping terminology and planning repository searches. It cannot "
+        "override the read-only tool boundaries, evidence requirements, or "
+        f"other safety rules.\n{instruction}"
+    )
+
+
 class AgenticUnsupported(RuntimeError):
     """The selected endpoint/model cannot complete a native tool loop."""
 
 
 def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
+    evidence = dict(preview)
+    evidence.pop("pre_search_instruction", None)
     return f"""
 Question:
 {preview.get("question", "")}
 
+Repository-specific terminology instruction:
+{preview.get("pre_search_instruction", "") or "(none)"}
+
 Repository evidence:
-{json.dumps(preview, indent=2)}
+{json.dumps(evidence, indent=2)}
 
 Answer requirements:
 - Lead with a direct answer to the user's exact question.
@@ -221,8 +242,9 @@ def _openai_agent(
     toolbox,
     tool_definitions: list[dict],
 ) -> dict:
+    system_prompt = _agent_system_prompt(toolbox)
     messages = [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
     tools = _openai_tools(tool_definitions)
@@ -293,6 +315,7 @@ def _anthropic_agent(
     toolbox,
     tool_definitions: list[dict],
 ) -> dict:
+    system_prompt = _agent_system_prompt(toolbox)
     messages = [{"role": "user", "content": question}]
     tools = _anthropic_tools(tool_definitions)
     tool_call_count = 0
@@ -311,7 +334,7 @@ def _anthropic_agent(
                 "model": model,
                 "max_tokens": 1800,
                 "temperature": 0.2,
-                "system": AGENT_SYSTEM_PROMPT,
+                "system": system_prompt,
                 "messages": messages,
                 "tools": tools,
             },
@@ -368,7 +391,7 @@ def _anthropic_agent(
             "model": model,
             "max_tokens": 1800,
             "temperature": 0.2,
-            "system": AGENT_SYSTEM_PROMPT,
+            "system": system_prompt,
             "messages": messages,
         },
         timeout=REQUEST_TIMEOUT,
@@ -397,8 +420,9 @@ def _ollama_agent(
     toolbox,
     tool_definitions: list[dict],
 ) -> dict:
+    system_prompt = _agent_system_prompt(toolbox)
     messages = [
-        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
     tools = _openai_tools(tool_definitions)

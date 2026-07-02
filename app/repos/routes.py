@@ -9,16 +9,18 @@ require an admin session, and privileged actions are recorded to the audit log.
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from .. import db
 from ..auth.sessions import require_admin
-from ..config import DEFAULT_WORKSPACE, repo_clone_dir
+from ..config import DEFAULT_WORKSPACE, repo_clone_dir, retrieval_config_path
 from ..retrieval.config_schema import (
     RetrievalConfig,
+    RetrievalConfigValidationError,
     load_retrieval_config,
     save_retrieval_config,
+    validate_retrieval_config,
 )
 from .cloning import clone_repo, remove_repo_clone, remove_workspace, sanitize_clone_url
 from .branches import (
@@ -182,24 +184,60 @@ def index_repo_route(slug: str, admin: dict = Depends(require_admin)):
 
 
 @router.get("/{slug}/config")
-def get_retrieval_config(slug: str, admin: dict = Depends(require_admin)):
+def get_retrieval_config(
+    slug: str, response: Response, admin: dict = Depends(require_admin)
+):
     """Read the safe, config-only retrieval settings for this repo."""
     repo = _require_repo(slug)
-    return {"config": load_retrieval_config(repo["workspace"]).to_dict()}
+    saved_path = retrieval_config_path(repo["workspace"])
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return {
+        "config": load_retrieval_config(repo["workspace"]).to_dict(),
+        "source": "saved" if saved_path.is_file() else "default",
+    }
+
+
+def _validated_retrieval_config(config: object) -> RetrievalConfig:
+    try:
+        return validate_retrieval_config(config)
+    except RetrievalConfigValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{slug}/config/validate")
+def validate_retrieval_config_route(
+    slug: str,
+    config: dict,
+    response: Response,
+    admin: dict = Depends(require_admin),
+):
+    """Validate and normalize retrieval settings without saving them."""
+    _require_repo(slug)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {"config": _validated_retrieval_config(config).to_dict()}
 
 
 @router.put("/{slug}/config")
-def update_retrieval_config(slug: str, config: dict, admin: dict = Depends(require_admin)):
+def update_retrieval_config(
+    slug: str,
+    config: dict,
+    response: Response,
+    admin: dict = Depends(require_admin),
+):
     """Update retrieval settings (stopwords, synonyms, boosts, limits, ...).
 
-    Data-only: unknown keys are dropped by RetrievalConfig.from_dict. Effect on
-    retrieval lands in Phase 3; this persists the config now.
+    Invalid or unknown fields are rejected instead of being silently ignored.
     """
     repo = _require_repo(slug)
-    parsed = RetrievalConfig.from_dict(config)
+    parsed = _validated_retrieval_config(config)
     save_retrieval_config(repo["workspace"], parsed)
     copy_config_to_active_branch_workspaces(repo)
-    return {"config": parsed.to_dict()}
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {
+        "config": load_retrieval_config(repo["workspace"]).to_dict(),
+        "source": "saved",
+    }
 
 
 @router.post("/{slug}/publish")

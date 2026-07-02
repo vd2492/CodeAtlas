@@ -108,9 +108,13 @@
     .switch input:checked + .track { background: var(--ok); }
     .switch input:checked + .track::after { transform: translateX(17px); }
     .switch .swlabel { font-size: 12px; color: var(--muted); min-width: 22px; }
-    .msg { padding: 9px 12px; border-radius: 8px; margin: 10px 0; font-size: 13px; display:none; }
-    .msg.err { background: rgba(255,80,80,.12); color: #ff9a9a; display:block; }
-    .msg.ok { background: rgba(62,207,142,.12); color: var(--ok); display:block; }
+    .msg { position:fixed; z-index:200; top:18px; right:18px; max-width:min(420px,calc(100vw - 36px));
+      padding:11px 14px; border:1px solid var(--line); border-radius:9px; margin:0; font-size:13px;
+      box-shadow:0 12px 35px rgba(0,0,0,.28); display:none; }
+    .msg.err { background:#35191d; border-color:rgba(255,90,90,.35); color:#ffb0b0; display:block; }
+    .msg.ok { background:#102d20; border-color:rgba(62,207,142,.35); color:#8df0ba; display:block; }
+    [data-theme="light"] .msg.err { background:#fff1f1; color:#a92e36; }
+    [data-theme="light"] .msg.ok { background:#ebfff4; color:#087949; }
     .user-edit-error { min-height:18px; color:#ff9a9a; font-size:12px; }
     .hidden { display: none; }
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
@@ -124,7 +128,7 @@
     .branch-picker { display:grid; gap:6px; }
     .branch-picker label { margin-bottom:-2px; }
     .branch-filter-meta { margin-left:7px; color:var(--muted); font-size:11px; font-weight:400; }
-    .config-actions { display:flex; align-items:center; gap:10px; }
+    .config-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; }
     .guide-dialog { width:760px; max-width:94vw; max-height:86vh; overflow:auto; margin:0; }
     .guide-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
     .guide-head h2 { margin:0 0 5px; color:var(--fg); }
@@ -176,7 +180,7 @@
       </div>
     </div>
   </header>
-  <div id="globalMsg" class="msg"></div>
+  <div id="globalMsg" class="msg" role="status" aria-live="polite"></div>
 
   <!-- In-page modal (replaces window.prompt/confirm, which embedded browsers block) -->
   <div id="modal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
@@ -240,12 +244,13 @@
       </div>
 
       <div class="guide-workflow">
-        <strong>Workflow:</strong> select a repository → Load → make a small JSON change → Save → test the same question above.
+        <strong>Workflow:</strong> select a repository → Load (or start from Default) → make a small JSON change → Save → test the same question above.
         Changes apply to future retrieval immediately; reindexing is not required.
       </div>
 
       <h3 style="margin:0;font-size:14px;">What each field controls and improves</h3>
       <div class="guide-fields">
+        <div class="guide-field"><code>pre_search_instruction</code><br>Guides the read-only agent to translate business or colloquial language into likely codebase terminology before choosing search terms.<span class="guide-benefit"><strong>Benefit:</strong> improves discovery when user language differs from internal class, module, feature, or legacy names.</span></div>
         <div class="guide-field"><code>stopwords</code><br>Common words removed before matching. Keep domain terms such as “checkout” or “authentication”.<span class="guide-benefit"><strong>Benefit:</strong> cleaner search signals and fewer irrelevant matches.</span></div>
         <div class="guide-field"><code>synonyms</code><br>Expands a question term into vocabulary used by the codebase.<span class="guide-benefit"><strong>Benefit:</strong> finds the right code even when users and developers use different words.</span></div>
         <div class="guide-field"><code>keyword_boosts</code><br>Score multipliers for especially important search terms. Start around <code>1.5–2.0</code>.<span class="guide-benefit"><strong>Benefit:</strong> lifts business-critical features above generic matches.</span></div>
@@ -405,7 +410,9 @@
         <div><label>Repository</label><select id="cfgRepo"><option value="" selected disabled>Select repository</option></select></div>
         <div class="config-actions" style="flex:0 0 auto">
           <button id="retrievalGuideBtn" class="ghost" type="button">Guide</button>
+          <button id="cfgDefault" class="ghost" disabled>Default</button>
           <button id="cfgLoad" class="ghost" disabled>Load</button>
+          <button id="cfgValidate" class="ghost" disabled>Validate</button>
           <button id="cfgSave" disabled>Save</button>
         </div>
       </div>
@@ -454,6 +461,7 @@ async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
+    cache: "no-store",
     ...opts,
   });
   let data = null;
@@ -462,11 +470,13 @@ async function api(path, opts = {}) {
   return data;
 }
 
+let flashTimer = null;
 function flash(msg, ok = false) {
   const el = $("globalMsg");
+  if (flashTimer) clearTimeout(flashTimer);
   el.textContent = msg;
   el.className = "msg " + (ok ? "ok" : "err");
-  setTimeout(() => { el.className = "msg"; }, 4000);
+  flashTimer = setTimeout(() => { el.className = "msg"; }, 4000);
 }
 
 // ---- in-page modal (works in embedded browsers, unlike window.prompt/confirm) ----
@@ -544,7 +554,9 @@ async function showConsole(me) {
 function updateRepoToolActions() {
   $("testBtn").disabled = !$("testRepo").value;
   const configSelected = Boolean($("cfgRepo").value);
+  $("cfgDefault").disabled = !configSelected;
   $("cfgLoad").disabled = !configSelected;
+  $("cfgValidate").disabled = !configSelected;
   $("cfgSave").disabled = !configSelected;
 }
 
@@ -1129,18 +1141,65 @@ function closeRetrievalGuide() {
 $("retrievalGuideBtn").onclick = openRetrievalGuide;
 $("retrievalGuideClose").onclick = closeRetrievalGuide;
 
+$("cfgDefault").onclick = async () => {
+  const slug = $("cfgRepo").value;
+  if (!slug) return flash("Select a repository.");
+  try {
+    const { config } = await api(`/admin/repos/${slug}/config/validate`, {
+      method: "POST",
+      body: "{}",
+    });
+    $("cfgText").value = JSON.stringify(config, null, 2);
+    $("cfgText").scrollTop = 0;
+    flash("Defaults loaded into the editor. Click Save to apply them.", true);
+  } catch (e) { flash(e.message); }
+};
 $("cfgLoad").onclick = async () => {
   const slug = $("cfgRepo").value;
   if (!slug) return flash("Select a repository.");
-  try { const { config } = await api(`/admin/repos/${slug}/config`); $("cfgText").value = JSON.stringify(config, null, 2); }
+  try {
+    const { config, source } = await api(
+      `/admin/repos/${slug}/config?fresh=${Date.now()}`
+    );
+    $("cfgText").value = JSON.stringify(config, null, 2);
+    $("cfgText").scrollTop = 0;
+    flash(
+      source === "saved"
+        ? `Loaded saved config for ${slug}`
+        : `No saved config for ${slug}; loaded defaults`,
+      true,
+    );
+  }
   catch (e) { flash(e.message); }
+};
+$("cfgValidate").onclick = async () => {
+  const slug = $("cfgRepo").value;
+  if (!slug) return flash("Select a repository.");
+  let parsed;
+  try { parsed = JSON.parse($("cfgText").value); }
+  catch (e) { return flash("Invalid JSON: " + e.message); }
+  try {
+    const { config } = await api(`/admin/repos/${slug}/config/validate`, {
+      method: "POST",
+      body: JSON.stringify(parsed),
+    });
+    $("cfgText").value = JSON.stringify(config, null, 2);
+    flash("Config is valid", true);
+  } catch (e) { flash(e.message); }
 };
 $("cfgSave").onclick = async () => {
   const slug = $("cfgRepo").value;
   if (!slug) return flash("Select a repository.");
   let parsed;
   try { parsed = JSON.parse($("cfgText").value); } catch (e) { return flash("Invalid JSON: " + e.message); }
-  try { await api(`/admin/repos/${slug}/config`, { method: "PUT", body: JSON.stringify(parsed) }); flash("Config saved", true); }
+  try {
+    const { config } = await api(`/admin/repos/${slug}/config`, {
+      method: "PUT",
+      body: JSON.stringify(parsed),
+    });
+    $("cfgText").value = JSON.stringify(config, null, 2);
+    flash(`Config saved for ${slug}`, true);
+  }
   catch (e) { flash(e.message); }
 };
 
