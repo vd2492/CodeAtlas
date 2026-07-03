@@ -299,7 +299,8 @@
       border-color: transparent;
       box-shadow: 0 8px 22px -10px rgba(95, 227, 154, 0.75);
     }
-    .personal-llm input {
+    .personal-llm input,
+    .personal-llm select {
       flex: 1 1 180px;
       min-width: 0;
       padding: 11px 14px;
@@ -311,7 +312,11 @@
       outline: none;
       transition: border-color 0.18s ease;
     }
-    .personal-llm input:focus { border-color: rgba(95, 227, 154, 0.45); }
+    .personal-llm select {
+      cursor: pointer;
+    }
+    .personal-llm input:focus,
+    .personal-llm select:focus { border-color: rgba(95, 227, 154, 0.45); }
     .personal-llm input::placeholder { color: var(--faint); }
     .personal-llm .btn-primary {
       flex-basis: 100%;
@@ -866,8 +871,37 @@
         <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
       </div>
       <div class="personal-llm">
-        <input id="keyApi" type="password" placeholder="Personal API key" autocomplete="off" />
-        <input id="keyModel" placeholder="Model name (optional)" autocomplete="off" />
+        <input id="keyApi" type="password" placeholder="Personal API key"
+          aria-label="Personal API key" autocomplete="off" />
+        <input id="keyModel" value="mimo-v2.5" placeholder="Model name"
+          aria-label="Model name" autocomplete="off" />
+        <select id="keyProviderPreset" aria-label="LLM provider"
+          onchange="onLlmProviderPresetChange()">
+          <option value="https://api.xiaomimimo.com/v1"
+            data-provider="openai_compatible" data-model="mimo-v2.5">MiMo pay-as-you-go</option>
+          <option value="https://token-plan-cn.xiaomimimo.com/v1"
+            data-provider="openai_compatible" data-model="mimo-v2.5">MiMo Token Plan — China</option>
+          <option value="https://token-plan-sgp.xiaomimimo.com/v1"
+            data-provider="openai_compatible" data-model="mimo-v2.5">MiMo Token Plan — Singapore</option>
+          <option value="https://token-plan-ams.xiaomimimo.com/v1"
+            data-provider="openai_compatible" data-model="mimo-v2.5">MiMo Token Plan — Europe</option>
+          <option value="https://api.openai.com/v1"
+            data-provider="openai" data-model="gpt-4o-mini">OpenAI</option>
+          <option value="https://api.anthropic.com"
+            data-provider="anthropic" data-model="claude-sonnet-4-5">Anthropic</option>
+          <option value="https://openrouter.ai/api/v1"
+            data-provider="openai_compatible" data-model="openai/gpt-4o-mini">OpenRouter</option>
+          <option value="https://api.groq.com/openai/v1"
+            data-provider="openai_compatible" data-model="openai/gpt-oss-20b">Groq</option>
+          <option value="https://api.together.ai/v1"
+            data-provider="openai_compatible" data-model="openai/gpt-oss-20b">Together AI</option>
+          <option value="https://api.mistral.ai/v1"
+            data-provider="openai_compatible" data-model="mistral-medium-latest">Mistral AI</option>
+          <option value="" data-provider="openai_compatible">Custom endpoint</option>
+        </select>
+        <input id="keyBaseUrl" value="https://api.xiaomimimo.com/v1"
+          placeholder="Base URL (e.g. https://host/v1)" aria-label="LLM API base URL"
+          autocomplete="url" />
         <button type="button" class="btn-primary" onclick="saveKey()">Use personal LLM key</button>
       </div>
       <div id="keyStatus" class="src"></div>
@@ -1369,6 +1403,35 @@
       }
     }
 
+    function onLlmProviderPresetChange() {
+      const preset = document.getElementById('keyProviderPreset');
+      const option = preset.selectedOptions[0];
+      document.getElementById('keyBaseUrl').value = option.value;
+      if (option.dataset.model) {
+        document.getElementById('keyModel').value = option.dataset.model;
+      }
+    }
+
+    function normalizeLlmBaseUrl(value) {
+      return String(value || '').trim().replace(/\/+$/, '');
+    }
+
+    function selectLlmProviderForSavedConfig(baseUrl, provider) {
+      const preset = document.getElementById('keyProviderPreset');
+      const normalizedBaseUrl = normalizeLlmBaseUrl(baseUrl);
+      const matchingOption = Array.from(preset.options).find(
+        option => option.value
+          && normalizeLlmBaseUrl(option.value) === normalizedBaseUrl
+      );
+      if (matchingOption) {
+        preset.value = matchingOption.value;
+        return;
+      }
+      preset.value = '';
+      preset.selectedOptions[0].dataset.provider =
+        provider || 'openai_compatible';
+    }
+
     async function loadLlmStatus() {
       LLM_MODE = getSavedLlmMode();
       try {
@@ -1376,6 +1439,8 @@
         PERSONAL_KEY_CONFIGURED = Boolean(s.configured);
         if (s.configured) {
           document.getElementById('keyModel').value = s.model || '';
+          document.getElementById('keyBaseUrl').value = s.base_url || '';
+          selectLlmProviderForSavedConfig(s.base_url || '', s.provider || '');
         }
       } catch (e) {
         PERSONAL_KEY_CONFIGURED = false;
@@ -1383,11 +1448,38 @@
       updateLlmModeUi();
     }
 
+    function llmErrorMessage(data) {
+      const detail = String(data?.detail || data?.error || 'LLM request failed.');
+      const providerMessage = detail.match(/"message"\s*:\s*"([^"]+)"/);
+      const message = providerMessage ? providerMessage[1] : detail;
+      if (/invalid api key/i.test(message)) {
+        return `${message}. Re-enter the key and select the matching provider endpoint. `
+          + 'MiMo tp- keys require a regional Token Plan endpoint; MiMo sk- keys '
+          + 'require MiMo pay-as-you-go.';
+      }
+      return message;
+    }
+
     async function saveKey() {
       const errEl = document.getElementById('keyErr');
       errEl.textContent = '';
+      const preset = document.getElementById('keyProviderPreset');
+      const baseUrl = normalizeLlmBaseUrl(
+        document.getElementById('keyBaseUrl').value
+      );
+      if (!baseUrl) {
+        errEl.textContent = 'Select a provider or enter its API base URL.';
+        return;
+      }
+      document.getElementById('keyBaseUrl').value = baseUrl;
+      selectLlmProviderForSavedConfig(
+        baseUrl,
+        preset.selectedOptions[0].dataset.provider || 'openai_compatible'
+      );
       const body = {
         api_key: document.getElementById('keyApi').value,
+        provider: preset.selectedOptions[0].dataset.provider || 'openai_compatible',
+        base_url: baseUrl,
         model: document.getElementById('keyModel').value || null,
       };
       try {
@@ -1395,7 +1487,7 @@
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
         const data = await res.json();
-        if (!res.ok) { errEl.textContent = data.detail || 'Failed to save'; return; }
+        if (!res.ok) { errEl.textContent = llmErrorMessage(data); return; }
         document.getElementById('keyApi').value = '';
         PERSONAL_KEY_CONFIGURED = true;
         setLlmMode('personal');
@@ -1787,10 +1879,11 @@ If the current message refers to the recent exchange, use that context and inves
         const data = await res.json();
 
         if (!res.ok) {
+          const errorMessage = llmErrorMessage(data);
           result.innerHTML = `
             <div class="error-box">
               <h2>LLM Error</h2>
-              <pre>${JSON.stringify(data, null, 2)}</pre>
+              <p>${escapeHtml(errorMessage)}</p>
             </div>
           `;
           return;

@@ -646,6 +646,17 @@ def root(request: Request):
     return response
 
 
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """Load-balancer readiness check covering the app and SQLite data path."""
+    try:
+        with db.connect() as connection:
+            connection.execute("SELECT 1").fetchone()
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Database unavailable.") from error
+    return {"status": "ok"}
+
+
 @app.get("/app")
 def ask_ui():
     """The user Ask UI (current login flow): login → repo picker → ask."""

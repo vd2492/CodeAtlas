@@ -1,0 +1,31 @@
+name: codeatlas
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GRAPHIFY_VERSION: ${GRAPHIFY_VERSION:-0.8.39}
+    image: ${CODEATLAS_IMAGE:-codeatlas:local}
+    init: true
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CODEATLAS_DATA_DIR: /app/data
+      CODEATLAS_COOKIE_SECURE: ${CODEATLAS_COOKIE_SECURE:-true}
+    ports:
+      - "${CODEATLAS_BIND_ADDRESS:-0.0.0.0}:${CODEATLAS_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ${CODEATLAS_DATA_PATH:-./data}
+        target: /app/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 30s

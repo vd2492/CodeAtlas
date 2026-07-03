@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException, Request, Response
 
@@ -15,6 +15,41 @@ from app.repos.cloning import sanitize_clone_url
 
 
 class SecurityGuardTests(unittest.TestCase):
+    def test_health_check_verifies_database_connectivity(self):
+        connection = MagicMock()
+        context = MagicMock()
+        context.__enter__.return_value = connection
+        with patch.object(main.db, "connect", return_value=context):
+            self.assertEqual(main.healthz(), {"status": "ok"})
+        connection.execute.assert_called_once_with("SELECT 1")
+
+    def test_health_check_reports_database_failure(self):
+        with patch.object(main.db, "connect", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(HTTPException) as raised:
+                main.healthz()
+        self.assertEqual(raised.exception.status_code, 503)
+
+    def test_mimo_key_must_match_endpoint_type(self):
+        auth_routes.validate_llm_key_endpoint(
+            "tp-token",
+            "https://token-plan-sgp.xiaomimimo.com/v1",
+        )
+        auth_routes.validate_llm_key_endpoint(
+            "sk-token",
+            "https://api.xiaomimimo.com/v1",
+        )
+
+        with self.assertRaisesRegex(HTTPException, "Token Plan keys"):
+            auth_routes.validate_llm_key_endpoint(
+                "tp-token",
+                "https://api.xiaomimimo.com/v1",
+            )
+        with self.assertRaisesRegex(HTTPException, "require a tp-"):
+            auth_routes.validate_llm_key_endpoint(
+                "sk-token",
+                "https://token-plan-sgp.xiaomimimo.com/v1",
+            )
+
     def test_visiting_home_deletes_the_active_session(self):
         request = Request(
             {

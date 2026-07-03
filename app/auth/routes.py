@@ -10,6 +10,7 @@ import os
 import time
 from collections import defaultdict
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -119,6 +120,34 @@ class LlmCredsRequest(BaseModel):
     provider: Optional[str] = None   # auto-sniffed from the key if omitted
     base_url: Optional[str] = None
     model: Optional[str] = None
+
+
+def validate_llm_key_endpoint(api_key: str, base_url: str) -> None:
+    """Catch MiMo key/endpoint mismatches before storing unusable credentials."""
+    key = (api_key or "").strip()
+    hostname = (urlparse(base_url or "").hostname or "").lower()
+    is_token_plan_endpoint = (
+        hostname.startswith("token-plan-")
+        and hostname.endswith(".xiaomimimo.com")
+    )
+    is_mimo_endpoint = hostname == "api.xiaomimimo.com" or is_token_plan_endpoint
+
+    if key.startswith("tp-") and is_mimo_endpoint and not is_token_plan_endpoint:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "MiMo Token Plan keys (tp-…) require the China, Singapore, or "
+                "Europe Token Plan endpoint shown in your MiMo account."
+            ),
+        )
+    if key.startswith("sk-") and is_token_plan_endpoint:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "MiMo Token Plan endpoints require a tp-… key. For a pay-as-you-go "
+                "MiMo sk-… key, select MiMo pay-as-you-go."
+            ),
+        )
 
 
 @router.get("/status")
@@ -330,6 +359,7 @@ def set_my_llm(req: LlmCredsRequest, user: dict = Depends(require_user)):
             status_code=400,
             detail="openai_compatible keys require a base_url (e.g. https://host/v1).",
         )
+    validate_llm_key_endpoint(creds["api_key"], creds["base_url"])
     db.set_user_llm_creds(user["id"], crypto.encrypt(json.dumps(creds)))
     db.record_audit(user["username"], "set_llm_key", None, creds["provider"])
     return {"configured": True, "provider": creds["provider"],

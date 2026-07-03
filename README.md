@@ -53,6 +53,44 @@ Everything runs on your own box. Private code never has to leave it.
 On first run the admin console walks you through creating the first admin
 account. A **default demo workspace** is seeded so the tool works immediately.
 
+### Docker Compose
+
+The production image includes Git, SSH, the GitHub CLI, and the pinned
+`graphify` indexer. Start it with:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+By default, Compose publishes port `8000` and mounts `./data` at `/app/data`.
+Set `CODEATLAS_COOKIE_SECURE=false` in `.env` only when testing over local
+plain HTTP; keep it `true` behind the production HTTPS load balancer.
+For a VM with a separately mounted persistent disk, set this in `.env`:
+
+```bash
+CODEATLAS_DATA_PATH=/srv/codeatlas/data
+CODEATLAS_BIND_ADDRESS=0.0.0.0
+CODEATLAS_PORT=8000
+```
+
+The image runs as UID/GID `10001`, so prepare the VM data mount before starting:
+
+```bash
+sudo install -d -o 10001 -g 10001 /srv/codeatlas/data
+```
+
+For private repositories, inject `GH_TOKEN` for the `gh` clone method or add a
+Compose override that mounts a read-only deploy-key directory at
+`/home/codeatlas/.ssh`. Never bake repository credentials into the image.
+
+The container intentionally runs one Uvicorn worker because branch polling is
+in-process and the application uses SQLite. When placing it behind a GCP
+internal HTTPS Application Load Balancer, use `/healthz` for the health check,
+allow backend port `8000` only from the proxy-only subnet and health-check
+ranges, and set the backend timeout high enough for synchronous indexing.
+
 ## Configuration
 
 All configuration is via environment variables — copy `.env.example` to `.env`
