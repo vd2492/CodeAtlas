@@ -707,12 +707,29 @@
       backdrop-filter: blur(6px);
     }
     .login-card {
+      position: relative;
       width: 360px; max-width: 90vw;
       background: var(--card-solid);
       border: 1px solid var(--border-strong);
       border-radius: var(--radius);
       padding: 26px 24px;
       box-shadow: var(--shadow);
+    }
+    .login-close {
+      position: absolute; top: 14px; right: 14px;
+      width: 32px; height: 32px; padding: 0;
+      display: grid; place-items: center;
+      border: 0; border-radius: 9px;
+      color: var(--muted); background: transparent;
+      box-shadow: none;
+    }
+    .login-close:hover {
+      color: var(--text);
+      background: rgba(148, 163, 184, 0.12);
+      border: 0;
+    }
+    .login-close:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 2px;
     }
     .login-card h2 { font-size: 19px; font-weight: 800; margin-bottom: 4px; }
     .login-card p { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
@@ -785,6 +802,13 @@
   <!-- Login gate -->
   <div id="loginOverlay" class="overlay" style="display:none;">
     <div class="login-card">
+      <button class="login-close" type="button" aria-label="Close sign in" title="Close"
+        onclick="closeLogin()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
       <h2>Sign in to CodeAtlas</h2>
       <p>Ask grounded questions about repositories you've been granted.</p>
       <label for="loginUser">Username</label>
@@ -796,7 +820,7 @@
           aria-controls="loginPass" aria-pressed="false" aria-label="Show password"
           onclick="toggleLoginPassword()">Show</button>
       </div>
-      <div id="loginErr" class="login-err"></div>
+      <div id="loginErr" class="login-err" role="alert" aria-live="polite"></div>
       <button class="btn-primary" onclick="doLogin()">Sign in</button>
     </div>
   </div>
@@ -969,6 +993,10 @@
       document.getElementById('loginOverlay').style.display = show ? 'grid' : 'none';
     }
 
+    function closeLogin() {
+      window.location.href = '/';
+    }
+
     function setLoginPasswordVisibility(visible) {
       const password = document.getElementById('loginPass');
       const toggle = document.getElementById('loginPasswordToggle');
@@ -1029,7 +1057,6 @@
         });
         const data = await res.json();
         if (!res.ok) { errEl.textContent = data.detail || 'Login failed'; return; }
-        showLogin(false);
         await initAuth();
       } catch (e) { errEl.textContent = String(e); }
     }
@@ -1256,10 +1283,32 @@
       loadBranches().then(loadFlowButtons);
     }
 
+    function repositoryAccessError(repos) {
+      const usableRepos = (repos || []).filter(repo => repo.status === 'published');
+      if (usableRepos.length === 0) {
+        return 'No repository access. Please contact admin to get access.';
+      }
+
+      const requested = requestedRepoIdentity();
+      if (!requested) return '';
+      const hasRequestedRepo = usableRepos.some(
+        repo => repo.slug === requested || repo.workspace === requested
+      );
+      return hasRequestedRepo
+        ? ''
+        : 'You do not have access to this repository. Please contact admin to get access.';
+    }
+
     async function initAuth() {
       const res = await fetch('/auth/me');
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
+      const accessError = repositoryAccessError(data.repos);
+      if (accessError) {
+        document.getElementById('loginErr').textContent = accessError;
+        showLogin(true);
+        return false;
+      }
       CURRENT_USER_TYPE = data.user.user_type || 'dev_team';
       const modeBadge = document.getElementById('userModeBadge');
       modeBadge.textContent = CURRENT_USER_TYPE === 'product_team'
@@ -1269,6 +1318,7 @@
       await loadBranches();
       await loadFlowButtons();
       await loadLlmStatus();
+      showLogin(false);
       return true;
     }
 

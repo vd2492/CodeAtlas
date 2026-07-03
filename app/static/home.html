@@ -193,6 +193,17 @@
   .foot-tag{color:var(--dim);font-size:13px;font-family:"JetBrains Mono",monospace;}
 </style>
 <script>
+  // Browser Back can restore this page without requesting "/" again. In that
+  // case, explicitly end any session created after the cached page was left.
+  window.addEventListener("pageshow", function(event) {
+    if (!event.persisted) return;
+    fetch("/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+    }).catch(function() {});
+  });
+
   // Apply saved (or system) theme before paint to avoid a flash of the wrong theme.
   (function(){
     try{

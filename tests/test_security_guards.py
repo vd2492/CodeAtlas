@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException, Response
+from fastapi import HTTPException, Request, Response
 
 from app import db, main
 from app.auth import routes as auth_routes
@@ -15,6 +15,28 @@ from app.repos.cloning import sanitize_clone_url
 
 
 class SecurityGuardTests(unittest.TestCase):
+    def test_visiting_home_deletes_the_active_session(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "headers": [(b"cookie", b"ca_session=session-token")],
+                "query_string": b"",
+                "scheme": "http",
+                "server": ("testserver", 80),
+                "client": ("testclient", 50000),
+            }
+        )
+
+        with patch.object(main.db, "delete_session") as delete_session:
+            response = main.root(request)
+
+        delete_session.assert_called_once_with("session-token")
+        self.assertIn("ca_session=", response.headers["set-cookie"])
+        self.assertIn("Max-Age=0", response.headers["set-cookie"])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_eager_source_scan_skips_symlink_escapes_and_secrets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

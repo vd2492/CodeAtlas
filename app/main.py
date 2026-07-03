@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -41,7 +41,7 @@ from .llm.client import (
 )
 from .auth.routes import router as auth_router, load_user_llm
 from .auth.security import hash_password
-from .auth.sessions import require_user
+from .auth.sessions import COOKIE_NAME, clear_session_cookie, require_user
 from .repos.branch_routes import router as branch_router
 from .repos.branches import (
     ensure_legacy_repo_branches,
@@ -637,9 +637,13 @@ def repo_summary_dynamic_from_loaded(nodes: list[dict], links: list[dict]) -> di
 
 
 @app.get("/")
-def root():
-    """Marketing / landing page."""
-    return FileResponse(STATIC_DIR / "home.html")
+def root(request: Request):
+    """Marketing page. Visiting home always starts a signed-out session."""
+    db.delete_session(request.cookies.get(COOKIE_NAME))
+    response = FileResponse(STATIC_DIR / "home.html")
+    clear_session_cookie(response)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/app")
