@@ -259,6 +259,92 @@ class AgentLoopTests(unittest.TestCase):
             "How does checkout work?",
         )
 
+    def test_flow_summary_questions_are_audience_aware(self):
+        product_question = main.flow_summary_question(
+            "CreatebadgeView flow",
+            "product_team",
+        )
+        developer_question = main.flow_summary_question(
+            "CreatebadgeView flow",
+            "dev_team",
+        )
+
+        self.assertIn("brief product-friendly summary", product_question)
+        self.assertIn("Do not include technical terms", product_question)
+        self.assertIn("Do not repeat the internal flow identifier", product_question)
+        self.assertIn("brief developer-focused summary", developer_question)
+        self.assertIn("components, methods, files, and endpoints", developer_question)
+        self.assertIn("do not return a raw inventory", developer_question)
+
+    def test_product_flow_summary_prompt_keeps_technical_evidence_internal(self):
+        toolbox = FakeToolbox(
+            response_style_instruction=client.PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        )
+        toolbox.product_flow_summary = True
+        agent_prompt = client._agent_system_prompt(toolbox)
+        one_shot_prompt = client.build_prompt({
+            "llm_context_preview": {
+                "question": "Summarize CreatebadgeView flow",
+            },
+            "response_style_instruction": client.PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+            "product_flow_summary": True,
+        })
+
+        self.assertIn("keep all implementation details private", agent_prompt)
+        self.assertNotIn("Cite concrete claims", agent_prompt)
+        self.assertIn("brief summary", one_shot_prompt)
+        self.assertNotIn("Include file paths and line numbers", one_shot_prompt)
+        self.assertEqual(
+            client._system_prompt({"product_flow_summary": True}),
+            client.PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT,
+        )
+
+    def test_flow_summary_endpoint_uses_authenticated_user_type(self):
+        request = main.FlowSummaryRequest(llm_mode="mimo")
+        generated = {
+            "question": "internal prompt",
+            "answer": "A brief flow summary.",
+            "provider_used": "test",
+        }
+        with patch.object(
+            main, "enforce_rate_limit"
+        ), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main,
+            "_flow",
+            return_value={
+                "topic": "createbadgeview",
+                "title": "CreatebadgeView flow",
+            },
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 1},
+        ), patch.object(
+            main,
+            "load_user_llm",
+            return_value={"provider": "openai", "api_key": "saved"},
+        ), patch.object(
+            main,
+            "answer_question",
+            return_value=generated,
+        ) as answer:
+            result = main.flow_summary_endpoint(
+                "createbadgeview",
+                request,
+                workspace="sample",
+                user={"id": 7, "user_type": "product_team"},
+            )
+
+        question = answer.call_args.args[0]
+        self.assertIn("brief product-friendly summary", question)
+        self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
+        self.assertEqual(answer.call_args.kwargs["llm_mode"], "mimo")
+        self.assertEqual(answer.call_args.kwargs["answer_mode"], "flow_summary")
+        self.assertEqual(result["question"], "CreatebadgeView flow")
+        self.assertEqual(result["flow_topic"], "createbadgeview")
+
 
 if __name__ == "__main__":
     unittest.main()

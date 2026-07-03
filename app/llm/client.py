@@ -69,13 +69,28 @@ PRODUCT_TEAM_QUERY_SUFFIX = (
     "technical terms in the response and keep it concise, clear and simple"
 )
 
+PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
+    "You are CodeAtlas investigating a repository flow for a product-team reader. "
+    "Use repository evidence and read-only tools to verify the behavior, but keep "
+    "all implementation details private. The final answer must be a brief, clear "
+    "summary in everyday language covering the purpose, trigger, main user-visible "
+    "steps, relevant alternate or failure outcomes, and final result. Do not include "
+    "technical terms, internal flow identifiers, file names, source locations, line "
+    "numbers, class names, function or method names, code identifiers, APIs, endpoint "
+    "paths, source citations, or code snippets. Do not invent unsupported behavior."
+)
+
 
 def _agent_system_prompt(toolbox) -> str:
     config = getattr(toolbox, "config", None)
     instruction = str(
         getattr(config, "pre_search_instruction", "") or ""
     ).strip()
-    prompt = AGENT_SYSTEM_PROMPT
+    prompt = (
+        PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
+        if getattr(toolbox, "product_flow_summary", False)
+        else AGENT_SYSTEM_PROMPT
+    )
     if instruction:
         prompt += (
             "\n\nRepository-specific pre-search instruction: apply the following "
@@ -103,6 +118,21 @@ def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
     evidence = dict(preview)
     evidence.pop("pre_search_instruction", None)
+    answer_requirements = (
+        """- Give a brief summary of the flow's purpose and user-visible behavior.
+- Cover its trigger, main steps, relevant alternate or failure outcomes, and final result.
+- Use simple, clear everyday language.
+- Do not include technical terms, internal identifiers, file names, citations, line numbers, classes, functions, methods, code identifiers, APIs, endpoints, URLs, code, or implementation details.
+- Include only behavior supported by repository evidence."""
+        if context.get("product_flow_summary")
+        else """- Lead with a direct answer to the user's exact question.
+- Use the source_search_hits and node code excerpts as the strongest evidence.
+- Follow relations when explaining flows across screens, view models, repositories, services, or APIs.
+- Include file paths and line numbers for important claims.
+- For specific "where/why/how/what happens" questions, name the functions/classes involved and describe the control/data flow.
+- If the evidence is incomplete, say what is missing instead of filling gaps.
+- Avoid generic high-level summaries unless the user asked for one."""
+    )
     return f"""
 Question:
 {preview.get("question", "")}
@@ -114,13 +144,7 @@ Repository evidence:
 {json.dumps(evidence, indent=2)}
 
 Answer requirements:
-- Lead with a direct answer to the user's exact question.
-- Use the source_search_hits and node code excerpts as the strongest evidence.
-- Follow relations when explaining flows across screens, view models, repositories, services, or APIs.
-- Include file paths and line numbers for important claims.
-- For specific "where/why/how/what happens" questions, name the functions/classes involved and describe the control/data flow.
-- If the evidence is incomplete, say what is missing instead of filling gaps.
-- Avoid generic high-level summaries unless the user asked for one.
+{answer_requirements}
 
 Audience-specific final-answer requirements:
 {context.get("response_style_instruction", "") or "Use the existing developer-focused answer style."}
@@ -132,6 +156,14 @@ def _require_answer(answer: str, provider: str) -> str:
     if not answer:
         raise RuntimeError(f"{provider} returned an empty answer.")
     return answer
+
+
+def _system_prompt(context: dict) -> str:
+    return (
+        PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
+        if context.get("product_flow_summary")
+        else SYSTEM_PROMPT
+    )
 
 
 def _validate_outbound_base_url(base_url: str) -> None:
@@ -545,7 +577,7 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
         json={
             "model": model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _system_prompt(context)},
                 {"role": "user", "content": build_prompt(context)},
             ],
             "temperature": 0.2,
@@ -574,7 +606,7 @@ def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> s
             "model": model,
             "max_tokens": 1400,
             "temperature": 0.2,
-            "system": SYSTEM_PROMPT,
+            "system": _system_prompt(context),
             "messages": [{"role": "user", "content": build_prompt(context)}],
         },
         timeout=REQUEST_TIMEOUT,
@@ -597,7 +629,7 @@ def _ollama_chat(base_url: str, model: str, context: dict) -> str:
             "stream": False,
             "options": {"temperature": 0.2},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _system_prompt(context)},
                 {"role": "user", "content": build_prompt(context)},
             ],
         },

@@ -1541,12 +1541,17 @@
       renderResult(data);
     }
 
-    async function loadFlow(topic) {
+    async function loadFlow(topic, title) {
       if (!requireWorkspace()) return;
-      const res = await fetch(wsUrl(`/repo/flows/${topic}`));
-      if (handle401(res)) return;
-      const data = await res.json();
-      renderResult(data);
+      const flowTitle = title || decodeURIComponent(topic || '').replace(/-/g, ' ');
+      await submitQuestion(
+        flowTitle,
+        `Summarize ${flowTitle}`,
+        {
+          endpoint: `/repo/flows/${topic}/summary`,
+          flowSummary: true,
+        },
+      );
     }
 
     async function loadFlowButtons() {
@@ -1576,7 +1581,12 @@
         }
 
         target.innerHTML = flows.map(flow => `
-          <button type="button" class="flow-button" data-flow="${encodeURIComponent(flow.slug)}">${escapeHtml(flow.title || flow.name || flow.slug)}</button>
+          <button
+            type="button"
+            class="flow-button"
+            data-flow="${encodeURIComponent(flow.slug)}"
+            data-flow-title="${escapeHtml(flow.title || flow.name || flow.slug)}"
+          >${escapeHtml(flow.title || flow.name || flow.slug)}</button>
         `).join('');
       } catch (error) {
         target.innerHTML = `<span class="src">${escapeHtml(error)}</span>`;
@@ -1689,23 +1699,38 @@ If the current message refers to the recent exchange, use that context and inves
       await submitQuestion(contextualFollowUp(question), question);
     }
 
-    async function submitQuestion(requestQuestion, userQuestion) {
+    async function submitQuestion(requestQuestion, userQuestion, options = {}) {
       const result = document.getElementById('result');
-      result.innerHTML = `
-        <h2>Thinking…</h2>
-        <div class="loading-steps">
-          <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
-          <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
-        </div>
-      `;
+      const productFlowSummary = Boolean(
+        options.flowSummary && CURRENT_USER_TYPE === 'product_team'
+      );
+      result.innerHTML = productFlowSummary
+        ? `
+          <h2>Thinking…</h2>
+          <div class="loading-steps">
+            <div class="step"><span class="spinner"></span> Understanding the selected flow…</div>
+            <div class="step"><span class="dot-pulse"></span> Preparing a brief summary…</div>
+          </div>
+        `
+        : `
+          <h2>Thinking…</h2>
+          <div class="loading-steps">
+            <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
+            <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
+          </div>
+        `;
 
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
       try {
-        const res = await fetch(wsUrl('/repo/ask-llm'), {
+        const res = await fetch(wsUrl(options.endpoint || '/repo/ask-llm'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: requestQuestion, llm_mode: LLM_MODE })
+          body: JSON.stringify(
+            options.flowSummary
+              ? { llm_mode: LLM_MODE }
+              : { question: requestQuestion, llm_mode: LLM_MODE }
+          )
         });
 
         if (handle401(res)) return;
@@ -1725,7 +1750,10 @@ If the current message refers to the recent exchange, use that context and inves
         const sourceHits = data.context?.source_hits || [];
         const agentTrace = data.agent_trace || [];
 
-        const contextSection = (nodes.length || sourceHits.length || agentTrace.length) ? `
+        const contextSection = (
+          !productFlowSummary
+          && (nodes.length || sourceHits.length || agentTrace.length)
+        ) ? `
           <details>
             <summary>Grounded Evidence <span class="badge">${agentTrace.length || (nodes.length + sourceHits.length)}</span></summary>
             <div class="details-body">
@@ -1776,6 +1804,12 @@ If the current message refers to the recent exchange, use that context and inves
         const versionLabel = version
           ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
           : '';
+        const answerMetadata = productFlowSummary
+          ? '<p class="src" style="margin-top:0">Product team flow summary</p>'
+          : `
+            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
+            ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
+          `;
         CONVERSATION_HISTORY.push({
           question: userQuestion,
           answer: String(data.answer || ''),
@@ -1784,8 +1818,7 @@ If the current message refers to the recent exchange, use that context and inves
         result.innerHTML = `
           ${followUpComposer()}
           <h2>CodeAtlas Answer</h2>
-          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
-          ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
+          ${answerMetadata}
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
@@ -1844,7 +1877,10 @@ If the current message refers to the recent exchange, use that context and inves
         flowButtons.addEventListener('click', function(event) {
           const button = event.target.closest('.flow-button');
           if (!button) return;
-          loadFlow(button.getAttribute('data-flow'));
+          loadFlow(
+            button.getAttribute('data-flow'),
+            button.getAttribute('data-flow-title'),
+          );
         });
       }
 

@@ -723,6 +723,11 @@ class AskRequest(BaseModel):
     user_llm: Optional[dict] = None
 
 
+class FlowSummaryRequest(BaseModel):
+    llm_mode: Optional[str] = None
+    user_llm: Optional[dict] = None
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "codeatlas-api"}
@@ -1248,7 +1253,8 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
 
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
-                    llm_mode: str = None, user_type: str = "dev_team") -> dict:
+                    llm_mode: str = None, user_type: str = "dev_team",
+                    answer_mode: str = None) -> dict:
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     context = build_context(question, limit=16, workspace=workspace)
@@ -1263,9 +1269,15 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         if user_type == "product_team"
         else question
     )
+    product_flow_summary = (
+        user_type == "product_team" and answer_mode == "flow_summary"
+    )
     context["response_style_instruction"] = response_style_instruction
+    if product_flow_summary:
+        context["product_flow_summary"] = True
     context["llm_context_preview"]["question"] = llm_question
     toolbox.response_style_instruction = response_style_instruction
+    toolbox.product_flow_summary = product_flow_summary
     result = generate(
         context,
         user_llm=user_llm,
@@ -1307,6 +1319,31 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
     }
 
 
+def flow_summary_question(flow_title: str, user_type: str) -> str:
+    """Build an audience-aware flow question while keeping the selected internal
+    flow name available for repository search."""
+    quoted_title = json.dumps((flow_title or "selected flow")[:200])
+    if user_type == "product_team":
+        return (
+            f"Investigate the repository flow identified internally as {quoted_title}. "
+            "Provide a brief product-friendly summary of what the flow achieves, "
+            "when it starts, its main user-visible steps, relevant alternate or "
+            "failure outcomes, and its final result. Use simple, clear language. "
+            "Do not repeat the internal flow identifier unless it is a user-facing "
+            "feature name. Do not include technical terms, file names, class names, "
+            "function or method names, endpoints, code identifiers, source citations, "
+            "or implementation details. Do not invent behavior that is not supported "
+            "by repository evidence."
+        )
+    return (
+        f"Investigate the repository flow identified as {quoted_title}. Provide a "
+        "brief developer-focused summary of its purpose, entry point, main control "
+        "and data path, important branches or failure outcomes, and final result. "
+        "Mention only the most relevant components, methods, files, and endpoints "
+        "with source citations; do not return a raw inventory of graph nodes."
+    )
+
+
 @app.post("/repo/ask-llm")
 def ask_llm_endpoint(
     request: AskRequest,
@@ -1332,3 +1369,40 @@ def ask_llm_endpoint(
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"LLM request failed: {str(error)}")
+
+
+@app.post("/repo/flows/{topic}/summary")
+def flow_summary_endpoint(
+    topic: str,
+    request: FlowSummaryRequest,
+    workspace: str = Depends(authorized_workspace),
+    user: dict = Depends(require_user),
+):
+    enforce_rate_limit(user["id"])
+    enforce_strict_branch_freshness(workspace)
+    flow_data = _flow(topic, workspace)
+    user_type = user.get("user_type") or "dev_team"
+    question = flow_summary_question(flow_data.get("title") or topic, user_type)
+    repo = db.get_repo_by_workspace(workspace)
+    allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
+    user_llm = request.user_llm or load_user_llm(user["id"])
+    try:
+        result = answer_question(
+            question,
+            workspace=workspace,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared,
+            llm_mode=request.llm_mode,
+            user_type=user_type,
+            answer_mode="flow_summary",
+        )
+        result["question"] = flow_data.get("title") or topic
+        result["flow_topic"] = flow_data.get("topic") or topic
+        return result
+    except RuntimeError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Flow summary request failed: {str(error)}",
+        )
