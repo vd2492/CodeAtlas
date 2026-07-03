@@ -1691,21 +1691,13 @@ If the current message refers to the recent exchange, use that context and inves
 
     async function submitQuestion(requestQuestion, userQuestion) {
       const result = document.getElementById('result');
-      result.innerHTML = CURRENT_USER_TYPE === 'product_team'
-        ? `
-          <h2>Thinking…</h2>
-          <div class="loading-steps">
-            <div class="step"><span class="spinner"></span> Understanding the workflow…</div>
-            <div class="step"><span class="dot-pulse"></span> Preparing a clear explanation…</div>
-          </div>
-        `
-        : `
-          <h2>Thinking…</h2>
-          <div class="loading-steps">
-            <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
-            <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
-          </div>
-        `;
+      result.innerHTML = `
+        <h2>Thinking…</h2>
+        <div class="loading-steps">
+          <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
+          <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
+        </div>
+      `;
 
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -1733,10 +1725,7 @@ If the current message refers to the recent exchange, use that context and inves
         const sourceHits = data.context?.source_hits || [];
         const agentTrace = data.agent_trace || [];
 
-        const contextSection = (
-          CURRENT_USER_TYPE !== 'product_team'
-          && (nodes.length || sourceHits.length || agentTrace.length)
-        ) ? `
+        const contextSection = (nodes.length || sourceHits.length || agentTrace.length) ? `
           <details>
             <summary>Grounded Evidence <span class="badge">${agentTrace.length || (nodes.length + sourceHits.length)}</span></summary>
             <div class="details-body">
@@ -1787,12 +1776,6 @@ If the current message refers to the recent exchange, use that context and inves
         const versionLabel = version
           ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
           : '';
-        const answerMetadata = CURRENT_USER_TYPE === 'product_team'
-          ? '<p class="src" style="margin-top:0">Product team response</p>'
-          : `
-            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
-            ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
-          `;
         CONVERSATION_HISTORY.push({
           question: userQuestion,
           answer: String(data.answer || ''),
@@ -1801,7 +1784,8 @@ If the current message refers to the recent exchange, use that context and inves
         result.innerHTML = `
           ${followUpComposer()}
           <h2>CodeAtlas Answer</h2>
-          ${answerMetadata}
+          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
+          ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${contextSection}
         `;
