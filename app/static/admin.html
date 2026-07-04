@@ -46,6 +46,20 @@
     label { display:block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
     input, select, textarea { width: 100%; background: var(--input-bg); color: var(--fg);
       border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; font-size: 14px; font-family: inherit; }
+    .password-field { position:relative; }
+    .password-field input { padding-right:68px; }
+    .password-toggle {
+      position:absolute; top:50%; right:7px; transform:translateY(-50%);
+      padding:5px 8px; border:0; border-radius:6px;
+      color:var(--muted); background:transparent; box-shadow:none;
+      font-size:12px;
+    }
+    .password-toggle:hover {
+      color:var(--fg); background:rgba(148,163,184,0.12);
+    }
+    .password-toggle:focus-visible {
+      outline:2px solid var(--accent); outline-offset:1px;
+    }
     textarea { min-height: 200px; resize:none; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
     button { background: var(--accent); color: #04140c; border: 0; border-radius: 8px;
       padding: 8px 14px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; }
@@ -65,6 +79,21 @@
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
     th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .audit-panel { padding:0; overflow:hidden; }
+    .audit-scroll {
+      max-height:min(520px, 60vh);
+      overflow:auto;
+      overscroll-behavior:contain;
+      scrollbar-gutter:stable;
+    }
+    #auditTable { min-width:760px; }
+    #auditTable th {
+      position:sticky;
+      top:0;
+      z-index:1;
+      background:var(--panel);
+      box-shadow:0 1px 0 var(--line);
+    }
     .pill { display:inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; border: 1px solid var(--line); }
     .pill.published { color: var(--ok); border-color: rgba(62,207,142,.4); }
     .pill.indexed { color: var(--accent); border-color: rgba(79,140,255,.4); }
@@ -202,7 +231,23 @@
       <label for="editUsername">Username</label>
       <input id="editUsername" autocomplete="off" />
       <label for="editPassword">New password</label>
-      <input id="editPassword" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current password" />
+      <div class="password-field">
+        <input id="editPassword" type="password" autocomplete="new-password"
+          placeholder="Leave blank to keep the current password" />
+        <button id="editPasswordToggle" class="password-toggle" type="button"
+          aria-controls="editPassword" aria-pressed="false"
+          aria-label="Show new password"
+          onclick="toggleEditPasswordVisibility('editPassword', 'editPasswordToggle')">Show</button>
+      </div>
+      <label for="editPasswordConfirm">Confirm new password</label>
+      <div class="password-field">
+        <input id="editPasswordConfirm" type="password" autocomplete="new-password"
+          placeholder="Re-enter the new password" />
+        <button id="editPasswordConfirmToggle" class="password-toggle" type="button"
+          aria-controls="editPasswordConfirm" aria-pressed="false"
+          aria-label="Show confirmed password"
+          onclick="toggleEditPasswordVisibility('editPasswordConfirm', 'editPasswordConfirmToggle')">Show</button>
+      </div>
       <label for="editUserType">User type</label>
       <select id="editUserType">
         <option value="dev_team">Dev team</option>
@@ -305,15 +350,22 @@
   </div>
 
   <!-- AUTH GATE -->
-  <div id="authPanel" class="panel hidden" style="max-width:420px;margin:40px auto;">
+  <form id="authPanel" class="panel hidden" style="max-width:420px;margin:40px auto;">
     <h2 id="authTitle">Sign in</h2>
     <p id="authHint" class="muted"></p>
-    <label>Username</label>
+    <label for="authUser">Username</label>
     <input id="authUser" autocomplete="username" />
-    <label>Password</label>
-    <input id="authPass" type="password" autocomplete="current-password" />
-    <div style="margin-top:14px;"><button id="authBtn">Sign in</button></div>
-  </div>
+    <label for="authPass">Password</label>
+    <div class="password-field">
+      <input id="authPass" type="password" autocomplete="current-password" />
+      <button id="authPasswordToggle" class="password-toggle" type="button"
+        aria-controls="authPass" aria-pressed="false"
+        aria-label="Show password" onclick="toggleAuthPasswordVisibility()">Show</button>
+    </div>
+    <div style="margin-top:14px;">
+      <button id="authBtn" type="submit">Sign in</button>
+    </div>
+  </form>
 
   <!-- CONSOLE -->
   <div id="console" class="hidden">
@@ -440,10 +492,12 @@
     <h2 style="display:flex;align-items:center;gap:10px;">Audit log
       <button class="ghost" style="padding:4px 10px;font-size:12px" onclick="refreshAudit()">Refresh</button>
     </h2>
-    <div class="panel">
-      <table id="auditTable"><thead>
-        <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
-      </thead><tbody></tbody></table>
+    <div class="panel audit-panel">
+      <div class="audit-scroll" tabindex="0" aria-label="Scrollable audit log">
+        <table id="auditTable"><thead>
+          <tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+        </thead><tbody></tbody></table>
+      </div>
     </div>
 
   </div>
@@ -539,18 +593,34 @@ async function boot() {
   showAuth(status.bootstrapped);
 }
 
+function setAuthPasswordVisibility(visible) {
+  const input = $("authPass");
+  const toggle = $("authPasswordToggle");
+  input.type = visible ? "text" : "password";
+  toggle.textContent = visible ? "Hide" : "Show";
+  toggle.setAttribute("aria-pressed", String(visible));
+  toggle.setAttribute("aria-label", visible ? "Hide password" : "Show password");
+}
+
+function toggleAuthPasswordVisibility() {
+  setAuthPasswordVisibility($("authPass").type === "password");
+}
+
 function showAuth(bootstrapped) {
   $("console").classList.add("hidden");
   $("authPanel").classList.remove("hidden");
+  setAuthPasswordVisibility(false);
   $("authTitle").textContent = bootstrapped ? "Admin sign in" : "First-run setup — create admin";
   $("authHint").textContent = bootstrapped
     ? "Sign in with an admin account."
     : "No users exist yet. Create the first administrator.";
   $("authBtn").textContent = bootstrapped ? "Sign in" : "Create admin";
-  $("authBtn").onclick = async () => {
+  $("authPanel").onsubmit = async event => {
+    event.preventDefault();
     try {
       const body = JSON.stringify({ username: $("authUser").value, password: $("authPass").value });
       await api(bootstrapped ? "/auth/login" : "/auth/bootstrap", { method: "POST", body });
+      $("authPass").value = "";
       boot();
     } catch (e) { flash(e.message); }
   };
@@ -652,10 +722,37 @@ async function refreshUsers() {
 
 let editingUser = null;
 
+function setEditPasswordVisibility(inputId, toggleId, visible) {
+  const input = $(inputId);
+  const toggle = $(toggleId);
+  input.type = visible ? "text" : "password";
+  toggle.textContent = visible ? "Hide" : "Show";
+  toggle.setAttribute("aria-pressed", String(visible));
+  toggle.setAttribute(
+    "aria-label",
+    `${visible ? "Hide" : "Show"} ${inputId === "editPassword" ? "new" : "confirmed"} password`,
+  );
+}
+
+function toggleEditPasswordVisibility(inputId, toggleId) {
+  setEditPasswordVisibility(inputId, toggleId, $(inputId).type === "password");
+}
+
+function resetEditPasswordVisibility() {
+  setEditPasswordVisibility("editPassword", "editPasswordToggle", false);
+  setEditPasswordVisibility(
+    "editPasswordConfirm",
+    "editPasswordConfirmToggle",
+    false,
+  );
+}
+
 function openUserEdit(user) {
   editingUser = user;
   $("editUsername").value = user.username;
   $("editPassword").value = "";
+  $("editPasswordConfirm").value = "";
+  resetEditPasswordVisibility();
   $("editUserType").value = user.user_type || "dev_team";
   $("userEditError").textContent = "";
   $("userEditModal").style.display = "grid";
@@ -676,11 +773,17 @@ $("userEditForm").onsubmit = async event => {
   if (!editingUser) return;
   const username = $("editUsername").value.trim();
   const password = $("editPassword").value;
+  const passwordConfirm = $("editPasswordConfirm").value;
   const userType = $("editUserType").value;
   const error = $("userEditError");
   error.textContent = "";
   if (!username) {
     error.textContent = "Username is required.";
+    return;
+  }
+  if (password !== passwordConfirm) {
+    error.textContent = "New password and confirmation do not match.";
+    $("editPasswordConfirm").focus();
     return;
   }
 
