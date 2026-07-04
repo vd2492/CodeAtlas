@@ -153,6 +153,17 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(second_messages[-1]["role"], "tool")
         self.assertEqual(second_messages[-1]["tool_name"], "search_code")
 
+    def test_ollama_mode_is_disabled_placeholder_by_default(self):
+        with patch.object(client, "OLLAMA_ENABLED", False), patch.object(
+            client, "_ollama_available"
+        ) as available:
+            with self.assertRaisesRegex(RuntimeError, "currently disabled"):
+                client.generate(
+                    {"llm_context_preview": {"question": "How does login work?"}},
+                    llm_mode="ollama",
+                )
+        available.assert_not_called()
+
     def test_provider_falls_back_to_one_shot_when_model_skips_tools(self):
         toolbox = FakeToolbox()
         responses = [

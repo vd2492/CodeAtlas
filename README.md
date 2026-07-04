@@ -112,8 +112,8 @@ to boot; the relevant groups are:
 
 - **Shared LLM tier** — an OpenAI-compatible or Anthropic-compatible endpoint
   used as a fallback for answering questions.
-- **Local Ollama** — point at a local Ollama instance + code model for a free,
-  fully private tier.
+- **Reserved Ollama integration** — retained behind a disabled feature flag for
+  a future release; it is not exposed to users.
 - **Paths / source root** — optional overrides for data directory and the source
   tree used to pull code excerpts into answers.
 - **Branch synchronization** — worker count, freshness polling, user-triggered
@@ -125,11 +125,12 @@ See `.env.example` for the full list of keys and inline notes.
 
 Every question resolves through `app/llm/client.py` in order:
 
-1. **User key (BYOK)** → 2. **Local Ollama** → 3. **Shared endpoint**
+1. **User key (BYOK)** → 2. **Shared endpoint**
 
 Each tier falls through on absence *or* failure. The shared tier can be disabled
 per repository (`allow_shared_fallback`), so sensitive code is never sent to a
-shared endpoint.
+shared endpoint. The dormant Ollama code is disabled by default with
+`CODEATLAS_ENABLE_OLLAMA=false` and has no user-facing control.
 
 ### Agentic retrieval
 
@@ -180,7 +181,7 @@ app/
   auth/              sessions, password hashing, BYOK key encryption, auth routes
   repos/             clone, branch worktrees, freshness jobs, indexing, lifecycle routes
   retrieval/         ranker, context builder, per-repo RetrievalConfig
-  llm/client.py      agent loops + BYOK → Ollama → shared fallback chain
+  llm/client.py      agent loops + BYOK → shared fallback; dormant Ollama hook
   static/            landing page, user Ask UI, admin console
 data/                gitignored: sqlite db, cloned repos, per-workspace graphs/config, secret key
 docs/PLAN.md         build plan / phase history

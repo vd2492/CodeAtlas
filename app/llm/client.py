@@ -1,13 +1,12 @@
-"""LLM answer generation with an ordered fallback chain.
+"""LLM answer generation with an ordered provider chain.
 
 Resolution order for every question:
   1. The user's own LLM key (BYOK), if supplied.
-  2. A locally running Ollama model (free, private), if reachable.
-  3. The shared/admin-configured endpoint ("Mimo") as a last resort.
+  2. The shared/admin-configured endpoint ("Mimo") as a fallback.
 
-Each tier falls through to the next on absence OR failure (bad key, rate
-limit, timeout). Admins can disable tier 3 per repo for sensitive codebases so
-private code is never sent to the shared endpoint.
+The dormant Ollama implementation is retained behind CODEATLAS_ENABLE_OLLAMA
+for a future release, but is disabled by default and is not exposed in the UI.
+Admins can disable the shared tier per repo for sensitive codebases.
 """
 
 import ipaddress
@@ -24,6 +23,9 @@ REQUEST_TIMEOUT = 90
 AGENT_ENABLED = os.environ.get("CODEATLAS_AGENT_ENABLED", "true").lower() not in {
     "0", "false", "no",
 }
+OLLAMA_ENABLED = os.environ.get(
+    "CODEATLAS_ENABLE_OLLAMA", "false"
+).lower() in {"1", "true", "yes"}
 AGENT_MAX_ROUNDS = max(1, int(os.environ.get("CODEATLAS_AGENT_MAX_ROUNDS", "8")))
 AGENT_MAX_TOOL_CALLS = max(1, int(os.environ.get("CODEATLAS_AGENT_MAX_TOOL_CALLS", "24")))
 LLM_ALLOWED_HOSTS = {
@@ -778,7 +780,7 @@ def generate(
 
     user_llm: optional {provider, base_url, api_key, model} from the requesting
               user (BYOK). allow_shared_fallback: when False, the shared "Mimo"
-              endpoint (tier 3) is skipped (per-repo privacy control). When a
+              endpoint (tier 2) is skipped (per-repo privacy control). When a
               question and toolbox are supplied, each tier first attempts an
               agentic tool loop and falls back to one-shot RAG only when that
               endpoint does not support or use tools.
@@ -796,8 +798,10 @@ def generate(
             "provider_used": f"user:{user_llm.get('provider', 'openai')}",
         }
 
-    # Explicit mode — local Ollama only.
+    # Dormant placeholder — local Ollama is disabled unless explicitly enabled.
     if mode == "ollama":
+        if not OLLAMA_ENABLED:
+            raise RuntimeError("Ollama support is currently disabled.")
         ollama_url = os.getenv("CODEATLAS_OLLAMA_URL", "http://localhost:11434")
         ollama_model = os.getenv("CODEATLAS_OLLAMA_MODEL", "qwen2.5-coder:7b")
         if not _ollama_available(ollama_url):
@@ -828,21 +832,22 @@ def generate(
         except Exception as exc:  # fall through on any failure
             errors.append(f"user-key: {exc}")
 
-    # Tier 2 — local Ollama.
-    ollama_url = os.getenv("CODEATLAS_OLLAMA_URL", "http://localhost:11434")
-    ollama_model = os.getenv("CODEATLAS_OLLAMA_MODEL", "qwen2.5-coder:7b")
-    if _ollama_available(ollama_url):
-        try:
-            result = _attempt_ollama(
-                ollama_url, ollama_model, context, question, toolbox
-            )
-            return {**result, "provider_used": f"ollama:{ollama_model}"}
-        except Exception as exc:
-            errors.append(f"ollama: {exc}")
-    else:
-        errors.append(f"ollama: not reachable at {ollama_url}")
+    # Dormant placeholder — retain the fallback implementation for future use.
+    if OLLAMA_ENABLED:
+        ollama_url = os.getenv("CODEATLAS_OLLAMA_URL", "http://localhost:11434")
+        ollama_model = os.getenv("CODEATLAS_OLLAMA_MODEL", "qwen2.5-coder:7b")
+        if _ollama_available(ollama_url):
+            try:
+                result = _attempt_ollama(
+                    ollama_url, ollama_model, context, question, toolbox
+                )
+                return {**result, "provider_used": f"ollama:{ollama_model}"}
+            except Exception as exc:
+                errors.append(f"ollama: {exc}")
+        else:
+            errors.append(f"ollama: not reachable at {ollama_url}")
 
-    # Tier 3 — shared/admin endpoint ("Mimo").
+    # Tier 2 — shared/admin endpoint ("Mimo").
     if allow_shared_fallback:
         shared = _configured_shared_creds()
         if shared["base_url"] and shared["api_key"]:

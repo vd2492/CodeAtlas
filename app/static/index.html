@@ -867,7 +867,7 @@
     <section class="card llm-card span-2">
       <div class="card-head"><span class="card-dot"></span><h2 class="card-title">My LLM key</h2></div>
       <div class="llm-options" role="group" aria-label="LLM provider">
-        <button type="button" class="llm-option" data-llm-mode="ollama">Use default free Ollama</button>
+        <!-- Ollama remains a disabled backend placeholder for a future release. -->
         <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
       </div>
       <div class="personal-llm">
@@ -1374,12 +1374,19 @@
 
     // ---------- LLM mode ----------
     function getSavedLlmMode() {
-      try { return localStorage.getItem('codeatlas-llm-mode') || 'mimo'; }
+      try {
+        const saved = localStorage.getItem('codeatlas-llm-mode') || 'mimo';
+        if (saved === 'ollama') {
+          localStorage.setItem('codeatlas-llm-mode', 'mimo');
+          return 'mimo';
+        }
+        return saved;
+      }
       catch (e) { return 'mimo'; }
     }
 
     function setLlmMode(mode) {
-      LLM_MODE = mode || 'mimo';
+      LLM_MODE = mode === 'ollama' ? 'mimo' : (mode || 'mimo');
       try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
       updateLlmModeUi();
     }
@@ -1392,9 +1399,7 @@
       const status = document.getElementById('keyStatus');
       if (!status) return;
 
-      if (LLM_MODE === 'ollama') {
-        status.textContent = 'Selected: default free Ollama.';
-      } else if (LLM_MODE === 'personal') {
+      if (LLM_MODE === 'personal') {
         status.textContent = PERSONAL_KEY_CONFIGURED
           ? 'Selected: personal LLM key.'
           : 'Add a personal API key to use this option.';
