@@ -1045,7 +1045,7 @@
     let LLM_MODE = 'mimo';
     let PERSONAL_KEY_CONFIGURED = false;
     let TOAST_TIMER = null;
-    let CONVERSATION_HISTORY = [];
+    let CONVERSATION_ID = null;
     let CURRENT_USER_TYPE = 'dev_team';
 
     function formatLocalTimestamp(value, fallback) {
@@ -1289,7 +1289,7 @@
       const picker = document.getElementById('branchPicker');
       BRANCH_ID = Number(picker.value) || null;
       rememberBranchId(BRANCH_ID);
-      CONVERSATION_HISTORY = [];
+      CONVERSATION_ID = null;
       document.getElementById('summary').innerHTML = '';
       document.getElementById('searchResults').innerHTML = '';
       document.getElementById('result').innerHTML =
@@ -1314,7 +1314,7 @@
         picker.disabled = true;
         WORKSPACE = null;
         BRANCH_ID = null;
-        CONVERSATION_HISTORY = [];
+        CONVERSATION_ID = null;
         rememberSelectedRepo(null);
         document.getElementById('result').innerHTML = hasGrantedRepositories
           ? '<div class="error-box"><h2>No published repositories</h2><p>Your repository access exists, but an administrator must finish indexing and publish the repository before it can be used here.</p></div>'
@@ -1355,14 +1355,14 @@
           ? '<div class="error-box"><h2>Repository unavailable</h2><p>The repository selected before login is not authorized for this account. Return to the home page and select a repository available to this account.</p></div>'
           : '<div class="error-box"><h2>Select a repository</h2><p>Return to the home page, select the repository you want to use, then open the Ask UI.</p></div>';
       }
-      CONVERSATION_HISTORY = [];
+      CONVERSATION_ID = null;
     }
 
     function onRepoChange() {
       const picker = document.getElementById('repoPicker');
       WORKSPACE = picker.value || null;
       BRANCH_ID = null;
-      CONVERSATION_HISTORY = [];
+      CONVERSATION_ID = null;
       const selectedOption = picker.selectedOptions[0];
       const selectedRepo = WORKSPACE ? {
         slug: selectedOption.dataset.slug || WORKSPACE,
@@ -1427,7 +1427,7 @@
       BRANCH_ID = null;
       CURRENT_USER_TYPE = 'dev_team';
       stopBranchPolling();
-      CONVERSATION_HISTORY = [];
+      CONVERSATION_ID = null;
       window.location.href = '/';   // back to the landing page
     }
 
@@ -1446,6 +1446,7 @@
 
     function setLlmMode(mode) {
       LLM_MODE = mode === 'ollama' ? 'mimo' : (mode || 'mimo');
+      CONVERSATION_ID = null;
       try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
       updateLlmModeUi();
     }
@@ -1817,9 +1818,9 @@
     async function loadFlow(topic, title) {
       if (!requireWorkspace()) return;
       const flowTitle = title || decodeURIComponent(topic || '').replace(/-/g, ' ');
+      CONVERSATION_ID = null;
       await submitQuestion(
         flowTitle,
-        `Summarize ${flowTitle}`,
         {
           endpoint: `/repo/flows/${topic}/summary`,
           flowSummary: true,
@@ -1920,7 +1921,7 @@
             />
             <button type="button" class="btn-primary" onclick="askFollowUp()">Ask follow-up</button>
           </div>
-          <p class="follow-up-hint">Related questions use the recent answer as context; unrelated questions are handled independently.</p>
+          <p class="follow-up-hint">Related questions reuse verified evidence for a faster answer; unrelated questions run a fresh investigation.</p>
         </div>
       `;
     }
@@ -1936,32 +1937,13 @@
       });
     }
 
-    function contextualFollowUp(question) {
-      if (!CONVERSATION_HISTORY.length) return question;
-      const context = CONVERSATION_HISTORY.slice(-2).map((exchange, index) => `
-Exchange ${index + 1}
-Question: ${exchange.question.slice(0, 1200)}
-Answer: ${exchange.answer.slice(0, 5000)}
-      `.trim()).join('\n\n');
-
-      return `
-Recent conversation context:
-${context}
-
-Current user message:
-${question}
-
-If the current message refers to the recent exchange, use that context and investigate the repository further as needed. If it is a new or unrelated question, answer it independently. Always verify code claims with repository tools and current source evidence.
-      `.trim();
-    }
-
     async function ask() {
       const input = document.getElementById('question');
       const question = input.value.trim();
       if (!question) return;
       if (!requireWorkspace()) return;
-      CONVERSATION_HISTORY = [];
-      await submitQuestion(question, question);
+      CONVERSATION_ID = null;
+      await submitQuestion(question);
     }
 
     async function askFollowUp() {
@@ -1969,14 +1951,15 @@ If the current message refers to the recent exchange, use that context and inves
       const question = input ? input.value.trim() : '';
       if (!question) return;
       if (!requireWorkspace()) return;
-      await submitQuestion(contextualFollowUp(question), question);
+      await submitQuestion(question, { followUp: true });
     }
 
-    async function submitQuestion(requestQuestion, userQuestion, options = {}) {
+    async function submitQuestion(requestQuestion, options = {}) {
       const result = document.getElementById('result');
       const productFlowSummary = Boolean(
         options.flowSummary && CURRENT_USER_TYPE === 'product_team'
       );
+      const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       result.innerHTML = productFlowSummary
         ? `
           <h2>Thinking…</h2>
@@ -1985,6 +1968,14 @@ If the current message refers to the recent exchange, use that context and inves
             <div class="step"><span class="dot-pulse"></span> Preparing a brief summary…</div>
           </div>
         `
+        : followUpWithContext
+          ? `
+            <h2>Thinking…</h2>
+            <div class="loading-steps">
+              <div class="step"><span class="spinner"></span> Reusing verified evidence from this conversation…</div>
+              <div class="step"><span class="dot-pulse"></span> Checking whether more repository investigation is needed…</div>
+            </div>
+          `
         : `
           <h2>Thinking…</h2>
           <div class="loading-steps">
@@ -2002,7 +1993,12 @@ If the current message refers to the recent exchange, use that context and inves
           body: JSON.stringify(
             options.flowSummary
               ? { llm_mode: LLM_MODE }
-              : { question: requestQuestion, llm_mode: LLM_MODE }
+              : {
+                  question: requestQuestion,
+                  llm_mode: LLM_MODE,
+                  follow_up: Boolean(options.followUp),
+                  conversation_id: options.followUp ? CONVERSATION_ID : null,
+                }
           )
         });
 
@@ -2071,9 +2067,14 @@ If the current message refers to the recent exchange, use that context and inves
         const prov = data.provider_used || '';
         const provLabel = prov.startsWith('user:') ? 'your key'
           : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
-        const retrievalLabel = data.retrieval_mode === 'agentic'
-          ? `agentic retrieval · ${data.agent_tool_calls || agentTrace.length} tool calls`
-          : 'one-shot retrieval fallback';
+        const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
+        const retrievalLabel = data.follow_up_reused
+          ? followUpToolCalls
+            ? `fast follow-up · ${followUpToolCalls} verification tool calls`
+            : 'fast follow-up · reused verified evidence'
+          : data.retrieval_mode === 'agentic'
+            ? `agentic retrieval · ${followUpToolCalls} tool calls`
+            : 'one-shot retrieval fallback';
         const version = data.repository_version || null;
         const versionLabel = version
           ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
@@ -2084,11 +2085,7 @@ If the current message refers to the recent exchange, use that context and inves
             <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
             ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
           `;
-        CONVERSATION_HISTORY.push({
-          question: userQuestion,
-          answer: String(data.answer || ''),
-        });
-        CONVERSATION_HISTORY = CONVERSATION_HISTORY.slice(-3);
+        CONVERSATION_ID = data.conversation_id || null;
         result.innerHTML = `
           ${followUpComposer()}
           <h2>CodeAtlas Answer</h2>

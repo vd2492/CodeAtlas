@@ -181,15 +181,23 @@ class RepositoryToolbox:
     def __init__(self, workspace: str):
         self.workspace = workspace
         self.source_root = self._source_root(workspace)
-        self.nodes, self.links = load_graph(graph_path(workspace))
         self.config = load_retrieval_config(workspace)
         self.trace: list[dict] = []
+        self.nodes: list[dict] = []
+        self.links: list[dict] = []
+        self.node_by_id: dict[str, dict] = {}
+        self.incoming: dict[str, list[dict]] = defaultdict(list)
+        self.outgoing: dict[str, list[dict]] = defaultdict(list)
+        self._graph_loaded = False
 
+    def _ensure_graph(self) -> None:
+        """Load the graph only when a chosen tool actually needs it."""
+        if self._graph_loaded:
+            return
+        self.nodes, self.links = load_graph(graph_path(self.workspace))
         self.node_by_id = {
             self._node_id(node): node for node in self.nodes if self._node_id(node)
         }
-        self.incoming: dict[str, list[dict]] = defaultdict(list)
-        self.outgoing: dict[str, list[dict]] = defaultdict(list)
         for link in self.links:
             source = str(link.get("source") or "")
             target = str(link.get("target") or "")
@@ -197,6 +205,7 @@ class RepositoryToolbox:
                 self.outgoing[source].append(link)
             if target:
                 self.incoming[target].append(link)
+        self._graph_loaded = True
 
     @staticmethod
     def _source_root(workspace: str) -> Path:
@@ -488,6 +497,7 @@ class RepositoryToolbox:
     def search_code(self, query: str, limit: int = 8) -> dict:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query is required")
+        self._ensure_graph()
         limit = self._bounded_int(limit, 8, 1, 12)
         terms = self._expanded_terms(query)
         source_hits = self._source_search(terms, limit)
@@ -575,6 +585,7 @@ class RepositoryToolbox:
         }
 
     def _matching_node_ids(self, symbol: str, limit: int = 10) -> list[str]:
+        self._ensure_graph()
         terms = self._query_terms(symbol)
         ranked = rank_nodes_for_query(terms or [symbol], self.nodes, self.links, limit=limit)
         return [item["node"] for item in ranked]
@@ -582,6 +593,7 @@ class RepositoryToolbox:
     def find_definition(self, symbol: str) -> dict:
         if not isinstance(symbol, str) or not symbol.strip():
             raise ValueError("symbol is required")
+        self._ensure_graph()
         matches = rank_nodes_for_query(
             self._query_terms(symbol) or [symbol],
             self.nodes,

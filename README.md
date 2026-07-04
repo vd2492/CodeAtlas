@@ -149,6 +149,23 @@ that provider.
 The API response reports `retrieval_mode` (`agentic` or `one_shot`) and a compact
 `agent_trace`; the Ask UI displays this investigation under Grounded Evidence.
 
+### Fast grounded follow-ups
+
+The Ask UI sends an opaque conversation ID instead of replaying previous answers
+from the browser. For a related follow-up, the server reuses the prior verified
+evidence when the authenticated user, repository, indexed branch revision,
+audience type, and LLM mode still match. The model may answer directly from that
+evidence or invoke the normal read-only repository tools when more verification
+is needed. Unrelated questions, expired state, repository reindexing, and mode
+changes automatically take the full retrieval path.
+
+Conversation state is an in-process TTL cache and contains no API credentials.
+It is an optional acceleration layer: losing it on restart only makes the next
+question use full retrieval. Configure its lifetime and bounds with the
+`CODEATLAS_CONVERSATION_*` variables in `.env.example`. Official Anthropic API
+requests also enable its documented ephemeral prompt cache; compatible
+third-party endpoints are left unchanged.
+
 ## How a repository goes live
 
 `Clone → Approve branches → Index → Test → Tune → Publish → Grant access`

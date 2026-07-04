@@ -293,6 +293,35 @@ def _final_openai_answer(
     )
 
 
+def _agent_question(
+    question: str,
+    agent_context: str = "",
+) -> str:
+    """Build a follow-up prompt without forcing a redundant repository search."""
+    if not agent_context:
+        return question
+    return (
+        "This is a follow-up in an existing grounded repository conversation.\n\n"
+        "Previously verified conversation and repository evidence:\n"
+        f"{agent_context}\n\n"
+        "Current follow-up question:\n"
+        f"{question}\n\n"
+        "If the supplied evidence is sufficient, answer directly and preserve its "
+        "source citations. Treat the prior answer as conversation context, not as "
+        "independent proof. If any concrete claim requires evidence that is missing "
+        "or potentially stale, use the repository tools before answering. If the "
+        "question changes topic, investigate it with the tools as a new question."
+    )
+
+
+def _anthropic_cache_settings(base_url: str) -> dict:
+    """Enable automatic prompt caching only for Anthropic's documented API."""
+    hostname = (urlparse(base_url or "").hostname or "").lower()
+    if hostname == "api.anthropic.com":
+        return {"cache_control": {"type": "ephemeral"}}
+    return {}
+
+
 def _openai_agent(
     base_url: str,
     api_key: str,
@@ -300,11 +329,13 @@ def _openai_agent(
     question: str,
     toolbox,
     tool_definitions: list[dict],
+    agent_context: str = "",
+    require_tool: bool = True,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": _agent_question(question, agent_context)},
     ]
     tools = _openai_tools(tool_definitions)
     tool_call_count = 0
@@ -329,7 +360,7 @@ def _openai_agent(
         message = response.json()["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            if tool_call_count == 0:
+            if require_tool and tool_call_count == 0:
                 raise AgenticUnsupported(f"{model} answered without using repository tools")
             return {
                 "answer": _require_answer(message.get("content", ""), model),
@@ -373,9 +404,14 @@ def _anthropic_agent(
     question: str,
     toolbox,
     tool_definitions: list[dict],
+    agent_context: str = "",
+    require_tool: bool = True,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
-    messages = [{"role": "user", "content": question}]
+    messages = [{
+        "role": "user",
+        "content": _agent_question(question, agent_context),
+    }]
     tools = _anthropic_tools(tool_definitions)
     tool_call_count = 0
     url = f"{base_url.rstrip('/')}/v1/messages"
@@ -396,6 +432,7 @@ def _anthropic_agent(
                 "system": system_prompt,
                 "messages": messages,
                 "tools": tools,
+                **_anthropic_cache_settings(base_url),
             },
             timeout=REQUEST_TIMEOUT,
             allow_redirects=False,
@@ -407,7 +444,7 @@ def _anthropic_agent(
         blocks = data.get("content") or []
         tool_uses = [block for block in blocks if block.get("type") == "tool_use"]
         if not tool_uses:
-            if tool_call_count == 0:
+            if require_tool and tool_call_count == 0:
                 raise AgenticUnsupported(f"{model} answered without using repository tools")
             answer = "".join(
                 block.get("text", "") for block in blocks if block.get("type") == "text"
@@ -452,6 +489,7 @@ def _anthropic_agent(
             "temperature": 0.2,
             "system": system_prompt,
             "messages": messages,
+            **_anthropic_cache_settings(base_url),
         },
         timeout=REQUEST_TIMEOUT,
         allow_redirects=False,
@@ -478,11 +516,13 @@ def _ollama_agent(
     question: str,
     toolbox,
     tool_definitions: list[dict],
+    agent_context: str = "",
+    require_tool: bool = True,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": _agent_question(question, agent_context)},
     ]
     tools = _openai_tools(tool_definitions)
     tool_call_count = 0
@@ -504,7 +544,7 @@ def _ollama_agent(
         message = response.json().get("message") or {}
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            if tool_call_count == 0:
+            if require_tool and tool_call_count == 0:
                 raise AgenticUnsupported(f"{model} answered without using repository tools")
             return {
                 "answer": _require_answer(message.get("content", ""), model),
@@ -680,7 +720,13 @@ def _call_with_creds(creds: dict, context: dict) -> str:
     return _openai_chat(base_url, api_key, model or "gpt-4o-mini", context)
 
 
-def _call_agent_with_creds(creds: dict, question: str, toolbox) -> dict:
+def _call_agent_with_creds(
+    creds: dict,
+    question: str,
+    toolbox,
+    agent_context: str = "",
+    require_tool: bool = True,
+) -> dict:
     provider = (creds.get("provider") or "openai_compatible").lower()
     base_url = creds.get("base_url") or ""
     api_key = creds.get("api_key") or ""
@@ -699,6 +745,8 @@ def _call_agent_with_creds(creds: dict, question: str, toolbox) -> dict:
             question,
             toolbox,
             TOOL_DEFINITIONS,
+            agent_context,
+            require_tool,
         )
     return _openai_agent(
         base_url,
@@ -707,15 +755,30 @@ def _call_agent_with_creds(creds: dict, question: str, toolbox) -> dict:
         question,
         toolbox,
         TOOL_DEFINITIONS,
+        agent_context,
+        require_tool,
     )
 
 
-def _attempt_with_creds(creds: dict, context: dict, question: str = None, toolbox=None) -> dict:
+def _attempt_with_creds(
+    creds: dict,
+    context: dict,
+    question: str = None,
+    toolbox=None,
+    agent_context: str = "",
+    require_tool: bool = True,
+) -> dict:
     fallback_reason = None
     if AGENT_ENABLED and question and toolbox is not None:
         toolbox.trace.clear()
         try:
-            result = _call_agent_with_creds(creds, question, toolbox)
+            result = _call_agent_with_creds(
+                creds,
+                question,
+                toolbox,
+                agent_context=agent_context,
+                require_tool=require_tool,
+            )
             return {
                 **result,
                 "retrieval_mode": "agentic",
@@ -738,6 +801,8 @@ def _attempt_ollama(
     context: dict,
     question: str = None,
     toolbox=None,
+    agent_context: str = "",
+    require_tool: bool = True,
 ) -> dict:
     fallback_reason = None
     if AGENT_ENABLED and question and toolbox is not None:
@@ -749,6 +814,8 @@ def _attempt_ollama(
                 question,
                 toolbox,
                 TOOL_DEFINITIONS,
+                agent_context,
+                require_tool,
             )
             return {
                 **result,
@@ -775,6 +842,8 @@ def generate(
     llm_mode: str = None,
     question: str = None,
     toolbox=None,
+    agent_context: str = "",
+    require_tool: bool = True,
 ) -> dict:
     """Generate an answer with the first working provider tier.
 
@@ -792,7 +861,14 @@ def generate(
     if mode == "personal":
         if not user_llm or not user_llm.get("api_key"):
             raise RuntimeError("No personal LLM key is saved yet.")
-        result = _attempt_with_creds(user_llm, context, question, toolbox)
+        result = _attempt_with_creds(
+            user_llm,
+            context,
+            question,
+            toolbox,
+            agent_context,
+            require_tool,
+        )
         return {
             **result,
             "provider_used": f"user:{user_llm.get('provider', 'openai')}",
@@ -807,7 +883,13 @@ def generate(
         if not _ollama_available(ollama_url):
             raise RuntimeError(f"Ollama is not reachable at {ollama_url}.")
         result = _attempt_ollama(
-            ollama_url, ollama_model, context, question, toolbox
+            ollama_url,
+            ollama_model,
+            context,
+            question,
+            toolbox,
+            agent_context,
+            require_tool,
         )
         return {**result, "provider_used": f"ollama:{ollama_model}"}
 
@@ -818,13 +900,27 @@ def generate(
         shared = _configured_shared_creds(os.getenv("CODEATLAS_MIMO_MODEL", "mimo-v2.5"))
         if not shared["base_url"] or not shared["api_key"]:
             raise RuntimeError("Mimo/shared LLM is not configured.")
-        result = _attempt_with_creds(shared, context, question, toolbox)
+        result = _attempt_with_creds(
+            shared,
+            context,
+            question,
+            toolbox,
+            agent_context,
+            require_tool,
+        )
         return {**result, "provider_used": f"shared:{shared['model']}"}
 
     # Tier 1 — user's own key.
     if user_llm and user_llm.get("api_key"):
         try:
-            result = _attempt_with_creds(user_llm, context, question, toolbox)
+            result = _attempt_with_creds(
+                user_llm,
+                context,
+                question,
+                toolbox,
+                agent_context,
+                require_tool,
+            )
             return {
                 **result,
                 "provider_used": f"user:{user_llm.get('provider', 'openai')}",
@@ -839,7 +935,13 @@ def generate(
         if _ollama_available(ollama_url):
             try:
                 result = _attempt_ollama(
-                    ollama_url, ollama_model, context, question, toolbox
+                    ollama_url,
+                    ollama_model,
+                    context,
+                    question,
+                    toolbox,
+                    agent_context,
+                    require_tool,
                 )
                 return {**result, "provider_used": f"ollama:{ollama_model}"}
             except Exception as exc:
@@ -852,7 +954,14 @@ def generate(
         shared = _configured_shared_creds()
         if shared["base_url"] and shared["api_key"]:
             try:
-                result = _attempt_with_creds(shared, context, question, toolbox)
+                result = _attempt_with_creds(
+                    shared,
+                    context,
+                    question,
+                    toolbox,
+                    agent_context,
+                    require_tool,
+                )
                 return {**result, "provider_used": f"shared:{shared['model']}"}
             except Exception as exc:
                 errors.append(f"shared: {exc}")

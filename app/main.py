@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import re
@@ -14,7 +15,13 @@ from pydantic import BaseModel
 
 from . import db
 from .agent import RepositoryToolbox
-from .config import DEFAULT_WORKSPACE, graph_path, repo_clone_dir
+from .config import (
+    DEFAULT_WORKSPACE,
+    graph_path,
+    repo_clone_dir,
+    retrieval_config_path,
+)
+from .conversations import ConversationState, conversation_store
 from .retrieval.flow_map import (
     TOPICS,
     build_discovered_flow,
@@ -734,6 +741,8 @@ def public_catalog():
 class AskRequest(BaseModel):
     question: str
     llm_mode: Optional[str] = None
+    conversation_id: Optional[str] = None
+    follow_up: bool = False
     # Optional bring-your-own-key creds {provider, base_url, api_key, model}.
     user_llm: Optional[dict] = None
 
@@ -1265,6 +1274,126 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
     }
 
 
+FOLLOW_UP_STOPWORDS = {
+    "about", "after", "again", "also", "and", "are", "can", "could", "does",
+    "explain", "feature", "flow", "for", "from", "handle", "handled", "happen",
+    "happens", "have", "how", "into", "more", "process", "should", "than",
+    "that", "the", "their", "then", "there", "these", "they", "this", "those",
+    "was", "what", "when", "where", "which", "with", "work", "working", "works",
+    "would", "your",
+}
+FOLLOW_UP_REFERENCE_PATTERN = re.compile(
+    r"\b(it|its|that|this|those|these|they|them|same|previous|above|earlier|"
+    r"continue|next)\b|\b(what|how) about\b|^\s*(and|also|then)\b",
+    re.IGNORECASE,
+)
+
+
+def repository_version_payload(workspace: str) -> "dict | None":
+    branch = db.get_repo_branch_by_workspace(workspace)
+    if not branch:
+        return None
+    return {
+        "repository": branch["repo_name"],
+        "repository_slug": branch["repo_slug"],
+        "branch_id": branch["id"],
+        "branch": branch["name"],
+        "commit_sha": branch.get("indexed_commit_sha"),
+        "remote_commit_sha": branch.get("remote_commit_sha"),
+        "indexed_at": branch.get("indexed_at"),
+        "freshness_status": branch["freshness_status"],
+        "behind_count": branch.get("behind_count", 0),
+        "last_checked_at": branch.get("last_checked_at"),
+    }
+
+
+def repository_revision(workspace: str) -> str:
+    """Stable cache identity that changes whenever indexed evidence changes."""
+    version = repository_version_payload(workspace)
+    parts = []
+    if version:
+        parts.append("|".join(
+            str(version.get(key) or "")
+            for key in ("branch_id", "commit_sha", "indexed_at")
+        ))
+    for label, path in (
+        ("graph", graph_path(workspace)),
+        ("retrieval", retrieval_config_path(workspace)),
+    ):
+        try:
+            stat = path.stat()
+            parts.append(f"{label}:{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            parts.append(f"{label}:missing")
+    return "|".join(parts)
+
+
+def is_related_follow_up(state: ConversationState, question: str) -> bool:
+    """Conservative, zero-latency topic check before reusing cached evidence."""
+    text = str(question or "").strip().lower()
+    if not text or not state.turns:
+        return False
+    if FOLLOW_UP_REFERENCE_PATTERN.search(text):
+        return True
+
+    question_terms = {
+        term
+        for term in re.findall(r"[a-z0-9_.$/-]{3,}", text)
+        if term not in FOLLOW_UP_STOPWORDS
+    }
+    if not question_terms:
+        return False
+    previous = state.turns[-1]
+    prior_text = (
+        f"{previous.get('question', '')} {previous.get('answer', '')}"
+    ).lower()
+    prior_terms = set(re.findall(r"[a-z0-9_.$/-]{3,}", prior_text))
+    return bool(question_terms & prior_terms)
+
+
+def follow_up_agent_context(state: ConversationState) -> str:
+    turns = "\n\n".join(
+        (
+            f"Question: {turn.get('question', '')}\n"
+            f"Answer: {turn.get('answer', '')}"
+        )
+        for turn in state.turns[-2:]
+    )
+    evidence = json.dumps(
+        (state.context or {}).get("llm_context_preview", {}),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        f"Recent conversation:\n{turns}\n\n"
+        f"Verified repository evidence from the same indexed commit:\n{evidence[:24000]}"
+    )
+
+
+def _answer_response(
+    question: str,
+    result: dict,
+    context: dict,
+    workspace: str,
+) -> dict:
+    return {
+        "question": question,
+        "answer": result["answer"],
+        "provider_used": result["provider_used"],
+        "retrieval_mode": result.get("retrieval_mode", "one_shot"),
+        "agent_trace": result.get("agent_trace", []),
+        "agent_rounds": result.get("rounds"),
+        "agent_tool_calls": result.get("tool_calls", 0),
+        **(
+            {"agent_fallback_reason": result["agent_fallback_reason"]}
+            if result.get("agent_fallback_reason")
+            else {}
+        ),
+        "context": context,
+        "repository_version": repository_version_payload(workspace),
+    }
+
+
 
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
@@ -1301,37 +1430,52 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         question=llm_question,
         toolbox=toolbox,
     )
-    branch = db.get_repo_branch_by_workspace(workspace)
-    repository_version = None
-    if branch:
-        repository_version = {
-            "repository": branch["repo_name"],
-            "repository_slug": branch["repo_slug"],
-            "branch_id": branch["id"],
-            "branch": branch["name"],
-            "commit_sha": branch.get("indexed_commit_sha"),
-            "remote_commit_sha": branch.get("remote_commit_sha"),
-            "indexed_at": branch.get("indexed_at"),
-            "freshness_status": branch["freshness_status"],
-            "behind_count": branch.get("behind_count", 0),
-            "last_checked_at": branch.get("last_checked_at"),
-        }
-    return {
-        "question": question,
-        "answer": result["answer"],
-        "provider_used": result["provider_used"],
-        "retrieval_mode": result.get("retrieval_mode", "one_shot"),
-        "agent_trace": result.get("agent_trace", []),
-        "agent_rounds": result.get("rounds"),
-        "agent_tool_calls": result.get("tool_calls", 0),
-        **(
-            {"agent_fallback_reason": result["agent_fallback_reason"]}
-            if result.get("agent_fallback_reason")
-            else {}
-        ),
-        "context": context,
-        "repository_version": repository_version,
-    }
+    return _answer_response(question, result, context, workspace)
+
+
+def answer_follow_up(
+    question: str,
+    state: ConversationState,
+    workspace: str = DEFAULT_WORKSPACE,
+    user_llm: dict = None,
+    allow_shared_fallback: bool = True,
+    llm_mode: str = None,
+    user_type: str = "dev_team",
+) -> dict:
+    """Answer from revision-matched evidence, using repository tools only as needed."""
+    context = copy.deepcopy(state.context or {})
+    preview = context.setdefault("llm_context_preview", {})
+    response_style_instruction = (
+        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        if user_type == "product_team"
+        else ""
+    )
+    llm_question = (
+        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        if user_type == "product_team"
+        else question
+    )
+    context["question"] = question
+    context["response_style_instruction"] = response_style_instruction
+    preview["question"] = llm_question
+    preview["recent_conversation"] = state.turns[-2:]
+
+    toolbox = RepositoryToolbox(workspace)
+    toolbox.response_style_instruction = response_style_instruction
+    toolbox.product_flow_summary = False
+    result = generate(
+        context,
+        user_llm=user_llm,
+        allow_shared_fallback=allow_shared_fallback,
+        llm_mode=llm_mode,
+        question=llm_question,
+        toolbox=toolbox,
+        agent_context=follow_up_agent_context(state),
+        require_tool=False,
+    )
+    response = _answer_response(question, result, context, workspace)
+    response["follow_up_reused"] = True
+    return response
 
 
 def flow_summary_question(flow_title: str, user_type: str) -> str:
@@ -1371,15 +1515,60 @@ def ask_llm_endpoint(
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
     # Tier 1: an explicit per-request key wins; otherwise the user's stored BYOK key.
     user_llm = request.user_llm or load_user_llm(user["id"])
+    llm_mode = (request.llm_mode or "auto").lower()
+    user_type = user.get("user_type") or "dev_team"
+    revision = repository_revision(workspace)
     try:
-        return answer_question(
+        state = None
+        if request.follow_up and request.conversation_id:
+            state = conversation_store.get(
+                request.conversation_id,
+                user_id=user["id"],
+                workspace=workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=revision,
+            )
+        if state and is_related_follow_up(state, request.question):
+            response = answer_follow_up(
+                request.question,
+                state,
+                workspace=workspace,
+                user_llm=user_llm,
+                allow_shared_fallback=allow_shared,
+                llm_mode=llm_mode,
+                user_type=user_type,
+            )
+            conversation_store.append(
+                state.conversation_id,
+                question=request.question,
+                answer=response["answer"],
+                context=response.get("context"),
+            )
+            response["conversation_id"] = state.conversation_id
+            return response
+
+        response = answer_question(
             request.question,
             workspace=workspace,
             user_llm=user_llm,
             allow_shared_fallback=allow_shared,
-            llm_mode=request.llm_mode,
-            user_type=user.get("user_type") or "dev_team",
+            llm_mode=llm_mode,
+            user_type=user_type,
         )
+        state = conversation_store.create(
+            user_id=user["id"],
+            workspace=workspace,
+            llm_mode=llm_mode,
+            user_type=user_type,
+            repository_revision=revision,
+            context=response.get("context") or {},
+            question=request.question,
+            answer=response["answer"],
+        )
+        response["conversation_id"] = state.conversation_id
+        response["follow_up_reused"] = False
+        return response
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
@@ -1413,6 +1602,18 @@ def flow_summary_endpoint(
         )
         result["question"] = flow_data.get("title") or topic
         result["flow_topic"] = flow_data.get("topic") or topic
+        state = conversation_store.create(
+            user_id=user["id"],
+            workspace=workspace,
+            llm_mode=(request.llm_mode or "auto").lower(),
+            user_type=user_type,
+            repository_revision=repository_revision(workspace),
+            context=result.get("context") or {},
+            question=result["question"],
+            answer=result["answer"],
+        )
+        result["conversation_id"] = state.conversation_id
+        result["follow_up_reused"] = False
         return result
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))

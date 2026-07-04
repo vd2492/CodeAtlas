@@ -117,6 +117,16 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(second_messages[-1]["content"][0]["type"], "tool_result")
         self.assertEqual(second_messages[-1]["content"][0]["tool_use_id"], "toolu_1")
 
+    def test_anthropic_prompt_cache_is_enabled_only_for_official_api(self):
+        self.assertEqual(
+            client._anthropic_cache_settings("https://api.anthropic.com"),
+            {"cache_control": {"type": "ephemeral"}},
+        )
+        self.assertEqual(
+            client._anthropic_cache_settings("https://anthropic.example.test"),
+            {},
+        )
+
     def test_ollama_agent_executes_object_arguments(self):
         toolbox = FakeToolbox()
         responses = [
@@ -198,6 +208,35 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(result["retrieval_mode"], "one_shot")
         self.assertIn("without using repository tools", result["agent_fallback_reason"])
         self.assertEqual(result["answer"], "Grounded fallback answer.")
+
+    def test_follow_up_can_answer_from_cached_evidence_without_tool_call(self):
+        toolbox = FakeToolbox()
+        response = FakeResponse({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "It rejects the request in src/auth.py:L8-L12.",
+                }
+            }]
+        })
+        with patch("app.llm.client.requests.post", return_value=response) as post:
+            result = client._openai_agent(
+                "https://example.test/v1",
+                "key",
+                "model",
+                "What happens when it fails?",
+                toolbox,
+                client.TOOL_DEFINITIONS,
+                agent_context="Login validation is in src/auth.py:L1-L12.",
+                require_tool=False,
+            )
+
+        self.assertEqual(result["tool_calls"], 0)
+        self.assertEqual(result["rounds"], 1)
+        self.assertEqual(toolbox.trace, [])
+        user_prompt = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("Previously verified", user_prompt)
+        self.assertIn("src/auth.py:L1-L12", user_prompt)
 
     def test_product_team_style_is_added_to_agent_and_one_shot_prompts(self):
         toolbox = FakeToolbox(

@@ -62,7 +62,7 @@ class RepositoryToolboxTests(unittest.TestCase):
             "app.agent.tools.load_retrieval_config", return_value=config
         )
         env.start()
-        graph.start()
+        self.graph = graph.start()
         retrieval_config.start()
         self.addCleanup(env.stop)
         self.addCleanup(graph.stop)
@@ -82,6 +82,13 @@ class RepositoryToolboxTests(unittest.TestCase):
         self.assertGreaterEqual(result["graph_hit_count"], 1)
         self.assertEqual(result["source_hits"][0]["path"], "src/auth.py")
         self.assertIn("L1:", result["source_hits"][0]["snippets"][0]["code"])
+
+    def test_graph_load_is_deferred_until_a_graph_tool_is_used(self):
+        self.graph.assert_not_called()
+        self.call("read_file", {"path": "src/auth.py", "start_line": 1, "end_line": 1})
+        self.graph.assert_not_called()
+        self.call("find_definition", {"symbol": "login"})
+        self.graph.assert_called_once()
 
     def test_read_file_returns_numbered_bounded_lines(self):
         result = self.call(
