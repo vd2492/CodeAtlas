@@ -79,6 +79,8 @@ The image runs as UID/GID `10001`, so prepare the VM data mount before starting:
 
 ```bash
 sudo install -d -o 10001 -g 10001 /srv/codeatlas/data
+sudo chown -R 10001:10001 /srv/codeatlas/data
+sudo chmod 750 /srv/codeatlas/data
 ```
 
 For private repositories, inject `GH_TOKEN` for the `gh` clone method or add a
@@ -90,6 +92,17 @@ in-process and the application uses SQLite. When placing it behind a GCP
 internal HTTPS Application Load Balancer, use `/healthz` for the health check,
 allow backend port `8000` only from the proxy-only subnet and health-check
 ranges, and set the backend timeout high enough for synchronous indexing.
+
+If startup fails with `sqlite3.OperationalError: unable to open database file`,
+the mounted host directory is not writable by the container. Confirm that
+`CODEATLAS_DATA_PATH` points to an existing directory, apply the ownership
+commands above, and recreate the service:
+
+```bash
+docker compose down
+docker compose up -d --build
+docker compose logs -f app
+```
 
 ## Configuration
 

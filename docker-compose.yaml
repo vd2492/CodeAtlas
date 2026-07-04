@@ -15,6 +15,7 @@ services:
         required: false
     environment:
       CODEATLAS_DATA_DIR: /app/data
+      CODEATLAS_DB_PATH: /app/data/codeatlas.db
       CODEATLAS_COOKIE_SECURE: ${CODEATLAS_COOKIE_SECURE:-true}
     ports:
       - "${CODEATLAS_BIND_ADDRESS:-0.0.0.0}:${CODEATLAS_PORT:-8000}:8000"
@@ -22,6 +23,8 @@ services:
       - type: bind
         source: ${CODEATLAS_DATA_PATH:-./data}
         target: /app/data
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8000/healthz"]
       interval: 30s
