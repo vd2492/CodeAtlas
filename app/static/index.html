@@ -286,14 +286,21 @@
       margin-bottom: 24px;
     }
     .llm-options,
+    .personal-llm-actions,
     .personal-llm {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
       align-items: center;
     }
+    .personal-llm-actions,
     .personal-llm { margin-top: 12px; }
+    .personal-llm-actions[hidden],
     .personal-llm[hidden] { display: none; }
+    .personal-llm-actions button {
+      min-width: 220px;
+      justify-content: center;
+    }
     .llm-option.active {
       color: #04221f;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -906,8 +913,18 @@
         <!-- Ollama remains a disabled backend placeholder for a future release. -->
         <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
         <button id="personalLlmToggle" type="button" class="llm-option"
-          aria-expanded="false" aria-controls="personalLlmConfig"
+          aria-expanded="false"
+          aria-controls="personalLlmActions personalLlmConfig"
           onclick="togglePersonalLlmConfig()">Use personal LLM key</button>
+      </div>
+      <div id="personalLlmActions" class="personal-llm-actions" role="group"
+        aria-label="Personal LLM token options" hidden>
+        <button type="button" onclick="useSavedPersonalLlmKey()">
+          Use previously saved token
+        </button>
+        <button type="button" onclick="showNewPersonalLlmConfig()">
+          Use a new LLM token
+        </button>
       </div>
       <div id="personalLlmConfig" class="personal-llm" hidden>
         <input id="keyApi" type="password" placeholder="Personal API key"
@@ -1433,13 +1450,25 @@
       updateLlmModeUi();
     }
 
-    function setPersonalLlmConfigOpen(open) {
-      const panel = document.getElementById('personalLlmConfig');
+    function closePersonalLlmPanel() {
+      const actions = document.getElementById('personalLlmActions');
+      const config = document.getElementById('personalLlmConfig');
       const toggle = document.getElementById('personalLlmToggle');
-      if (!panel || !toggle) return;
-      panel.hidden = !open;
-      toggle.setAttribute('aria-expanded', String(open));
-      if (open) {
+      if (!actions || !config || !toggle) return;
+      actions.hidden = true;
+      config.hidden = true;
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+
+    function showPersonalLlmView(view) {
+      const actions = document.getElementById('personalLlmActions');
+      const config = document.getElementById('personalLlmConfig');
+      const toggle = document.getElementById('personalLlmToggle');
+      if (!actions || !config || !toggle) return;
+      actions.hidden = view !== 'actions';
+      config.hidden = view !== 'config';
+      toggle.setAttribute('aria-expanded', 'true');
+      if (view === 'config') {
         window.requestAnimationFrame(() => {
           document.getElementById('keyApi')?.focus();
         });
@@ -1447,8 +1476,28 @@
     }
 
     function togglePersonalLlmConfig() {
-      const panel = document.getElementById('personalLlmConfig');
-      setPersonalLlmConfigOpen(panel?.hidden !== false);
+      const toggle = document.getElementById('personalLlmToggle');
+      if (toggle?.getAttribute('aria-expanded') === 'true') {
+        closePersonalLlmPanel();
+        return;
+      }
+      showPersonalLlmView(PERSONAL_KEY_CONFIGURED ? 'actions' : 'config');
+    }
+
+    function useSavedPersonalLlmKey() {
+      if (!PERSONAL_KEY_CONFIGURED) {
+        showPersonalLlmView('config');
+        return;
+      }
+      document.getElementById('keyErr').textContent = '';
+      closePersonalLlmPanel();
+      setLlmMode('personal');
+      showToast('Using your previously saved personal LLM key.');
+    }
+
+    function showNewPersonalLlmConfig() {
+      document.getElementById('keyErr').textContent = '';
+      showPersonalLlmView('config');
     }
 
     function showToast(message) {
@@ -1571,7 +1620,7 @@
         document.getElementById('keyApi').value = '';
         PERSONAL_KEY_CONFIGURED = true;
         setLlmMode('personal');
-        setPersonalLlmConfigOpen(false);
+        closePersonalLlmPanel();
         showToast('Personal LLM key applied successfully.');
       } catch (e) { errEl.textContent = String(e); }
     }
@@ -2111,7 +2160,7 @@ If the current message refers to the recent exchange, use that context and inves
 
       document.querySelectorAll('.llm-option[data-llm-mode]').forEach(button => {
         button.addEventListener('click', function() {
-          setPersonalLlmConfigOpen(false);
+          closePersonalLlmPanel();
           setLlmMode(button.getAttribute('data-llm-mode'));
         });
       });
