@@ -293,6 +293,7 @@
       align-items: center;
     }
     .personal-llm { margin-top: 12px; }
+    .personal-llm[hidden] { display: none; }
     .llm-option.active {
       color: #04221f;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -324,6 +325,40 @@
       justify-content: center;
     }
     #keyStatus { margin-top: 10px; }
+
+    .toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: min(380px, calc(100vw - 32px));
+      padding: 13px 16px;
+      border: 1px solid rgba(95, 227, 154, 0.38);
+      border-radius: 12px;
+      color: var(--text);
+      background: var(--card-solid);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(12px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .toast::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      flex: none;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
 
     .advanced-card {
       margin-top: 16px;
@@ -694,6 +729,7 @@
       .tools { grid-template-columns: 1fr; }
       .result-card { padding: 20px; }
       .title { font-size: 22px; }
+      .toast { left: 16px; right: 16px; bottom: 16px; max-width: none; }
       .follow-up-box {
         align-items: stretch;
         flex-direction: column;
@@ -869,8 +905,11 @@
       <div class="llm-options" role="group" aria-label="LLM provider">
         <!-- Ollama remains a disabled backend placeholder for a future release. -->
         <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
+        <button id="personalLlmToggle" type="button" class="llm-option"
+          aria-expanded="false" aria-controls="personalLlmConfig"
+          onclick="togglePersonalLlmConfig()">Use personal LLM key</button>
       </div>
-      <div class="personal-llm">
+      <div id="personalLlmConfig" class="personal-llm" hidden>
         <input id="keyApi" type="password" placeholder="Personal API key"
           aria-label="Personal API key" autocomplete="off" />
         <input id="keyModel" value="mimo-v2.5" placeholder="Model name"
@@ -902,7 +941,7 @@
         <input id="keyBaseUrl" value="https://api.xiaomimimo.com/v1"
           placeholder="Base URL (e.g. https://host/v1)" aria-label="LLM API base URL"
           autocomplete="url" />
-        <button type="button" class="btn-primary" onclick="saveKey()">Use personal LLM key</button>
+        <button type="button" class="btn-primary" onclick="saveKey()">Apply and use</button>
       </div>
       <div id="keyStatus" class="src"></div>
       <div id="keyErr" class="login-err"></div>
@@ -966,6 +1005,8 @@
       </details>
     </div>
   </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"
+    aria-atomic="true"></div>
 
   <script>
     function toggleTheme() {
@@ -986,6 +1027,7 @@
     let BRANCH_POLL_TIMER = null;
     let LLM_MODE = 'mimo';
     let PERSONAL_KEY_CONFIGURED = false;
+    let TOAST_TIMER = null;
     let CONVERSATION_HISTORY = [];
     let CURRENT_USER_TYPE = 'dev_team';
 
@@ -1391,10 +1433,43 @@
       updateLlmModeUi();
     }
 
+    function setPersonalLlmConfigOpen(open) {
+      const panel = document.getElementById('personalLlmConfig');
+      const toggle = document.getElementById('personalLlmToggle');
+      if (!panel || !toggle) return;
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      if (open) {
+        window.requestAnimationFrame(() => {
+          document.getElementById('keyApi')?.focus();
+        });
+      }
+    }
+
+    function togglePersonalLlmConfig() {
+      const panel = document.getElementById('personalLlmConfig');
+      setPersonalLlmConfigOpen(panel?.hidden !== false);
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      if (!toast) return;
+      window.clearTimeout(TOAST_TIMER);
+      toast.textContent = message;
+      toast.classList.add('show');
+      TOAST_TIMER = window.setTimeout(() => {
+        toast.classList.remove('show');
+      }, 3500);
+    }
+
     function updateLlmModeUi() {
       document.querySelectorAll('.llm-option').forEach(button => {
         button.classList.toggle('active', button.getAttribute('data-llm-mode') === LLM_MODE);
       });
+      document.getElementById('personalLlmToggle')?.classList.toggle(
+        'active',
+        LLM_MODE === 'personal'
+      );
 
       const status = document.getElementById('keyStatus');
       if (!status) return;
@@ -1496,6 +1571,8 @@
         document.getElementById('keyApi').value = '';
         PERSONAL_KEY_CONFIGURED = true;
         setLlmMode('personal');
+        setPersonalLlmConfigOpen(false);
+        showToast('Personal LLM key applied successfully.');
       } catch (e) { errEl.textContent = String(e); }
     }
 
@@ -2032,8 +2109,9 @@ If the current message refers to the recent exchange, use that context and inves
         });
       }
 
-      document.querySelectorAll('.llm-option').forEach(button => {
+      document.querySelectorAll('.llm-option[data-llm-mode]').forEach(button => {
         button.addEventListener('click', function() {
+          setPersonalLlmConfigOpen(false);
           setLlmMode(button.getAttribute('data-llm-mode'));
         });
       });
