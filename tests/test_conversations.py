@@ -1,5 +1,4 @@
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import main
@@ -81,7 +80,7 @@ class ConversationStoreTests(unittest.TestCase):
 
 
 class ConversationEndpointTests(unittest.TestCase):
-    def test_follow_up_skips_context_rebuild_and_keeps_tools_optional(self):
+    def test_follow_up_uses_compact_no_tool_path_without_context_rebuild(self):
         state = ConversationStore(ttl_seconds=30, max_states=10).create(
             user_id=7,
             workspace="repo-main",
@@ -97,17 +96,17 @@ class ConversationEndpointTests(unittest.TestCase):
             question="How does login work?",
             answer="Login is verified in src/auth.py:L1-L20.",
         )
-        toolbox = SimpleNamespace()
         generated = {
             "answer": "It rejects invalid users in src/auth.py:L8-L12.",
             "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "follow_up_cache",
             "tool_calls": 0,
         }
         with patch.object(main, "build_context") as build_context, patch.object(
-            main, "RepositoryToolbox", return_value=toolbox
-        ), patch.object(
-            main, "generate", return_value=generated
-        ) as generate, patch.object(
+            main, "RepositoryToolbox"
+        ) as toolbox, patch.object(
+            main, "generate_fast_follow_up", return_value=generated
+        ) as generate_fast, patch.object(
             main, "repository_version_payload", return_value=None
         ):
             result = main.answer_follow_up(
@@ -118,9 +117,51 @@ class ConversationEndpointTests(unittest.TestCase):
             )
 
         build_context.assert_not_called()
-        self.assertFalse(generate.call_args.kwargs["require_tool"])
-        self.assertIn("src/auth.py L1-L20", generate.call_args.kwargs["agent_context"])
+        toolbox.assert_not_called()
+        self.assertIn("src/auth.py L1-L20", generate_fast.call_args.args[1])
         self.assertTrue(result["follow_up_reused"])
+        self.assertIn("follow_up_generation", result["timings_ms"])
+
+    def test_insufficient_compact_evidence_runs_full_retrieval(self):
+        state = ConversationStore(ttl_seconds=30, max_states=10).create(
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            context={"llm_context_preview": {"question": "How does login work?"}},
+            question="How does login work?",
+            answer="Login is verified in src/auth.py:L1-L20.",
+        )
+        full_response = {
+            "question": "What happens after the token expires?",
+            "answer": "A fresh investigation found the expiry path.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "expiry"}},
+            "timings_ms": {
+                "retrieval": 10.0,
+                "generation": 20.0,
+                "total": 30.0,
+            },
+        }
+        with patch.object(
+            main,
+            "generate_fast_follow_up",
+            side_effect=main.FollowUpNeedsEvidence("more evidence"),
+        ), patch.object(
+            main, "answer_question", return_value=full_response
+        ) as full:
+            result = main.answer_follow_up(
+                "What happens after the token expires?",
+                state,
+                workspace="repo-main",
+                llm_mode="mimo",
+            )
+
+        full.assert_called_once()
+        self.assertFalse(result["follow_up_reused"])
+        self.assertTrue(result["follow_up_fallback"])
+        self.assertIn("follow_up_gate", result["timings_ms"])
 
     def test_related_follow_up_reuses_server_evidence(self):
         store = ConversationStore(ttl_seconds=30, max_states=10)
@@ -239,6 +280,7 @@ class ConversationEndpointTests(unittest.TestCase):
         fast.assert_not_called()
         full.assert_called_once()
         self.assertFalse(result["follow_up_reused"])
+        self.assertTrue(result["follow_up_fallback"])
         self.assertNotEqual(result["conversation_id"], original.conversation_id)
 
 

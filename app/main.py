@@ -42,9 +42,11 @@ from .retrieval.relation_utils import (
 )
 from .retrieval.config_schema import load_retrieval_config, seed_default_retrieval_config
 from .llm.client import (
+    FollowUpNeedsEvidence,
     PRODUCT_TEAM_QUERY_SUFFIX,
     PRODUCT_TEAM_RESPONSE_INSTRUCTION,
     generate,
+    generate_fast_follow_up,
 )
 from .auth.routes import router as auth_router, load_user_llm
 from .auth.security import hash_password
@@ -1274,6 +1276,12 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
     }
 
 
+FOLLOW_UP_EVIDENCE_CHARS = max(
+    4000, int(os.environ.get("CODEATLAS_FOLLOW_UP_EVIDENCE_CHARS", "10000"))
+)
+FOLLOW_UP_TURN_ANSWER_CHARS = max(
+    1000, int(os.environ.get("CODEATLAS_FOLLOW_UP_TURN_ANSWER_CHARS", "2500"))
+)
 FOLLOW_UP_STOPWORDS = {
     "about", "after", "again", "also", "and", "are", "can", "could", "does",
     "explain", "feature", "flow", "for", "from", "handle", "handled", "happen",
@@ -1351,22 +1359,53 @@ def is_related_follow_up(state: ConversationState, question: str) -> bool:
     return bool(question_terms & prior_terms)
 
 
-def follow_up_agent_context(state: ConversationState) -> str:
+def compact_follow_up_evidence(state: ConversationState) -> str:
     turns = "\n\n".join(
         (
-            f"Question: {turn.get('question', '')}\n"
-            f"Answer: {turn.get('answer', '')}"
+            f"Question: {str(turn.get('question', ''))[:800]}\n"
+            f"Answer: {str(turn.get('answer', ''))[:FOLLOW_UP_TURN_ANSWER_CHARS]}"
         )
         for turn in state.turns[-2:]
     )
+    preview = (state.context or {}).get("llm_context_preview", {})
+    compact_preview = {
+        "repo_overview": preview.get("repo_overview"),
+        "nodes": [
+            {
+                "name": node.get("name"),
+                "source": node.get("source"),
+                **(
+                    {"code": str(node.get("code", ""))[:700]}
+                    if node.get("code")
+                    else {}
+                ),
+            }
+            for node in (preview.get("nodes") or [])[:6]
+        ],
+        "relations": (preview.get("relations") or [])[:12],
+        "source_search_hits": [
+            {
+                "path": hit.get("path"),
+                "snippets": [
+                    {
+                        "range": snippet.get("range"),
+                        "code": str(snippet.get("code", ""))[:800],
+                    }
+                    for snippet in (hit.get("snippets") or [])[:1]
+                ],
+            }
+            for hit in (preview.get("source_search_hits") or [])[:6]
+        ],
+    }
     evidence = json.dumps(
-        (state.context or {}).get("llm_context_preview", {}),
+        compact_preview,
         ensure_ascii=False,
         separators=(",", ":"),
     )
     return (
         f"Recent conversation:\n{turns}\n\n"
-        f"Verified repository evidence from the same indexed commit:\n{evidence[:24000]}"
+        "Verified repository evidence from the same indexed commit:\n"
+        f"{evidence[:FOLLOW_UP_EVIDENCE_CHARS]}"
     )
 
 
@@ -1401,8 +1440,11 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     answer_mode: str = None) -> dict:
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
+    started_at = time.perf_counter()
+    retrieval_started_at = time.perf_counter()
     context = build_context(question, limit=16, workspace=workspace)
     toolbox = RepositoryToolbox(workspace)
+    retrieval_ms = round((time.perf_counter() - retrieval_started_at) * 1000, 1)
     response_style_instruction = (
         PRODUCT_TEAM_RESPONSE_INSTRUCTION
         if user_type == "product_team"
@@ -1422,6 +1464,7 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
     context["llm_context_preview"]["question"] = llm_question
     toolbox.response_style_instruction = response_style_instruction
     toolbox.product_flow_summary = product_flow_summary
+    generation_started_at = time.perf_counter()
     result = generate(
         context,
         user_llm=user_llm,
@@ -1430,7 +1473,14 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         question=llm_question,
         toolbox=toolbox,
     )
-    return _answer_response(question, result, context, workspace)
+    generation_ms = round((time.perf_counter() - generation_started_at) * 1000, 1)
+    response = _answer_response(question, result, context, workspace)
+    response["timings_ms"] = {
+        "retrieval": retrieval_ms,
+        "generation": generation_ms,
+        "total": round((time.perf_counter() - started_at) * 1000, 1),
+    }
+    return response
 
 
 def answer_follow_up(
@@ -1443,6 +1493,7 @@ def answer_follow_up(
     user_type: str = "dev_team",
 ) -> dict:
     """Answer from revision-matched evidence, using repository tools only as needed."""
+    started_at = time.perf_counter()
     context = copy.deepcopy(state.context or {})
     preview = context.setdefault("llm_context_preview", {})
     response_style_instruction = (
@@ -1458,23 +1509,45 @@ def answer_follow_up(
     context["question"] = question
     context["response_style_instruction"] = response_style_instruction
     preview["question"] = llm_question
-    preview["recent_conversation"] = state.turns[-2:]
+    evidence = compact_follow_up_evidence(state)
 
-    toolbox = RepositoryToolbox(workspace)
-    toolbox.response_style_instruction = response_style_instruction
-    toolbox.product_flow_summary = False
-    result = generate(
-        context,
-        user_llm=user_llm,
-        allow_shared_fallback=allow_shared_fallback,
-        llm_mode=llm_mode,
-        question=llm_question,
-        toolbox=toolbox,
-        agent_context=follow_up_agent_context(state),
-        require_tool=False,
-    )
+    fast_started_at = time.perf_counter()
+    try:
+        result = generate_fast_follow_up(
+            context,
+            evidence,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared_fallback,
+            llm_mode=llm_mode,
+            question=llm_question,
+        )
+    except FollowUpNeedsEvidence:
+        fast_gate_ms = round((time.perf_counter() - fast_started_at) * 1000, 1)
+        response = answer_question(
+            question,
+            workspace=workspace,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared_fallback,
+            llm_mode=llm_mode,
+            user_type=user_type,
+        )
+        response["follow_up_reused"] = False
+        response["follow_up_fallback"] = True
+        response["timings_ms"]["follow_up_gate"] = fast_gate_ms
+        response["timings_ms"]["total"] = round(
+            (time.perf_counter() - started_at) * 1000,
+            1,
+        )
+        return response
+
+    generation_ms = round((time.perf_counter() - fast_started_at) * 1000, 1)
     response = _answer_response(question, result, context, workspace)
     response["follow_up_reused"] = True
+    response["follow_up_fallback"] = False
+    response["timings_ms"] = {
+        "follow_up_generation": generation_ms,
+        "total": round((time.perf_counter() - started_at) * 1000, 1),
+    }
     return response
 
 
@@ -1568,6 +1641,7 @@ def ask_llm_endpoint(
         )
         response["conversation_id"] = state.conversation_id
         response["follow_up_reused"] = False
+        response["follow_up_fallback"] = bool(request.follow_up)
         return response
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))

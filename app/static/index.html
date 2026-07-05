@@ -2069,12 +2069,18 @@
           : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
         const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
         const retrievalLabel = data.follow_up_reused
-          ? followUpToolCalls
-            ? `fast follow-up · ${followUpToolCalls} verification tool calls`
-            : 'fast follow-up · reused verified evidence'
+          ? 'fast follow-up · compact verified evidence'
+          : data.follow_up_fallback
+            ? data.retrieval_mode === 'agentic'
+              ? `follow-up fresh investigation · ${followUpToolCalls} tool calls`
+              : 'follow-up fresh investigation · one-shot retrieval'
           : data.retrieval_mode === 'agentic'
             ? `agentic retrieval · ${followUpToolCalls} tool calls`
             : 'one-shot retrieval fallback';
+        const totalMs = Number(data.timings_ms?.total);
+        const timingLabel = Number.isFinite(totalMs)
+          ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
+          : '';
         const version = data.repository_version || null;
         const versionLabel = version
           ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
@@ -2082,7 +2088,7 @@
         const answerMetadata = productFlowSummary
           ? '<p class="src" style="margin-top:0">Product team flow summary</p>'
           : `
-            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}</p>
+            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}</p>
             ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
           `;
         CONVERSATION_ID = data.conversation_id || null;

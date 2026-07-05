@@ -20,6 +20,10 @@ import requests
 from ..agent.tools import TOOL_DEFINITIONS
 
 REQUEST_TIMEOUT = 90
+FOLLOW_UP_MAX_TOKENS = max(
+    200, int(os.environ.get("CODEATLAS_FOLLOW_UP_MAX_TOKENS", "800"))
+)
+FOLLOW_UP_NEEDS_EVIDENCE = "CODEATLAS_NEEDS_MORE_EVIDENCE"
 AGENT_ENABLED = os.environ.get("CODEATLAS_AGENT_ENABLED", "true").lower() not in {
     "0", "false", "no",
 }
@@ -116,6 +120,10 @@ class AgenticUnsupported(RuntimeError):
     """The selected endpoint/model cannot complete a native tool loop."""
 
 
+class FollowUpNeedsEvidence(RuntimeError):
+    """Compact evidence is insufficient; run the normal grounded pipeline."""
+
+
 def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
     evidence = dict(preview)
@@ -157,6 +165,13 @@ def _require_answer(answer: str, provider: str) -> str:
     answer = (answer or "").strip()
     if not answer:
         raise RuntimeError(f"{provider} returned an empty answer.")
+    return answer
+
+
+def _require_follow_up_answer(answer: str, provider: str) -> str:
+    answer = _require_answer(answer, provider)
+    if FOLLOW_UP_NEEDS_EVIDENCE in answer.upper():
+        raise FollowUpNeedsEvidence(FOLLOW_UP_NEEDS_EVIDENCE)
     return answer
 
 
@@ -683,6 +698,147 @@ def _ollama_chat(base_url: str, model: str, context: dict) -> str:
     return _require_answer(answer, model)
 
 
+def _fast_follow_up_system_prompt(context: dict) -> str:
+    audience_instruction = str(
+        context.get("response_style_instruction") or ""
+    ).strip()
+    evidence_output_rule = (
+        "Follow the audience requirements below and do not expose technical "
+        "evidence in the final answer."
+        if audience_instruction
+        else "Preserve valid source citations already present in the evidence."
+    )
+    return (
+        f"{_system_prompt(context)}\n\n"
+        "You are answering a follow-up using compact evidence from the same "
+        "authenticated repository conversation and indexed revision. Answer only "
+        "when every concrete claim needed for the response is supported by that "
+        f"evidence. {evidence_output_rule} "
+        "If the evidence is incomplete, ambiguous, stale, or about a different "
+        f"topic, output exactly {FOLLOW_UP_NEEDS_EVIDENCE} and nothing else."
+        + (
+            "\n\nAudience-specific final-answer requirements:\n"
+            f"{audience_instruction}"
+            if audience_instruction
+            else ""
+        )
+    )
+
+
+def _fast_follow_up_user_prompt(question: str, evidence: str) -> str:
+    return (
+        f"Compact verified conversation evidence:\n{evidence}\n\n"
+        f"Current follow-up question:\n{question}"
+    )
+
+
+def _openai_fast_follow_up(
+    base_url: str,
+    api_key: str,
+    model: str,
+    context: dict,
+    question: str,
+    evidence: str,
+) -> str:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _fast_follow_up_system_prompt(context)},
+                {
+                    "role": "user",
+                    "content": _fast_follow_up_user_prompt(question, evidence),
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": FOLLOW_UP_MAX_TOKENS,
+        },
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+    if response.status_code >= 400:
+        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    answer = response.json()["choices"][0]["message"].get("content", "")
+    return _require_follow_up_answer(answer, model)
+
+
+def _anthropic_fast_follow_up(
+    base_url: str,
+    api_key: str,
+    model: str,
+    context: dict,
+    question: str,
+    evidence: str,
+) -> str:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "max_tokens": FOLLOW_UP_MAX_TOKENS,
+            "temperature": 0.1,
+            "system": _fast_follow_up_system_prompt(context),
+            "messages": [{
+                "role": "user",
+                "content": _fast_follow_up_user_prompt(question, evidence),
+            }],
+            **_anthropic_cache_settings(base_url),
+        },
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    if 300 <= response.status_code < 400:
+        raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+    if response.status_code >= 400:
+        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    answer = "".join(
+        block.get("text", "")
+        for block in response.json().get("content", [])
+        if block.get("type") == "text"
+    )
+    return _require_follow_up_answer(answer, model)
+
+
+def _ollama_fast_follow_up(
+    base_url: str,
+    model: str,
+    context: dict,
+    question: str,
+    evidence: str,
+) -> str:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/api/chat",
+        json={
+            "model": model,
+            "stream": False,
+            "options": {"temperature": 0.1},
+            "messages": [
+                {"role": "system", "content": _fast_follow_up_system_prompt(context)},
+                {
+                    "role": "user",
+                    "content": _fast_follow_up_user_prompt(question, evidence),
+                },
+            ],
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    answer = response.json().get("message", {}).get("content", "")
+    return _require_follow_up_answer(answer, model)
+
+
 def _ollama_available(base_url: str) -> bool:
     try:
         requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=1.5)
@@ -718,6 +874,41 @@ def _call_with_creds(creds: dict, context: dict) -> str:
     if provider in {"anthropic", "anthropic_compatible", "claude"}:
         return _anthropic_chat(base_url, api_key, model or "claude-sonnet-4-5", context)
     return _openai_chat(base_url, api_key, model or "gpt-4o-mini", context)
+
+
+def _call_fast_follow_up_with_creds(
+    creds: dict,
+    context: dict,
+    question: str,
+    evidence: str,
+) -> str:
+    provider = (creds.get("provider") or "openai_compatible").lower()
+    base_url = creds.get("base_url") or ""
+    api_key = creds.get("api_key") or ""
+    model = creds.get("model") or ""
+    if not base_url:
+        raise RuntimeError("missing base_url")
+    if not api_key:
+        raise RuntimeError("missing api_key")
+    _validate_outbound_base_url(base_url)
+
+    if provider in {"anthropic", "anthropic_compatible", "claude"}:
+        return _anthropic_fast_follow_up(
+            base_url,
+            api_key,
+            model or "claude-sonnet-4-5",
+            context,
+            question,
+            evidence,
+        )
+    return _openai_fast_follow_up(
+        base_url,
+        api_key,
+        model or "gpt-4o-mini",
+        context,
+        question,
+        evidence,
+    )
 
 
 def _call_agent_with_creds(
@@ -834,6 +1025,108 @@ def _attempt_ollama(
 
 
 # --- Fallback chain -----------------------------------------------------------
+
+def generate_fast_follow_up(
+    context: dict,
+    evidence: str,
+    user_llm: dict = None,
+    allow_shared_fallback: bool = True,
+    llm_mode: str = None,
+    question: str = None,
+) -> dict:
+    """Run one compact no-tool generation or request full repository evidence."""
+    mode = (llm_mode or "auto").lower()
+    question = question or (
+        context.get("llm_context_preview", {}).get("question") or ""
+    )
+
+    def run(creds: dict, provider_used: str) -> dict:
+        answer = _call_fast_follow_up_with_creds(
+            creds,
+            context,
+            question,
+            evidence,
+        )
+        return {
+            "answer": answer,
+            "provider_used": provider_used,
+            "retrieval_mode": "follow_up_cache",
+            "agent_trace": [],
+            "rounds": 1,
+            "tool_calls": 0,
+        }
+
+    if mode == "personal":
+        if not user_llm or not user_llm.get("api_key"):
+            raise RuntimeError("No personal LLM key is saved yet.")
+        return run(
+            user_llm,
+            f"user:{user_llm.get('provider', 'openai')}",
+        )
+
+    if mode == "ollama":
+        if not OLLAMA_ENABLED:
+            raise RuntimeError("Ollama support is currently disabled.")
+        ollama_url = os.getenv("CODEATLAS_OLLAMA_URL", "http://localhost:11434")
+        ollama_model = os.getenv("CODEATLAS_OLLAMA_MODEL", "qwen2.5-coder:7b")
+        if not _ollama_available(ollama_url):
+            raise RuntimeError(f"Ollama is not reachable at {ollama_url}.")
+        answer = _ollama_fast_follow_up(
+            ollama_url,
+            ollama_model,
+            context,
+            question,
+            evidence,
+        )
+        return {
+            "answer": answer,
+            "provider_used": f"ollama:{ollama_model}",
+            "retrieval_mode": "follow_up_cache",
+            "agent_trace": [],
+            "rounds": 1,
+            "tool_calls": 0,
+        }
+
+    if mode == "mimo":
+        if not allow_shared_fallback:
+            raise RuntimeError("Mimo/shared LLM is disabled for this repository.")
+        shared = _configured_shared_creds(
+            os.getenv("CODEATLAS_MIMO_MODEL", "mimo-v2.5")
+        )
+        if not shared["base_url"] or not shared["api_key"]:
+            raise RuntimeError("Mimo/shared LLM is not configured.")
+        return run(shared, f"shared:{shared['model']}")
+
+    errors = []
+    if user_llm and user_llm.get("api_key"):
+        try:
+            return run(
+                user_llm,
+                f"user:{user_llm.get('provider', 'openai')}",
+            )
+        except FollowUpNeedsEvidence:
+            raise
+        except Exception as exc:
+            errors.append(f"user-key: {exc}")
+
+    if allow_shared_fallback:
+        shared = _configured_shared_creds()
+        if shared["base_url"] and shared["api_key"]:
+            try:
+                return run(shared, f"shared:{shared['model']}")
+            except FollowUpNeedsEvidence:
+                raise
+            except Exception as exc:
+                errors.append(f"shared: {exc}")
+        else:
+            errors.append("shared: CODEATLAS_LLM_BASE_URL/API_KEY not configured")
+    else:
+        errors.append("shared: disabled for this repo")
+
+    raise RuntimeError(
+        "No LLM provider succeeded for follow-up. Tried -> " + " | ".join(errors)
+    )
+
 
 def generate(
     context: dict,

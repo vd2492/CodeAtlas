@@ -127,6 +127,84 @@ class AgentLoopTests(unittest.TestCase):
             {},
         )
 
+    def test_fast_follow_up_request_omits_tools_and_uses_small_output_budget(self):
+        response = FakeResponse({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Cached answer from src/auth.py:L8-L12.",
+                }
+            }]
+        })
+        with patch("app.llm.client.requests.post", return_value=response) as post:
+            answer = client._openai_fast_follow_up(
+                "https://example.test/v1",
+                "key",
+                "model",
+                {},
+                "What happens when it fails?",
+                "Verified evidence",
+            )
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(answer, "Cached answer from src/auth.py:L8-L12.")
+        self.assertNotIn("tools", payload)
+        self.assertEqual(payload["max_tokens"], client.FOLLOW_UP_MAX_TOKENS)
+
+    def test_fast_follow_up_sentinel_requests_full_evidence(self):
+        response = FakeResponse({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": client.FOLLOW_UP_NEEDS_EVIDENCE,
+                }
+            }]
+        })
+        with patch("app.llm.client.requests.post", return_value=response):
+            with self.assertRaises(client.FollowUpNeedsEvidence):
+                client._openai_fast_follow_up(
+                    "https://example.test/v1",
+                    "key",
+                    "model",
+                    {},
+                    "Question",
+                    "Insufficient evidence",
+                )
+
+    def test_fast_follow_up_uses_selected_shared_provider(self):
+        shared = {
+            "provider": "openai_compatible",
+            "base_url": "https://example.test/v1",
+            "api_key": "key",
+            "model": "mimo-v2.5",
+        }
+        with patch.object(
+            client, "_configured_shared_creds", return_value=shared
+        ), patch.object(
+            client,
+            "_call_fast_follow_up_with_creds",
+            return_value="Fast grounded answer.",
+        ) as call:
+            result = client.generate_fast_follow_up(
+                {},
+                "Verified evidence",
+                llm_mode="mimo",
+                question="Follow-up?",
+            )
+
+        call.assert_called_once()
+        self.assertEqual(result["provider_used"], "shared:mimo-v2.5")
+        self.assertEqual(result["retrieval_mode"], "follow_up_cache")
+        self.assertEqual(result["tool_calls"], 0)
+
+    def test_fast_follow_up_preserves_product_team_answer_style(self):
+        prompt = client._fast_follow_up_system_prompt({
+            "response_style_instruction": client.PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+        })
+        self.assertIn("Do not include technical terms", prompt)
+        self.assertIn("do not expose technical evidence", prompt)
+        self.assertNotIn("Preserve valid source citations", prompt)
+
     def test_ollama_agent_executes_object_arguments(self):
         toolbox = FakeToolbox()
         responses = [
