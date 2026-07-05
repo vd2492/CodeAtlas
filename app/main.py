@@ -48,6 +48,7 @@ from .llm.client import (
     generate,
     generate_fast_follow_up,
 )
+from .llm.admission import LLMCapacityError, llm_admission
 from .auth.routes import router as auth_router, load_user_llm
 from .auth.security import hash_password
 from .auth.sessions import COOKIE_NAME, clear_session_cookie, require_user
@@ -1592,57 +1593,64 @@ def ask_llm_endpoint(
     user_type = user.get("user_type") or "dev_team"
     revision = repository_revision(workspace)
     try:
-        state = None
-        if request.follow_up and request.conversation_id:
-            state = conversation_store.get(
-                request.conversation_id,
-                user_id=user["id"],
-                workspace=workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=revision,
-            )
-        if state and is_related_follow_up(state, request.question):
-            response = answer_follow_up(
+        with llm_admission.slot():
+            state = None
+            if request.follow_up and request.conversation_id:
+                state = conversation_store.get(
+                    request.conversation_id,
+                    user_id=user["id"],
+                    workspace=workspace,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                    repository_revision=revision,
+                )
+            if state and is_related_follow_up(state, request.question):
+                response = answer_follow_up(
+                    request.question,
+                    state,
+                    workspace=workspace,
+                    user_llm=user_llm,
+                    allow_shared_fallback=allow_shared,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                )
+                conversation_store.append(
+                    state.conversation_id,
+                    question=request.question,
+                    answer=response["answer"],
+                    context=response.get("context"),
+                )
+                response["conversation_id"] = state.conversation_id
+                return response
+
+            response = answer_question(
                 request.question,
-                state,
                 workspace=workspace,
                 user_llm=user_llm,
                 allow_shared_fallback=allow_shared,
                 llm_mode=llm_mode,
                 user_type=user_type,
             )
-            conversation_store.append(
-                state.conversation_id,
+            state = conversation_store.create(
+                user_id=user["id"],
+                workspace=workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=revision,
+                context=response.get("context") or {},
                 question=request.question,
                 answer=response["answer"],
-                context=response.get("context"),
             )
             response["conversation_id"] = state.conversation_id
+            response["follow_up_reused"] = False
+            response["follow_up_fallback"] = bool(request.follow_up)
             return response
-
-        response = answer_question(
-            request.question,
-            workspace=workspace,
-            user_llm=user_llm,
-            allow_shared_fallback=allow_shared,
-            llm_mode=llm_mode,
-            user_type=user_type,
+    except LLMCapacityError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+            headers={"Retry-After": "5"},
         )
-        state = conversation_store.create(
-            user_id=user["id"],
-            workspace=workspace,
-            llm_mode=llm_mode,
-            user_type=user_type,
-            repository_revision=revision,
-            context=response.get("context") or {},
-            question=request.question,
-            answer=response["answer"],
-        )
-        response["conversation_id"] = state.conversation_id
-        response["follow_up_reused"] = False
-        response["follow_up_fallback"] = bool(request.follow_up)
-        return response
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
@@ -1665,30 +1673,37 @@ def flow_summary_endpoint(
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
     user_llm = request.user_llm or load_user_llm(user["id"])
     try:
-        result = answer_question(
-            question,
-            workspace=workspace,
-            user_llm=user_llm,
-            allow_shared_fallback=allow_shared,
-            llm_mode=request.llm_mode,
-            user_type=user_type,
-            answer_mode="flow_summary",
+        with llm_admission.slot():
+            result = answer_question(
+                question,
+                workspace=workspace,
+                user_llm=user_llm,
+                allow_shared_fallback=allow_shared,
+                llm_mode=request.llm_mode,
+                user_type=user_type,
+                answer_mode="flow_summary",
+            )
+            result["question"] = flow_data.get("title") or topic
+            result["flow_topic"] = flow_data.get("topic") or topic
+            state = conversation_store.create(
+                user_id=user["id"],
+                workspace=workspace,
+                llm_mode=(request.llm_mode or "auto").lower(),
+                user_type=user_type,
+                repository_revision=repository_revision(workspace),
+                context=result.get("context") or {},
+                question=result["question"],
+                answer=result["answer"],
+            )
+            result["conversation_id"] = state.conversation_id
+            result["follow_up_reused"] = False
+            return result
+    except LLMCapacityError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+            headers={"Retry-After": "5"},
         )
-        result["question"] = flow_data.get("title") or topic
-        result["flow_topic"] = flow_data.get("topic") or topic
-        state = conversation_store.create(
-            user_id=user["id"],
-            workspace=workspace,
-            llm_mode=(request.llm_mode or "auto").lower(),
-            user_type=user_type,
-            repository_revision=repository_revision(workspace),
-            context=result.get("context") or {},
-            question=result["question"],
-            answer=result["answer"],
-        )
-        result["conversation_id"] = state.conversation_id
-        result["follow_up_reused"] = False
-        return result
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:

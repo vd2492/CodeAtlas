@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from .. import db
 from ..auth.sessions import require_admin
 from ..config import DEFAULT_WORKSPACE, repo_clone_dir, retrieval_config_path
+from ..llm.admission import LLMCapacityError, llm_admission
 from ..retrieval.config_schema import (
     RetrievalConfig,
     RetrievalConfigValidationError,
@@ -374,11 +375,18 @@ def test_repo(slug: str, req: TestRequest, admin: dict = Depends(require_admin))
     try:
         branch = db.get_legacy_repo_branch(repo["id"])
         workspace = branch["workspace"] if branch and branch.get("workspace") else repo["workspace"]
-        return answer_question(
-            req.question,
-            workspace=workspace,
-            allow_shared_fallback=bool(repo["allow_shared_fallback"]),
-            user_type=admin.get("user_type") or "dev_team",
+        with llm_admission.slot():
+            return answer_question(
+                req.question,
+                workspace=workspace,
+                allow_shared_fallback=bool(repo["allow_shared_fallback"]),
+                user_type=admin.get("user_type") or "dev_team",
+            )
+    except LLMCapacityError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+            headers={"Retry-After": "5"},
         )
     except RuntimeError as error:
         raise HTTPException(status_code=400, detail=str(error))

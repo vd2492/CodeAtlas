@@ -12,7 +12,11 @@ Admins can disable the shared tier per repo for sensitive codebases.
 import ipaddress
 import json
 import os
+import random
 import socket
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import requests
@@ -20,6 +24,11 @@ import requests
 from ..agent.tools import TOOL_DEFINITIONS
 
 REQUEST_TIMEOUT = 90
+PROVIDER_RETRIES = max(
+    0, int(os.environ.get("CODEATLAS_PROVIDER_RETRIES", "2"))
+)
+PROVIDER_RETRY_STATUSES = {429, 502, 503, 504}
+PROVIDER_RETRY_MAX_DELAY_SECONDS = 5.0
 FOLLOW_UP_MAX_TOKENS = max(
     200, int(os.environ.get("CODEATLAS_FOLLOW_UP_MAX_TOKENS", "800"))
 )
@@ -122,6 +131,61 @@ class AgenticUnsupported(RuntimeError):
 
 class FollowUpNeedsEvidence(RuntimeError):
     """Compact evidence is insufficient; run the normal grounded pipeline."""
+
+
+def _retry_after_seconds(response) -> float:
+    """Return a bounded Retry-After delay from seconds or an HTTP date."""
+    headers = getattr(response, "headers", None) or {}
+    value = str(headers.get("Retry-After", "")).strip()
+    if not value:
+        return 0.0
+    try:
+        return min(PROVIDER_RETRY_MAX_DELAY_SECONDS, max(0.0, float(value)))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+            return min(PROVIDER_RETRY_MAX_DELAY_SECONDS, max(0.0, delay))
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+
+def _provider_retry_delay(attempt: int, response=None) -> float:
+    exponential = min(
+        PROVIDER_RETRY_MAX_DELAY_SECONDS,
+        0.25 * (2 ** max(0, attempt)),
+    )
+    requested = _retry_after_seconds(response) if response is not None else 0.0
+    base = max(exponential, requested)
+    return min(
+        PROVIDER_RETRY_MAX_DELAY_SECONDS,
+        base + random.uniform(0.0, 0.1),
+    )
+
+
+def _post_with_retries(*args, **kwargs):
+    """POST once plus bounded retries for temporary network/provider failures."""
+    for attempt in range(PROVIDER_RETRIES + 1):
+        try:
+            response = requests.post(*args, **kwargs)
+        # A read timeout may mean the provider already generated/billed an
+        # answer, so retry only failures that prevented a usable connection.
+        except requests.ConnectionError:
+            if attempt >= PROVIDER_RETRIES:
+                raise
+            time.sleep(_provider_retry_delay(attempt))
+            continue
+
+        if (
+            response.status_code not in PROVIDER_RETRY_STATUSES
+            or attempt >= PROVIDER_RETRIES
+        ):
+            return response
+        time.sleep(_provider_retry_delay(attempt, response))
+
+    raise RuntimeError("Provider retry loop exited unexpectedly")
 
 
 def build_prompt(context: dict) -> str:
@@ -286,7 +350,7 @@ def _final_openai_answer(
             "already collected, with exact source citations and no unsupported claims."
         ),
     })
-    response = requests.post(
+    response = _post_with_retries(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
@@ -356,7 +420,7 @@ def _openai_agent(
     tool_call_count = 0
 
     for round_number in range(1, AGENT_MAX_ROUNDS + 1):
-        response = requests.post(
+        response = _post_with_retries(
             f"{base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
@@ -437,7 +501,7 @@ def _anthropic_agent(
     }
 
     for round_number in range(1, AGENT_MAX_ROUNDS + 1):
-        response = requests.post(
+        response = _post_with_retries(
             url,
             headers=headers,
             json={
@@ -495,7 +559,7 @@ def _anthropic_agent(
             "already collected, with exact source citations and no unsupported claims."
         ),
     })
-    response = requests.post(
+    response = _post_with_retries(
         url,
         headers=headers,
         json={
@@ -544,7 +608,7 @@ def _ollama_agent(
     url = f"{base_url.rstrip('/')}/api/chat"
 
     for round_number in range(1, AGENT_MAX_ROUNDS + 1):
-        response = requests.post(
+        response = _post_with_retries(
             url,
             json={
                 "model": model,
@@ -588,7 +652,7 @@ def _ollama_agent(
             "already collected, with exact source citations and no unsupported claims."
         ),
     })
-    response = requests.post(
+    response = _post_with_retries(
         url,
         json={
             "model": model,
@@ -628,7 +692,7 @@ def sniff_provider(api_key: str) -> dict:
 # --- Provider implementations -------------------------------------------------
 
 def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
-    resp = requests.post(
+    resp = _post_with_retries(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={
@@ -652,7 +716,7 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
 
 
 def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
-    resp = requests.post(
+    resp = _post_with_retries(
         f"{base_url.rstrip('/')}/v1/messages",
         headers={
             "x-api-key": api_key,
@@ -679,7 +743,7 @@ def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> s
 
 
 def _ollama_chat(base_url: str, model: str, context: dict) -> str:
-    resp = requests.post(
+    resp = _post_with_retries(
         f"{base_url.rstrip('/')}/api/chat",
         json={
             "model": model,
@@ -740,7 +804,7 @@ def _openai_fast_follow_up(
     question: str,
     evidence: str,
 ) -> str:
-    response = requests.post(
+    response = _post_with_retries(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -777,7 +841,7 @@ def _anthropic_fast_follow_up(
     question: str,
     evidence: str,
 ) -> str:
-    response = requests.post(
+    response = _post_with_retries(
         f"{base_url.rstrip('/')}/v1/messages",
         headers={
             "x-api-key": api_key,
@@ -817,7 +881,7 @@ def _ollama_fast_follow_up(
     question: str,
     evidence: str,
 ) -> str:
-    response = requests.post(
+    response = _post_with_retries(
         f"{base_url.rstrip('/')}/api/chat",
         json={
             "model": model,

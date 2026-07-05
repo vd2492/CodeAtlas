@@ -93,6 +93,15 @@ internal HTTPS Application Load Balancer, use `/healthz` for the health check,
 allow backend port `8000` only from the proxy-only subnet and health-check
 ranges, and set the backend timeout high enough for synchronous indexing.
 
+Long-running answer requests are protected by a bounded, process-local FIFO
+queue. The Compose defaults allow 12 active LLM pipelines and 20 queued
+requests, with a 15-second queue timeout; excess traffic receives a retryable
+`503` response while login, admin, and health-check traffic remains responsive.
+Temporary provider `429`, `502`, `503`, and `504` responses are retried twice.
+Tune the `CODEATLAS_MAX_CONCURRENT_LLM_REQUESTS`,
+`CODEATLAS_MAX_QUEUED_LLM_REQUESTS`, `CODEATLAS_LLM_QUEUE_TIMEOUT_SECONDS`, and
+`CODEATLAS_PROVIDER_RETRIES` settings only after load-testing the target VM.
+
 If startup fails with `sqlite3.OperationalError: unable to open database file`,
 the mounted host directory is not writable by the container. Confirm that
 `CODEATLAS_DATA_PATH` points to an existing directory, apply the ownership

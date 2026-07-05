@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("CODEATLAS_DATA_DIR", ROOT / "data"))
 WORKSPACES_DIR = DATA_DIR / "workspaces"
 DB_PATH = Path(os.environ.get("CODEATLAS_DB_PATH", DATA_DIR / "codeatlas.db"))
+SQLITE_BUSY_TIMEOUT_MS = max(
+    0, int(os.environ.get("CODEATLAS_SQLITE_BUSY_TIMEOUT_MS", "10000"))
+)
 SESSION_MAX_AGE_SECONDS = int(
     os.environ.get("CODEATLAS_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 30))
 )

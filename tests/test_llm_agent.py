@@ -8,10 +8,11 @@ from app.llm import client
 
 
 class FakeResponse:
-    def __init__(self, payload, status_code=200, text=""):
+    def __init__(self, payload, status_code=200, text="", headers=None):
         self.payload = payload
         self.status_code = status_code
         self.text = text
+        self.headers = headers or {}
 
     def json(self):
         return self.payload
@@ -31,6 +32,52 @@ class FakeToolbox:
 
 
 class AgentLoopTests(unittest.TestCase):
+    def test_provider_post_retries_temporary_failure_then_succeeds(self):
+        unavailable = FakeResponse(
+            {"error": "busy"},
+            status_code=503,
+            text="busy",
+            headers={"Retry-After": "0"},
+        )
+        success = FakeResponse({"ok": True})
+        with patch.object(client, "PROVIDER_RETRIES", 2), patch(
+            "app.llm.client.requests.post",
+            side_effect=[unavailable, success],
+        ) as post, patch("app.llm.client.time.sleep") as sleep:
+            response = client._post_with_retries("https://example.test")
+
+        self.assertIs(response, success)
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_provider_post_does_not_retry_authentication_failure(self):
+        unauthorized = FakeResponse(
+            {"error": "invalid key"},
+            status_code=401,
+            text="invalid key",
+        )
+        with patch.object(client, "PROVIDER_RETRIES", 2), patch(
+            "app.llm.client.requests.post",
+            return_value=unauthorized,
+        ) as post, patch("app.llm.client.time.sleep") as sleep:
+            response = client._post_with_retries("https://example.test")
+
+        self.assertIs(response, unauthorized)
+        post.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_provider_post_retries_connection_failure(self):
+        success = FakeResponse({"ok": True})
+        with patch.object(client, "PROVIDER_RETRIES", 1), patch(
+            "app.llm.client.requests.post",
+            side_effect=[client.requests.ConnectionError("unavailable"), success],
+        ) as post, patch("app.llm.client.time.sleep") as sleep:
+            response = client._post_with_retries("https://example.test")
+
+        self.assertIs(response, success)
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once()
+
     def test_openai_agent_executes_tool_then_answers(self):
         toolbox = FakeToolbox(
             "Map customer-facing terms to canonical symbols before searching."

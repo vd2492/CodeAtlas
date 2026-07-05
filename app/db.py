@@ -10,7 +10,12 @@ import sqlite3
 from contextlib import contextmanager
 from typing import List, Optional
 
-from .config import DB_PATH, DEFAULT_WORKSPACE, SESSION_MAX_AGE_SECONDS
+from .config import (
+    DB_PATH,
+    DEFAULT_WORKSPACE,
+    SESSION_MAX_AGE_SECONDS,
+    SQLITE_BUSY_TIMEOUT_MS,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -104,8 +109,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 @contextmanager
 def connect():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
