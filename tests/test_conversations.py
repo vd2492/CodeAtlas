@@ -120,7 +120,56 @@ class ConversationEndpointTests(unittest.TestCase):
         toolbox.assert_not_called()
         self.assertIn("src/auth.py L1-L20", generate_fast.call_args.args[1])
         self.assertTrue(result["follow_up_reused"])
+        self.assertTrue(result["investigate_deeply_available"])
         self.assertIn("follow_up_generation", result["timings_ms"])
+
+    def test_deep_investigation_bypasses_cached_follow_up_generation(self):
+        state = ConversationStore(ttl_seconds=30, max_states=10).create(
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            context={"llm_context_preview": {"question": "How does login work?"}},
+            question="How does login work?",
+            answer="Login is verified in src/auth.py:L1-L20.",
+        )
+        full_response = {
+            "question": "Does it handle expired tokens?",
+            "answer": "A fresh investigation found the expiry path.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "expired tokens"}},
+            "timings_ms": {
+                "retrieval": 10.0,
+                "generation": 20.0,
+                "total": 30.0,
+            },
+        }
+        with patch.object(
+            main, "generate_fast_follow_up"
+        ) as generate_fast, patch.object(
+            main, "answer_question", return_value=full_response
+        ) as full:
+            result = main.answer_follow_up(
+                "Does it handle expired tokens?",
+                state,
+                workspace="repo-main",
+                llm_mode="mimo",
+                deep_investigation=True,
+            )
+
+        generate_fast.assert_not_called()
+        full.assert_called_once_with(
+            "Does it handle expired tokens?",
+            workspace="repo-main",
+            user_llm=None,
+            allow_shared_fallback=True,
+            llm_mode="mimo",
+            user_type="dev_team",
+        )
+        self.assertTrue(result["deep_investigation"])
+        self.assertFalse(result["follow_up_reused"])
+        self.assertFalse(result["investigate_deeply_available"])
 
     def test_insufficient_compact_evidence_runs_full_retrieval(self):
         state = ConversationStore(ttl_seconds=30, max_states=10).create(
@@ -228,6 +277,64 @@ class ConversationEndpointTests(unittest.TestCase):
         full.assert_not_called()
         self.assertTrue(second["follow_up_reused"])
         self.assertEqual(second["conversation_id"], first["conversation_id"])
+
+    def test_endpoint_forwards_explicit_deep_investigation(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        original = store.create(
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            context={"llm_context_preview": {"question": "How does login work?"}},
+            question="How does login work?",
+            answer="Login is verified in src/auth.py:L1-L20.",
+        )
+        deep_answer = {
+            "question": "Does it handle expired tokens?",
+            "answer": "The deep investigation found the expiry path.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "expired tokens"}},
+            "follow_up_reused": False,
+            "follow_up_fallback": True,
+            "deep_investigation": True,
+        }
+        user = {"id": 7, "user_type": "dev_team"}
+
+        with patch.object(main, "conversation_store", store), patch.object(
+            main, "enforce_rate_limit"
+        ), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 1},
+        ), patch.object(
+            main, "load_user_llm", return_value=None
+        ), patch.object(
+            main, "repository_revision", return_value="branch:abc123"
+        ), patch.object(
+            main, "answer_follow_up", return_value=deep_answer
+        ) as follow_up, patch.object(
+            main, "answer_question"
+        ) as full:
+            result = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="Does it handle expired tokens?",
+                    llm_mode="mimo",
+                    conversation_id=original.conversation_id,
+                    follow_up=True,
+                    deep_investigation=True,
+                ),
+                "repo-main",
+                user,
+            )
+
+        follow_up.assert_called_once()
+        self.assertTrue(follow_up.call_args.kwargs["deep_investigation"])
+        full.assert_not_called()
+        self.assertTrue(result["deep_investigation"])
+        self.assertEqual(result["conversation_id"], original.conversation_id)
 
     def test_unrelated_follow_up_uses_full_retrieval_and_new_conversation(self):
         store = ConversationStore(ttl_seconds=30, max_states=10)

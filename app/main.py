@@ -746,6 +746,7 @@ class AskRequest(BaseModel):
     llm_mode: Optional[str] = None
     conversation_id: Optional[str] = None
     follow_up: bool = False
+    deep_investigation: bool = False
     # Optional bring-your-own-key creds {provider, base_url, api_key, model}.
     user_llm: Optional[dict] = None
 
@@ -1492,9 +1493,29 @@ def answer_follow_up(
     allow_shared_fallback: bool = True,
     llm_mode: str = None,
     user_type: str = "dev_team",
+    deep_investigation: bool = False,
 ) -> dict:
     """Answer from revision-matched evidence, using repository tools only as needed."""
     started_at = time.perf_counter()
+    if deep_investigation:
+        response = answer_question(
+            question,
+            workspace=workspace,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared_fallback,
+            llm_mode=llm_mode,
+            user_type=user_type,
+        )
+        response["follow_up_reused"] = False
+        response["follow_up_fallback"] = True
+        response["deep_investigation"] = True
+        response["investigate_deeply_available"] = False
+        response["timings_ms"]["total"] = round(
+            (time.perf_counter() - started_at) * 1000,
+            1,
+        )
+        return response
+
     context = copy.deepcopy(state.context or {})
     preview = context.setdefault("llm_context_preview", {})
     response_style_instruction = (
@@ -1534,6 +1555,8 @@ def answer_follow_up(
         )
         response["follow_up_reused"] = False
         response["follow_up_fallback"] = True
+        response["deep_investigation"] = False
+        response["investigate_deeply_available"] = False
         response["timings_ms"]["follow_up_gate"] = fast_gate_ms
         response["timings_ms"]["total"] = round(
             (time.perf_counter() - started_at) * 1000,
@@ -1545,6 +1568,8 @@ def answer_follow_up(
     response = _answer_response(question, result, context, workspace)
     response["follow_up_reused"] = True
     response["follow_up_fallback"] = False
+    response["deep_investigation"] = False
+    response["investigate_deeply_available"] = True
     response["timings_ms"] = {
         "follow_up_generation": generation_ms,
         "total": round((time.perf_counter() - started_at) * 1000, 1),
@@ -1604,7 +1629,10 @@ def ask_llm_endpoint(
                     user_type=user_type,
                     repository_revision=revision,
                 )
-            if state and is_related_follow_up(state, request.question):
+            if state and (
+                request.deep_investigation
+                or is_related_follow_up(state, request.question)
+            ):
                 response = answer_follow_up(
                     request.question,
                     state,
@@ -1613,6 +1641,7 @@ def ask_llm_endpoint(
                     allow_shared_fallback=allow_shared,
                     llm_mode=llm_mode,
                     user_type=user_type,
+                    deep_investigation=request.deep_investigation,
                 )
                 conversation_store.append(
                     state.conversation_id,

@@ -478,6 +478,41 @@
       font-size: 12px;
       overflow-wrap: anywhere;
     }
+    .follow-up-question-recap {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      margin: 0 0 20px;
+      padding: 13px 15px;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 11px;
+      background: var(--pre-bg);
+    }
+    .follow-up-question-recap-label {
+      margin-bottom: 5px;
+      color: var(--faint);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    #result .follow-up-question-recap p {
+      margin: 0;
+      color: var(--text);
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .investigate-actions {
+      display: flex;
+      justify-content: flex-start;
+      margin-top: 16px;
+    }
+    .investigate-actions .btn-primary {
+      width: auto;
+      min-width: 156px;
+    }
     #result {
       width: 100%;
       min-width: 0;
@@ -1065,6 +1100,7 @@
     let TOAST_TIMER = null;
     let CONVERSATION_ID = null;
     let CURRENT_USER_TYPE = 'dev_team';
+    let LAST_FOLLOW_UP_QUESTION = '';
 
     function formatLocalTimestamp(value, fallback) {
       if (!value) return fallback;
@@ -1939,7 +1975,7 @@
             />
             <button type="button" class="btn-primary" onclick="askFollowUp()">Ask follow-up</button>
           </div>
-          <p class="follow-up-hint">Related questions reuse verified evidence for a faster answer; unrelated questions run a fresh investigation.</p>
+          <p class="follow-up-hint">Related questions reuse verified evidence for speed. Choose Investigate deeply when you want a fresh repository check.</p>
         </div>
       `;
     }
@@ -1972,12 +2008,22 @@
       await submitQuestion(question, { followUp: true });
     }
 
+    async function investigateDeeply() {
+      if (!LAST_FOLLOW_UP_QUESTION) return;
+      if (!requireWorkspace()) return;
+      await submitQuestion(LAST_FOLLOW_UP_QUESTION, {
+        followUp: true,
+        deepInvestigation: true,
+      });
+    }
+
     async function submitQuestion(requestQuestion, options = {}) {
       const result = document.getElementById('result');
       const productFlowSummary = Boolean(
         options.flowSummary && CURRENT_USER_TYPE === 'product_team'
       );
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
+      const deepInvestigation = Boolean(options.deepInvestigation);
       result.innerHTML = productFlowSummary
         ? `
           <h2>Thinking…</h2>
@@ -1986,6 +2032,14 @@
             <div class="step"><span class="dot-pulse"></span> Preparing a brief summary…</div>
           </div>
         `
+        : deepInvestigation
+          ? `
+            <h2>Investigating deeply…</h2>
+            <div class="loading-steps">
+              <div class="step"><span class="spinner"></span> Running a fresh repository investigation…</div>
+              <div class="step"><span class="dot-pulse"></span> Verifying related files, symbols, and behavior…</div>
+            </div>
+          `
         : followUpWithContext
           ? `
             <h2>Thinking…</h2>
@@ -2016,6 +2070,7 @@
                   llm_mode: LLM_MODE,
                   follow_up: Boolean(options.followUp),
                   conversation_id: options.followUp ? CONVERSATION_ID : null,
+                  deep_investigation: deepInvestigation,
                 }
           )
         });
@@ -2086,7 +2141,11 @@
         const provLabel = prov.startsWith('user:') ? 'your key'
           : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
         const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
-        const retrievalLabel = data.follow_up_reused
+        const retrievalLabel = data.deep_investigation
+            ? data.retrieval_mode === 'agentic'
+              ? `follow-up deep investigation · ${followUpToolCalls} tool calls`
+              : 'follow-up deep investigation · one-shot retrieval'
+          : data.follow_up_reused
           ? 'fast follow-up · compact verified evidence'
           : data.follow_up_fallback
             ? data.retrieval_mode === 'agentic'
@@ -2109,12 +2168,30 @@
             <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}</p>
             ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
           `;
+        const investigateAction = data.investigate_deeply_available
+          ? `
+            <div class="investigate-actions">
+              <button type="button" class="btn-primary" onclick="investigateDeeply()">Investigate deeply</button>
+            </div>
+          `
+          : '';
+        const followUpQuestionRecap = options.followUp
+          ? `
+            <div class="follow-up-question-recap">
+              <div class="follow-up-question-recap-label">Follow-up question</div>
+              <p>${escapeHtml(data.question || requestQuestion)}</p>
+            </div>
+          `
+          : '';
+        if (options.followUp) LAST_FOLLOW_UP_QUESTION = data.question || requestQuestion;
         CONVERSATION_ID = data.conversation_id || null;
         result.innerHTML = `
           ${followUpComposer()}
+          ${followUpQuestionRecap}
           <h2>CodeAtlas Answer</h2>
           ${answerMetadata}
           <div class="answer">${renderAnswer(data.answer)}</div>
+          ${investigateAction}
           ${contextSection}
         `;
         bindFollowUpInput();

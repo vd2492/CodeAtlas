@@ -167,6 +167,8 @@ audience type, and LLM mode still match. A related question first uses a compact
 tool-free request with a smaller output budget. The model must request more
 evidence instead of guessing when that compact context is insufficient; CodeAtlas
 then automatically runs the normal full retrieval and read-only agent pipeline.
+Cached follow-up answers also offer **Investigate deeply**, which reruns that
+same question through the full repository investigation on demand.
 Unrelated questions, expired state, repository reindexing, and mode changes also
 take the full retrieval path.
 
