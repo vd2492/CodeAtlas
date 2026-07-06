@@ -32,6 +32,39 @@ class FakeToolbox:
 
 
 class AgentLoopTests(unittest.TestCase):
+    def test_obvious_arithmetic_is_rejected_without_retrieval_or_llm(self):
+        with patch.object(main, "build_context") as build_context, patch.object(
+            main, "generate"
+        ) as generate, patch.object(
+            main, "repository_version_payload", return_value=None
+        ):
+            result = main.answer_question(
+                "what is 1+1?",
+                workspace="sample",
+                user_type="product_team",
+            )
+
+        build_context.assert_not_called()
+        generate.assert_not_called()
+        self.assertEqual(result["answer"], client.REPOSITORY_SCOPE_RESPONSE)
+        self.assertEqual(result["provider_used"], "codeatlas:scope-guard")
+        self.assertEqual(result["retrieval_mode"], "scope_guard")
+        self.assertEqual(result["agent_tool_calls"], 0)
+
+    def test_repository_scope_instruction_forbids_general_answers(self):
+        self.assertIn(
+            client.REPOSITORY_SCOPE_RESPONSE,
+            client.SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "Do not answer the unrelated question",
+            client.AGENT_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "do not say that the codebase lacks calculations",
+            client.SYSTEM_PROMPT,
+        )
+
     def test_collects_token_usage_across_provider_requests(self):
         responses = [
             FakeResponse({

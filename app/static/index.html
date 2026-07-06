@@ -2139,9 +2139,12 @@
 
         const prov = data.provider_used || '';
         const provLabel = prov.startsWith('user:') ? 'your key'
-          : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
+          : prov.startsWith('ollama:') ? 'local Ollama'
+          : prov.startsWith('codeatlas:') ? 'CodeAtlas' : 'shared LLM';
         const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
-        const retrievalLabel = data.deep_investigation
+        const retrievalLabel = data.retrieval_mode === 'scope_guard'
+          ? 'repository scope guard'
+          : data.deep_investigation
             ? data.retrieval_mode === 'agentic'
               ? `follow-up deep investigation · ${followUpToolCalls} tool calls`
               : 'follow-up deep investigation · one-shot retrieval'
