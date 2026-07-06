@@ -15,8 +15,11 @@ import os
 import random
 import socket
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from typing import Optional
 from urllib.parse import urlparse
 
 import requests
@@ -49,6 +52,10 @@ LLM_ALLOWED_HOSTS = {
 LLM_ALLOW_LOCAL_BASE_URLS = os.environ.get(
     "CODEATLAS_LLM_ALLOW_LOCAL_BASE_URLS", "false"
 ).lower() in {"1", "true", "yes"}
+_TOKEN_USAGE: ContextVar[Optional[dict]] = ContextVar(
+    "codeatlas_token_usage",
+    default=None,
+)
 
 SYSTEM_PROMPT = (
     "You are CodeAtlas, a codebase investigation assistant. "
@@ -133,6 +140,100 @@ class FollowUpNeedsEvidence(RuntimeError):
     """Compact evidence is insufficient; run the normal grounded pipeline."""
 
 
+def _empty_token_usage() -> dict:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cached_input_tokens": 0,
+        "requests": 0,
+        "available": False,
+    }
+
+
+@contextmanager
+def collect_token_usage():
+    """Collect provider-reported token usage for one complete user query."""
+    usage = _empty_token_usage()
+    token = _TOKEN_USAGE.set(usage)
+    try:
+        yield usage
+    finally:
+        _TOKEN_USAGE.reset(token)
+
+
+def token_usage_payload(usage: dict) -> dict:
+    """Return a stable API payload without exposing the mutable accumulator."""
+    return {
+        key: usage.get(key, default)
+        for key, default in _empty_token_usage().items()
+    }
+
+
+def _usage_int(value) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_response_token_usage(response) -> None:
+    """Normalize OpenAI, Anthropic, and Ollama usage into one accumulator."""
+    aggregate = _TOKEN_USAGE.get()
+    if aggregate is None or getattr(response, "status_code", 500) >= 400:
+        return
+    try:
+        data = response.json()
+    except (TypeError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+
+    usage = data.get("usage")
+    input_tokens = output_tokens = total_tokens = cached_input_tokens = 0
+    reported = False
+    if isinstance(usage, dict):
+        reported = any(
+            key in usage
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+        )
+        input_tokens = _usage_int(
+            usage.get("prompt_tokens", usage.get("input_tokens"))
+        )
+        output_tokens = _usage_int(
+            usage.get("completion_tokens", usage.get("output_tokens"))
+        )
+        cached_input_tokens = (
+            _usage_int(usage.get("cache_creation_input_tokens"))
+            + _usage_int(usage.get("cache_read_input_tokens"))
+        )
+        total_tokens = _usage_int(usage.get("total_tokens"))
+        if reported and not total_tokens:
+            total_tokens = input_tokens + output_tokens + cached_input_tokens
+    elif "prompt_eval_count" in data or "eval_count" in data:
+        reported = True
+        input_tokens = _usage_int(data.get("prompt_eval_count"))
+        output_tokens = _usage_int(data.get("eval_count"))
+        total_tokens = input_tokens + output_tokens
+
+    if not reported:
+        return
+    aggregate["input_tokens"] += input_tokens
+    aggregate["output_tokens"] += output_tokens
+    aggregate["total_tokens"] += total_tokens
+    aggregate["cached_input_tokens"] += cached_input_tokens
+    aggregate["requests"] += 1
+    aggregate["available"] = True
+
+
 def _retry_after_seconds(response) -> float:
     """Return a bounded Retry-After delay from seconds or an HTTP date."""
     headers = getattr(response, "headers", None) or {}
@@ -182,6 +283,7 @@ def _post_with_retries(*args, **kwargs):
             response.status_code not in PROVIDER_RETRY_STATUSES
             or attempt >= PROVIDER_RETRIES
         ):
+            _record_response_token_usage(response)
             return response
         time.sleep(_provider_retry_delay(attempt, response))
 

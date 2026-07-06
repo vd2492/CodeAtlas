@@ -45,8 +45,10 @@ from .llm.client import (
     FollowUpNeedsEvidence,
     PRODUCT_TEAM_QUERY_SUFFIX,
     PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+    collect_token_usage,
     generate,
     generate_fast_follow_up,
+    token_usage_payload,
 )
 from .llm.admission import LLMCapacityError, llm_admission
 from .auth.routes import router as auth_router, load_user_llm
@@ -1618,7 +1620,7 @@ def ask_llm_endpoint(
     user_type = user.get("user_type") or "dev_team"
     revision = repository_revision(workspace)
     try:
-        with llm_admission.slot():
+        with llm_admission.slot(), collect_token_usage() as token_usage:
             state = None
             if request.follow_up and request.conversation_id:
                 state = conversation_store.get(
@@ -1650,6 +1652,7 @@ def ask_llm_endpoint(
                     context=response.get("context"),
                 )
                 response["conversation_id"] = state.conversation_id
+                response["token_usage"] = token_usage_payload(token_usage)
                 return response
 
             response = answer_question(
@@ -1673,6 +1676,7 @@ def ask_llm_endpoint(
             response["conversation_id"] = state.conversation_id
             response["follow_up_reused"] = False
             response["follow_up_fallback"] = bool(request.follow_up)
+            response["token_usage"] = token_usage_payload(token_usage)
             return response
     except LLMCapacityError as error:
         raise HTTPException(
@@ -1702,7 +1706,7 @@ def flow_summary_endpoint(
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
     user_llm = request.user_llm or load_user_llm(user["id"])
     try:
-        with llm_admission.slot():
+        with llm_admission.slot(), collect_token_usage() as token_usage:
             result = answer_question(
                 question,
                 workspace=workspace,
@@ -1726,6 +1730,7 @@ def flow_summary_endpoint(
             )
             result["conversation_id"] = state.conversation_id
             result["follow_up_reused"] = False
+            result["token_usage"] = token_usage_payload(token_usage)
             return result
     except LLMCapacityError as error:
         raise HTTPException(

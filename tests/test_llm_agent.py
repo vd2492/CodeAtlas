@@ -32,6 +32,51 @@ class FakeToolbox:
 
 
 class AgentLoopTests(unittest.TestCase):
+    def test_collects_token_usage_across_provider_requests(self):
+        responses = [
+            FakeResponse({
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                },
+            }),
+            FakeResponse({
+                "usage": {
+                    "input_tokens": 40,
+                    "output_tokens": 10,
+                    "cache_read_input_tokens": 30,
+                },
+            }),
+        ]
+        with patch(
+            "app.llm.client.requests.post",
+            side_effect=responses,
+        ), client.collect_token_usage() as usage:
+            client._post_with_retries("https://example.test/first")
+            client._post_with_retries("https://example.test/second")
+
+        self.assertEqual(
+            client.token_usage_payload(usage),
+            {
+                "input_tokens": 140,
+                "output_tokens": 30,
+                "total_tokens": 200,
+                "cached_input_tokens": 30,
+                "requests": 2,
+                "available": True,
+            },
+        )
+
+    def test_token_usage_is_unavailable_when_provider_omits_it(self):
+        with patch(
+            "app.llm.client.requests.post",
+            return_value=FakeResponse({"choices": []}),
+        ), client.collect_token_usage() as usage:
+            client._post_with_retries("https://example.test")
+
+        self.assertEqual(client.token_usage_payload(usage)["available"], False)
+
     def test_provider_post_retries_temporary_failure_then_succeeds(self):
         unavailable = FakeResponse(
             {"error": "busy"},

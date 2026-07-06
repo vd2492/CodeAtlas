@@ -2158,14 +2158,31 @@
         const timingLabel = Number.isFinite(totalMs)
           ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
           : '';
+        const usage = data.token_usage || {};
+        const totalTokens = Number(usage.total_tokens);
+        const tokenBreakdown = [
+          `Input ${Number(usage.input_tokens || 0).toLocaleString()}`,
+          `Output ${Number(usage.output_tokens || 0).toLocaleString()}`,
+          `${Number(usage.requests || 0).toLocaleString()} LLM request${Number(usage.requests || 0) === 1 ? '' : 's'}`,
+        ];
+        if (Number(usage.cached_input_tokens || 0) > 0) {
+          tokenBreakdown.splice(
+            1,
+            0,
+            `Cached input ${Number(usage.cached_input_tokens).toLocaleString()}`,
+          );
+        }
+        const tokenLabel = usage.available && Number.isFinite(totalTokens)
+          ? ` · <span title="${escapeHtml(tokenBreakdown.join(' · '))}">${totalTokens.toLocaleString()} tokens</span>`
+          : ' · tokens unavailable';
         const version = data.repository_version || null;
         const versionLabel = version
           ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
           : '';
         const answerMetadata = productFlowSummary
-          ? '<p class="src" style="margin-top:0">Product team flow summary</p>'
+          ? `<p class="src" style="margin-top:0">Product team flow summary${tokenLabel}</p>`
           : `
-            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}</p>
+            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}${tokenLabel}</p>
             ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
           `;
         const investigateAction = data.investigate_deeply_available
