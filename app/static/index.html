@@ -211,8 +211,14 @@
       border: 0;
       background: transparent;
       color: var(--text);
+      font-family: inherit;
       font-size: 16px;
+      line-height: 1.45;
       outline: none;
+      resize: none;
+      overflow-y: auto;
+      min-height: 47px;
+      max-height: 180px;
     }
     #question::placeholder { color: var(--faint); }
 
@@ -470,6 +476,11 @@
       background: transparent;
       color: var(--text);
       font: inherit;
+      line-height: 1.45;
+      resize: none;
+      overflow-y: auto;
+      min-height: 39px;
+      max-height: 160px;
     }
     #followUpQuestion::placeholder { color: var(--faint); }
     .follow-up-hint {
@@ -1030,7 +1041,7 @@
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
         </span>
-        <input id="question" placeholder="Ask anything about this codebase…" autocomplete="off" />
+        <textarea id="question" rows="1" placeholder="Ask anything about this codebase…" autocomplete="off"></textarea>
         <button class="btn-primary" onclick="ask()">Ask</button>
       </div>
     </section>
@@ -1834,6 +1845,7 @@
       if (!node) return;
 
       document.getElementById('question').value = '';
+      autoResizeTextarea(document.getElementById('question'));
 
       console.log("Clicked CodeAtlas node:", node);
 
@@ -1968,11 +1980,12 @@
         <div class="follow-up-panel">
           <label class="follow-up-label" for="followUpQuestion">Ask a follow-up question</label>
           <div class="follow-up-box">
-            <input
+            <textarea
               id="followUpQuestion"
+              rows="1"
               placeholder="Ask about this answer, or enter a different question…"
               autocomplete="off"
-            />
+            ></textarea>
             <button type="button" class="btn-primary" onclick="askFollowUp()">Ask follow-up</button>
           </div>
           <p class="follow-up-hint">Related questions reuse verified evidence for speed. Choose Investigate deeply when you want a fresh repository check.</p>
@@ -1982,13 +1995,7 @@
 
     function bindFollowUpInput() {
       const input = document.getElementById('followUpQuestion');
-      if (!input) return;
-      input.addEventListener('keydown', function(event) {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          askFollowUp();
-        }
-      });
+      bindQuestionTextarea(input, askFollowUp);
     }
 
     async function ask() {
@@ -2255,6 +2262,25 @@
       result.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
     }
 
+    function autoResizeTextarea(textarea) {
+      if (!textarea) return;
+      textarea.style.height = 'auto';
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+
+    function bindQuestionTextarea(textarea, submitCallback) {
+      if (!textarea) return;
+      autoResizeTextarea(textarea);
+      textarea.addEventListener('input', function () {
+        autoResizeTextarea(textarea);
+      });
+      textarea.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          submitCallback();
+        }
+      });
+    }
 
     // Submit Ask CodeAtlas when Enter is pressed inside the ask input.
     // Submit Graph Search when Enter is pressed inside the search input.
@@ -2281,14 +2307,7 @@
       });
 
       const askInput = document.getElementById('question');
-      if (askInput) {
-        askInput.addEventListener('keydown', function (event) {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            ask();
-          }
-        });
-      }
+      bindQuestionTextarea(askInput, ask);
 
       const searchInput = document.getElementById('search');
       if (searchInput) {
