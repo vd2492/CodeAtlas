@@ -45,7 +45,6 @@ from .llm.client import (
     FollowUpNeedsEvidence,
     PRODUCT_TEAM_QUERY_SUFFIX,
     PRODUCT_TEAM_RESPONSE_INSTRUCTION,
-    REPOSITORY_SCOPE_RESPONSE,
     collect_token_usage,
     generate,
     generate_fast_follow_up,
@@ -1438,61 +1437,6 @@ def _answer_response(
     }
 
 
-_ARITHMETIC_SCOPE_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:what\s+is|calculate|compute|evaluate|solve)\s+)?",
-    re.IGNORECASE,
-)
-_ARITHMETIC_SCOPE_BODY_RE = re.compile(r"[\d\s+\-*/().,%^=]+")
-
-
-def _is_obviously_outside_repository_scope(question: str) -> bool:
-    """Catch unmistakable non-repository requests without spending LLM tokens."""
-    body = _ARITHMETIC_SCOPE_PREFIX_RE.sub("", str(question or ""), count=1)
-    body = body.strip().rstrip("?").strip()
-    return bool(
-        body
-        and any(character.isdigit() for character in body)
-        and any(operator in body for operator in "+-*/%^=")
-        and _ARITHMETIC_SCOPE_BODY_RE.fullmatch(body)
-    )
-
-
-def _scope_guard_answer(question: str, workspace: str) -> dict:
-    context = {
-        "question": question,
-        "query_terms": [],
-        "context_nodes": [],
-        "context_relations": [],
-        "source_hits": [],
-        "llm_context_preview": {
-            "question": question,
-            "nodes": [],
-            "relations": [],
-            "source_search_hits": [],
-        },
-    }
-    return _answer_response(
-        question,
-        {
-            "answer": REPOSITORY_SCOPE_RESPONSE,
-            "provider_used": "codeatlas:scope-guard",
-            "retrieval_mode": "scope_guard",
-            "agent_trace": [],
-            "rounds": 0,
-            "tool_calls": 0,
-        },
-        context,
-        workspace,
-    )
-
-
-def _response_token_usage(response: dict, usage: dict) -> dict:
-    payload = token_usage_payload(usage)
-    if response.get("retrieval_mode") == "scope_guard":
-        payload["available"] = True
-    return payload
-
-
 
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
@@ -1501,15 +1445,6 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     started_at = time.perf_counter()
-    if _is_obviously_outside_repository_scope(question):
-        response = _scope_guard_answer(question, workspace)
-        response["timings_ms"] = {
-            "retrieval": 0.0,
-            "generation": 0.0,
-            "total": round((time.perf_counter() - started_at) * 1000, 1),
-        }
-        return response
-
     retrieval_started_at = time.perf_counter()
     context = build_context(question, limit=16, workspace=workspace)
     toolbox = RepositoryToolbox(workspace)
@@ -1564,19 +1499,6 @@ def answer_follow_up(
 ) -> dict:
     """Answer from revision-matched evidence, using repository tools only as needed."""
     started_at = time.perf_counter()
-    if _is_obviously_outside_repository_scope(question):
-        response = _scope_guard_answer(question, workspace)
-        response["follow_up_reused"] = False
-        response["follow_up_fallback"] = False
-        response["deep_investigation"] = False
-        response["investigate_deeply_available"] = False
-        response["timings_ms"] = {
-            "retrieval": 0.0,
-            "generation": 0.0,
-            "total": round((time.perf_counter() - started_at) * 1000, 1),
-        }
-        return response
-
     if deep_investigation:
         response = answer_question(
             question,
@@ -1730,10 +1652,7 @@ def ask_llm_endpoint(
                     context=response.get("context"),
                 )
                 response["conversation_id"] = state.conversation_id
-                response["token_usage"] = _response_token_usage(
-                    response,
-                    token_usage,
-                )
+                response["token_usage"] = token_usage_payload(token_usage)
                 return response
 
             response = answer_question(
@@ -1757,10 +1676,7 @@ def ask_llm_endpoint(
             response["conversation_id"] = state.conversation_id
             response["follow_up_reused"] = False
             response["follow_up_fallback"] = bool(request.follow_up)
-            response["token_usage"] = _response_token_usage(
-                response,
-                token_usage,
-            )
+            response["token_usage"] = token_usage_payload(token_usage)
             return response
     except LLMCapacityError as error:
         raise HTTPException(
@@ -1814,7 +1730,7 @@ def flow_summary_endpoint(
             )
             result["conversation_id"] = state.conversation_id
             result["follow_up_reused"] = False
-            result["token_usage"] = _response_token_usage(result, token_usage)
+            result["token_usage"] = token_usage_payload(token_usage)
             return result
     except LLMCapacityError as error:
         raise HTTPException(

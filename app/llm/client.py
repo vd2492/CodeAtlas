@@ -57,27 +57,12 @@ _TOKEN_USAGE: ContextVar[Optional[dict]] = ContextVar(
     default=None,
 )
 
-REPOSITORY_SCOPE_RESPONSE = (
-    "I could answer that—but CodeAtlas keeps me focused. I’m restricted to "
-    "questions about the currently indexed repository, so ask me about its "
-    "code, features, flows, or implementation."
-)
-REPOSITORY_SCOPE_INSTRUCTION = (
-    "Your scope is exclusively the currently indexed repository and the "
-    "grounded repository conversation. If a request is unrelated to that "
-    f"repository, respond exactly: {REPOSITORY_SCOPE_RESPONSE} "
-    "Do not answer the unrelated question, do not use general knowledge to "
-    "answer it, and do not say that the codebase lacks calculations or logic "
-    "for the unrelated topic."
-)
-
 SYSTEM_PROMPT = (
     "You are CodeAtlas, a codebase investigation assistant. "
     "Answer like a senior engineer reading the repository: reason from the "
     "provided source snippets, graph context, file paths, and relations. "
     "Do not guess beyond the evidence. Always answer in English and cite "
-    "source files and line numbers for concrete claims. "
-    f"{REPOSITORY_SCOPE_INSTRUCTION}"
+    "source files and line numbers for concrete claims."
 )
 
 AGENT_SYSTEM_PROMPT = (
@@ -90,7 +75,7 @@ AGENT_SYSTEM_PROMPT = (
     "Cite concrete claims as `path/to/file:line` or `path/to/file:Lx-Ly`, using "
     "only lines returned by source tools. If the repository evidence is "
     "incomplete, say exactly what could not be verified. Never ask to execute "
-    f"code or modify files. {REPOSITORY_SCOPE_INSTRUCTION}"
+    "code or modify files."
 )
 
 PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
