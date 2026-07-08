@@ -1437,6 +1437,82 @@ def _answer_response(
     }
 
 
+def _zero_token_usage_payload() -> dict:
+    payload = token_usage_payload({})
+    payload["available"] = True
+    return payload
+
+
+def _session_cached_answer_response(
+    cached_response: dict,
+    question: str,
+    workspace: str,
+) -> dict:
+    response = copy.deepcopy(cached_response or {})
+    response["question"] = question
+    response["retrieval_mode"] = "session_cache"
+    response["session_cache_hit"] = True
+    response["follow_up_reused"] = False
+    response["follow_up_fallback"] = False
+    response["deep_investigation"] = False
+    response["investigate_deeply_available"] = True
+    response["repository_version"] = repository_version_payload(workspace)
+    response["timings_ms"] = {
+        "retrieval": 0.0,
+        "generation": 0.0,
+        "total": 0.0,
+    }
+    response["token_usage"] = _zero_token_usage_payload()
+    return response
+
+
+def _remember_session_answer(
+    *,
+    user: dict,
+    workspace: str,
+    llm_mode: str,
+    user_type: str,
+    repository_revision: str,
+    question: str,
+    response: dict,
+) -> None:
+    if response.get("session_cache_hit"):
+        return
+    conversation_store.store_cached_answer(
+        session_key=str(user.get("_session_key") or ""),
+        user_id=user["id"],
+        workspace=workspace,
+        llm_mode=llm_mode,
+        user_type=user_type,
+        repository_revision=repository_revision,
+        question=question,
+        response=response,
+    )
+
+
+def _create_conversation_from_response(
+    *,
+    user: dict,
+    workspace: str,
+    llm_mode: str,
+    user_type: str,
+    repository_revision: str,
+    question: str,
+    response: dict,
+):
+    return conversation_store.create(
+        user_id=user["id"],
+        session_key=str(user.get("_session_key") or ""),
+        workspace=workspace,
+        llm_mode=llm_mode,
+        user_type=user_type,
+        repository_revision=repository_revision,
+        context=response.get("context") or {},
+        question=question,
+        answer=response["answer"],
+    )
+
+
 
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
@@ -1619,6 +1695,39 @@ def ask_llm_endpoint(
     llm_mode = (request.llm_mode or "auto").lower()
     user_type = user.get("user_type") or "dev_team"
     revision = repository_revision(workspace)
+    session_key = str(user.get("_session_key") or "")
+    use_session_cache = not (
+        request.deep_investigation
+        or (llm_mode == "mimo" and not allow_shared)
+    )
+    if use_session_cache:
+        cached_response = conversation_store.get_cached_answer(
+            session_key=session_key,
+            user_id=user["id"],
+            workspace=workspace,
+            llm_mode=llm_mode,
+            user_type=user_type,
+            repository_revision=revision,
+            question=request.question,
+        )
+        if cached_response:
+            response = _session_cached_answer_response(
+                cached_response,
+                request.question,
+                workspace,
+            )
+            state = _create_conversation_from_response(
+                user=user,
+                workspace=workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=revision,
+                question=request.question,
+                response=response,
+            )
+            response["conversation_id"] = state.conversation_id
+            return response
+
     try:
         with llm_admission.slot(), collect_token_usage() as token_usage:
             state = None
@@ -1626,6 +1735,7 @@ def ask_llm_endpoint(
                 state = conversation_store.get(
                     request.conversation_id,
                     user_id=user["id"],
+                    session_key=session_key,
                     workspace=workspace,
                     llm_mode=llm_mode,
                     user_type=user_type,
@@ -1653,6 +1763,15 @@ def ask_llm_endpoint(
                 )
                 response["conversation_id"] = state.conversation_id
                 response["token_usage"] = token_usage_payload(token_usage)
+                _remember_session_answer(
+                    user=user,
+                    workspace=workspace,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                    repository_revision=revision,
+                    question=request.question,
+                    response=response,
+                )
                 return response
 
             response = answer_question(
@@ -1663,20 +1782,28 @@ def ask_llm_endpoint(
                 llm_mode=llm_mode,
                 user_type=user_type,
             )
-            state = conversation_store.create(
-                user_id=user["id"],
+            state = _create_conversation_from_response(
+                user=user,
                 workspace=workspace,
                 llm_mode=llm_mode,
                 user_type=user_type,
                 repository_revision=revision,
-                context=response.get("context") or {},
                 question=request.question,
-                answer=response["answer"],
+                response=response,
             )
             response["conversation_id"] = state.conversation_id
             response["follow_up_reused"] = False
             response["follow_up_fallback"] = bool(request.follow_up)
             response["token_usage"] = token_usage_payload(token_usage)
+            _remember_session_answer(
+                user=user,
+                workspace=workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=revision,
+                question=request.question,
+                response=response,
+            )
             return response
     except LLMCapacityError as error:
         raise HTTPException(

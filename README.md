@@ -169,6 +169,11 @@ evidence instead of guessing when that compact context is insufficient; CodeAtla
 then automatically runs the normal full retrieval and read-only agent pipeline.
 Cached follow-up answers also offer **Investigate deeply**, which reruns that
 same question through the full repository investigation on demand.
+If a user asks the same question again in the same authenticated session,
+repository, branch revision, audience type, and LLM mode, CodeAtlas returns the
+previous successful answer from a bounded in-memory session cache with zero new
+LLM tokens. Those repeated-question answers are clearly labeled and also offer
+**Investigate deeply** to bypass the cache and refresh the answer.
 Unrelated questions, expired state, repository reindexing, and mode changes also
 take the full retrieval path.
 

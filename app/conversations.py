@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import threading
 import time
 import uuid
@@ -29,12 +30,16 @@ CONVERSATION_MAX_TURNS = max(
 CONVERSATION_MAX_ANSWER_CHARS = max(
     1000, int(os.environ.get("CODEATLAS_CONVERSATION_MAX_ANSWER_CHARS", "8000"))
 )
+CONVERSATION_MAX_CACHED_ANSWERS = max(
+    10, int(os.environ.get("CODEATLAS_CONVERSATION_MAX_CACHED_ANSWERS", "500"))
+)
 
 
 @dataclass
 class ConversationState:
     conversation_id: str
     user_id: int
+    session_key: str
     workspace: str
     llm_mode: str
     user_type: str
@@ -51,10 +56,13 @@ class ConversationStore:
         self,
         ttl_seconds: int = CONVERSATION_TTL_SECONDS,
         max_states: int = CONVERSATION_MAX_STATES,
+        max_cached_answers: int = CONVERSATION_MAX_CACHED_ANSWERS,
     ):
         self.ttl_seconds = max(1, int(ttl_seconds))
         self.max_states = max(1, int(max_states))
+        self.max_cached_answers = max(1, int(max_cached_answers))
         self._states: dict[str, ConversationState] = {}
+        self._answer_cache: dict[tuple[str, ...], dict] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -63,6 +71,36 @@ class ConversationStore:
             "question": str(question or "")[:2000],
             "answer": str(answer or "")[:CONVERSATION_MAX_ANSWER_CHARS],
         }
+
+    @staticmethod
+    def normalize_question(question: str) -> str:
+        """Stable identity for repeated user questions inside one session."""
+        return re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+
+    @classmethod
+    def _answer_cache_key(
+        cls,
+        *,
+        session_key: str,
+        user_id: int,
+        workspace: str,
+        llm_mode: str,
+        user_type: str,
+        repository_revision: str,
+        question: str,
+    ) -> Optional[tuple[str, ...]]:
+        normalized_question = cls.normalize_question(question)
+        if not normalized_question:
+            return None
+        return (
+            str(session_key or ""),
+            str(int(user_id)),
+            str(workspace),
+            str(llm_mode),
+            str(user_type),
+            str(repository_revision),
+            normalized_question,
+        )
 
     def _prune_locked(self, now: float) -> None:
         expired = [
@@ -82,10 +120,28 @@ class ConversationStore:
             for state in oldest:
                 self._states.pop(state.conversation_id, None)
 
+        expired_answers = [
+            cache_key
+            for cache_key, item in self._answer_cache.items()
+            if now - item.get("updated_at", 0.0) > self.ttl_seconds
+        ]
+        for cache_key in expired_answers:
+            self._answer_cache.pop(cache_key, None)
+
+        answer_overflow = len(self._answer_cache) - self.max_cached_answers
+        if answer_overflow > 0:
+            oldest_answers = sorted(
+                self._answer_cache.items(),
+                key=lambda item: item[1].get("updated_at", 0.0),
+            )[:answer_overflow]
+            for cache_key, _ in oldest_answers:
+                self._answer_cache.pop(cache_key, None)
+
     def create(
         self,
         *,
         user_id: int,
+        session_key: str = "",
         workspace: str,
         llm_mode: str,
         user_type: str,
@@ -98,6 +154,7 @@ class ConversationStore:
         state = ConversationState(
             conversation_id=uuid.uuid4().hex,
             user_id=int(user_id),
+            session_key=str(session_key or ""),
             workspace=str(workspace),
             llm_mode=str(llm_mode),
             user_type=str(user_type),
@@ -117,6 +174,7 @@ class ConversationStore:
         conversation_id: Optional[str],
         *,
         user_id: int,
+        session_key: Optional[str] = None,
         workspace: str,
         llm_mode: str,
         user_type: str,
@@ -132,6 +190,10 @@ class ConversationStore:
                 return None
             if (
                 state.user_id != int(user_id)
+                or (
+                    session_key is not None
+                    and state.session_key != str(session_key or "")
+                )
                 or state.workspace != str(workspace)
                 or state.llm_mode != str(llm_mode)
                 or state.user_type != str(user_type)
@@ -140,6 +202,72 @@ class ConversationStore:
                 return None
             state.updated_at = now
             return copy.deepcopy(state)
+
+    def get_cached_answer(
+        self,
+        *,
+        session_key: str,
+        user_id: int,
+        workspace: str,
+        llm_mode: str,
+        user_type: str,
+        repository_revision: str,
+        question: str,
+    ) -> Optional[dict]:
+        cache_key = self._answer_cache_key(
+            session_key=session_key,
+            user_id=user_id,
+            workspace=workspace,
+            llm_mode=llm_mode,
+            user_type=user_type,
+            repository_revision=repository_revision,
+            question=question,
+        )
+        if cache_key is None:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            self._prune_locked(now)
+            item = self._answer_cache.get(cache_key)
+            if not item:
+                return None
+            item["updated_at"] = now
+            return copy.deepcopy(item["response"])
+
+    def store_cached_answer(
+        self,
+        *,
+        session_key: str,
+        user_id: int,
+        workspace: str,
+        llm_mode: str,
+        user_type: str,
+        repository_revision: str,
+        question: str,
+        response: dict,
+    ) -> None:
+        cache_key = self._answer_cache_key(
+            session_key=session_key,
+            user_id=user_id,
+            workspace=workspace,
+            llm_mode=llm_mode,
+            user_type=user_type,
+            repository_revision=repository_revision,
+            question=question,
+        )
+        if cache_key is None or not response.get("answer"):
+            return
+        cached_response = copy.deepcopy(response)
+        cached_response.pop("conversation_id", None)
+        cached_response.pop("token_usage", None)
+        now = time.monotonic()
+        with self._lock:
+            self._prune_locked(now)
+            self._answer_cache[cache_key] = {
+                "response": cached_response,
+                "updated_at": now,
+            }
+            self._prune_locked(now)
 
     def append(
         self,
@@ -165,6 +293,7 @@ class ConversationStore:
     def clear(self) -> None:
         with self._lock:
             self._states.clear()
+            self._answer_cache.clear()
 
 
 conversation_store = ConversationStore()

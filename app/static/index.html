@@ -2148,7 +2148,9 @@
         const provLabel = prov.startsWith('user:') ? 'your key'
           : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
         const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
-        const retrievalLabel = data.deep_investigation
+        const retrievalLabel = data.session_cache_hit
+          ? 'answered from session cache'
+          : data.deep_investigation
             ? data.retrieval_mode === 'agentic'
               ? `follow-up deep investigation · ${followUpToolCalls} tool calls`
               : 'follow-up deep investigation · one-shot retrieval'
@@ -2179,7 +2181,9 @@
             `Cached input ${Number(usage.cached_input_tokens).toLocaleString()}`,
           );
         }
-        const tokenLabel = usage.available && Number.isFinite(totalTokens)
+        const tokenLabel = data.session_cache_hit
+          ? ' · <span title="No new LLM request was made.">0 new tokens</span>'
+          : usage.available && Number.isFinite(totalTokens)
           ? ` · <span title="${escapeHtml(tokenBreakdown.join(' · '))}">${totalTokens.toLocaleString()} tokens</span>`
           : ' · tokens unavailable';
         const version = data.repository_version || null;
@@ -2207,7 +2211,11 @@
             </div>
           `
           : '';
-        if (options.followUp) LAST_FOLLOW_UP_QUESTION = data.question || requestQuestion;
+        if (data.investigate_deeply_available) {
+          LAST_FOLLOW_UP_QUESTION = data.question || requestQuestion;
+        } else if (!options.followUp) {
+          LAST_FOLLOW_UP_QUESTION = '';
+        }
         CONVERSATION_ID = data.conversation_id || null;
         result.innerHTML = `
           ${followUpComposer()}

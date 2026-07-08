@@ -37,6 +37,56 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertIsNone(self.get_state(llm_mode="personal"))
         self.assertIsNone(self.get_state(repository_revision="branch:def456"))
 
+    def test_cached_answer_is_scoped_and_uses_normalized_question(self):
+        response = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "agentic",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+        self.store.store_cached_answer(
+            session_key="session-a",
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does\nlogin   work?",
+            response=response,
+        )
+
+        cached = self.store.get_cached_answer(
+            session_key="session-a",
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="how does login work?",
+        )
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["answer"], response["answer"])
+        self.assertIsNone(self.store.get_cached_answer(
+            session_key="session-b",
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+        ))
+        self.assertIsNone(self.store.get_cached_answer(
+            session_key="session-a",
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:def456",
+            question="How does login work?",
+        ))
+
     def test_state_expires_without_affecting_normal_requests(self):
         store = ConversationStore(ttl_seconds=1, max_states=2)
         with patch("app.conversations.time.monotonic", side_effect=[100.0, 102.0]):
@@ -277,6 +327,212 @@ class ConversationEndpointTests(unittest.TestCase):
         full.assert_not_called()
         self.assertTrue(second["follow_up_reused"])
         self.assertEqual(second["conversation_id"], first["conversation_id"])
+
+    def test_repeated_question_returns_from_session_cache_without_llm(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        user = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-a",
+        }
+        first_answer = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "agentic",
+            "context": {
+                "llm_context_preview": {
+                    "question": "How does login work?",
+                    "nodes": [{"name": "Auth", "source": "src/auth.py L1-L20"}],
+                }
+            },
+        }
+
+        common_patches = (
+            patch.object(main, "conversation_store", store),
+            patch.object(main, "enforce_rate_limit"),
+            patch.object(main, "enforce_strict_branch_freshness"),
+            patch.object(
+                main.db,
+                "get_repo_by_workspace",
+                return_value={"allow_shared_fallback": 1},
+            ),
+            patch.object(main, "load_user_llm", return_value=None),
+            patch.object(main, "repository_revision", return_value="branch:abc123"),
+            patch.object(main, "repository_version_payload", return_value=None),
+        )
+        for item in common_patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        with patch.object(main, "answer_question", return_value=first_answer):
+            first = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                user,
+            )
+
+        with patch.object(main, "answer_question") as full, patch.object(
+            main,
+            "answer_follow_up",
+        ) as follow_up:
+            second = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="how does\nlogin   work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                user,
+            )
+
+        full.assert_not_called()
+        follow_up.assert_not_called()
+        self.assertEqual(second["answer"], first_answer["answer"])
+        self.assertTrue(second["session_cache_hit"])
+        self.assertEqual(second["retrieval_mode"], "session_cache")
+        self.assertTrue(second["investigate_deeply_available"])
+        self.assertTrue(second["token_usage"]["available"])
+        self.assertEqual(second["token_usage"]["total_tokens"], 0)
+        self.assertNotEqual(second["conversation_id"], first["conversation_id"])
+
+    def test_repeated_question_cache_is_scoped_to_session(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        first_user = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-a",
+        }
+        second_user_session = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-b",
+        }
+        first_answer = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+        second_answer = {
+            "question": "How does login work?",
+            "answer": "A fresh answer was generated for the new session.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+
+        common_patches = (
+            patch.object(main, "conversation_store", store),
+            patch.object(main, "enforce_rate_limit"),
+            patch.object(main, "enforce_strict_branch_freshness"),
+            patch.object(
+                main.db,
+                "get_repo_by_workspace",
+                return_value={"allow_shared_fallback": 1},
+            ),
+            patch.object(main, "load_user_llm", return_value=None),
+            patch.object(main, "repository_revision", return_value="branch:abc123"),
+        )
+        for item in common_patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        with patch.object(main, "answer_question", return_value=first_answer):
+            main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                first_user,
+            )
+
+        with patch.object(
+            main,
+            "answer_question",
+            return_value=second_answer,
+        ) as full:
+            result = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                second_user_session,
+            )
+
+        full.assert_called_once()
+        self.assertNotIn("session_cache_hit", result)
+        self.assertEqual(result["answer"], second_answer["answer"])
+
+    def test_deep_investigation_bypasses_repeated_question_cache(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        user = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-a",
+        }
+        first_answer = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+        deep_answer = {
+            "question": "How does login work?",
+            "answer": "A deep investigation refreshed the answer.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+            "follow_up_reused": False,
+            "follow_up_fallback": True,
+            "deep_investigation": True,
+        }
+
+        common_patches = (
+            patch.object(main, "conversation_store", store),
+            patch.object(main, "enforce_rate_limit"),
+            patch.object(main, "enforce_strict_branch_freshness"),
+            patch.object(
+                main.db,
+                "get_repo_by_workspace",
+                return_value={"allow_shared_fallback": 1},
+            ),
+            patch.object(main, "load_user_llm", return_value=None),
+            patch.object(main, "repository_revision", return_value="branch:abc123"),
+        )
+        for item in common_patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        with patch.object(main, "answer_question", return_value=first_answer):
+            first = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                user,
+            )
+
+        with patch.object(main, "answer_follow_up", return_value=deep_answer) as deep:
+            result = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                    conversation_id=first["conversation_id"],
+                    follow_up=True,
+                    deep_investigation=True,
+                ),
+                "repo-main",
+                user,
+            )
+
+        deep.assert_called_once()
+        self.assertTrue(deep.call_args.kwargs["deep_investigation"])
+        self.assertNotIn("session_cache_hit", result)
+        self.assertTrue(result["deep_investigation"])
 
     def test_endpoint_forwards_explicit_deep_investigation(self):
         store = ConversationStore(ttl_seconds=30, max_states=10)

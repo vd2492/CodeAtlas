@@ -4,6 +4,7 @@ Sessions are DB-backed (app/db.py) and carried in an HttpOnly cookie. Same-origi
 fetches send it automatically, so the vanilla-JS UI needs no token plumbing.
 """
 
+import hashlib
 import os
 from typing import Optional
 
@@ -38,7 +39,10 @@ def clear_session_cookie(response: Response) -> None:
 def get_current_user(request: Request) -> Optional[dict]:
     """Resolve the logged-in user from the session cookie, or None."""
     token = request.cookies.get(COOKIE_NAME)
-    return db.get_session_user(token)
+    user = db.get_session_user(token)
+    if user and token:
+        user["_session_key"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return user
 
 
 def require_user(request: Request) -> dict:
