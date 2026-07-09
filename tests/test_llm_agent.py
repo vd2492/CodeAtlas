@@ -422,6 +422,55 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("everyday language only", agent_prompt)
         self.assertIn("Do not include technical terms", agent_prompt)
         self.assertIn("everyday language only", one_shot_prompt)
+        self.assertNotIn("Include file paths and line numbers", one_shot_prompt)
+        self.assertNotIn("Cite concrete claims", agent_prompt)
+
+    def test_product_team_comparison_prompt_hides_source_locations(self):
+        toolbox = FakeToolbox(
+            response_style_instruction=client.PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        )
+        toolbox.comparison_mode = True
+        agent_prompt = client._agent_system_prompt(toolbox)
+        one_shot_prompt = client.build_prompt({
+            "comparison_mode": True,
+            "response_style_instruction": client.PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+            "llm_context_preview": {
+                "question": "Compare checkout",
+                "branches": [
+                    {"label": "Branch A", "name": "main"},
+                    {"label": "Branch B", "name": "release"},
+                ],
+            },
+        })
+
+        self.assertIn("product-team reader", agent_prompt)
+        self.assertIn("Do not include technical terms", one_shot_prompt)
+        self.assertNotIn("Cite source files and line numbers", one_shot_prompt)
+        self.assertNotIn("branch label plus file path", agent_prompt)
+        self.assertEqual(
+            client._system_prompt({
+                "comparison_mode": True,
+                "response_style_instruction": client.PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+            }),
+            client.PRODUCT_TEAM_COMPARISON_SYSTEM_PROMPT,
+        )
+
+    def test_product_team_answer_guard_removes_source_references(self):
+        answer = (
+            "The login screen validates the user in src/auth.py:L1-L3 and "
+            "then continues from LoginViewModel.kt L12-L20."
+        )
+
+        cleaned = client._final_answer(
+            answer,
+            "test",
+            {"response_style_instruction": client.PRODUCT_TEAM_RESPONSE_INSTRUCTION},
+        )
+
+        self.assertNotIn("src/auth.py", cleaned)
+        self.assertNotIn("LoginViewModel.kt", cleaned)
+        self.assertNotIn("L12", cleaned)
+        self.assertIn("login screen", cleaned)
 
     def test_product_team_suffix_is_appended_only_to_llm_facing_question(self):
         context = {

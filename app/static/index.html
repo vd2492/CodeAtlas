@@ -1175,7 +1175,11 @@
     </section>
 
     <section id="compareAskFlow" class="card compare-card compare-flow span-2" hidden>
-      <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Compare branches</h2></div>
+      <div class="card-head">
+        <span class="card-dot"></span>
+        <h2 class="card-title">Compare branches</h2>
+        <span id="compareUserModeBadge" class="user-mode-badge">Dev team</span>
+      </div>
       <p class="compare-copy">Ask a side-by-side question across two indexed branches of the selected repository.</p>
       <div class="compare-controls">
         <label for="compareBranchA">
@@ -1812,10 +1816,12 @@
         return false;
       }
       CURRENT_USER_TYPE = data.user.user_type || 'dev_team';
-      const modeBadge = document.getElementById('userModeBadge');
-      modeBadge.textContent = CURRENT_USER_TYPE === 'product_team'
+      const modeBadgeLabel = CURRENT_USER_TYPE === 'product_team'
         ? 'Product team'
         : 'Dev team';
+      document.querySelectorAll('.user-mode-badge').forEach((badge) => {
+        badge.textContent = modeBadgeLabel;
+      });
       populateRepos(data.repos);
       await loadBranches();
       await loadFlowButtons();

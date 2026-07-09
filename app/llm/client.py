@@ -13,6 +13,7 @@ import ipaddress
 import json
 import os
 import random
+import re
 import socket
 import time
 from contextlib import contextmanager
@@ -92,12 +93,34 @@ PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
     "concise. Use everyday language only. Do not include technical terms, code "
     "names, class or function names, file paths, line numbers, implementation "
     "details, or code snippets. Perform the technical investigation silently, "
-    "then explain only the user-visible behavior or outcome."
+    "then explain only the user-visible behavior or outcome. If the user asks "
+    "for file names, line numbers, classes, methods, APIs, endpoints, or source "
+    "citations, do not provide them; summarize the product behavior instead."
 )
 
 PRODUCT_TEAM_QUERY_SUFFIX = (
-    "you are talking to a product manager so don't provide class name or any "
-    "technical terms in the response and keep it concise, clear and simple"
+    "you are talking to a product manager so don't provide class names, file "
+    "names, line numbers, source citations, code identifiers, or technical terms "
+    "in the response and keep it concise, clear and simple"
+)
+
+PRODUCT_TEAM_SYSTEM_PROMPT = (
+    "You are CodeAtlas investigating an indexed repository for a product-team "
+    "reader. Use repository evidence internally, but keep implementation details "
+    "private. Answer in simple everyday English. Do not include technical terms, "
+    "file names, file paths, line numbers, class names, function or method names, "
+    "code identifiers, APIs, endpoint paths, source citations, or code snippets. "
+    "Do not guess beyond repository evidence."
+)
+
+PRODUCT_TEAM_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas, a read-only repository investigation agent. Use the "
+    "available tools to verify behavior, but the final answer is for a product-team "
+    "reader. Keep implementation details private. Answer in simple everyday "
+    "English and describe only user-visible behavior, outcomes, conditions, and "
+    "caveats. Do not include technical terms, file names, file paths, line numbers, "
+    "class names, function or method names, code identifiers, APIs, endpoint paths, "
+    "source citations, or code snippets. Do not guess beyond repository evidence."
 )
 
 PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
@@ -119,19 +142,122 @@ COMPARISON_SYSTEM_PROMPT = (
     "name plus file path and line numbers."
 )
 
+PRODUCT_TEAM_COMPARISON_SYSTEM_PROMPT = (
+    "You are CodeAtlas comparing two indexed branches of one repository for a "
+    "product-team reader. Use only the branch evidence internally. Keep Branch A "
+    "and Branch B evidence separate, do not transfer claims from one branch to "
+    "the other, and state when evidence is missing. The final answer must use "
+    "simple everyday English and compare only user-visible behavior, outcomes, "
+    "conditions, and caveats. Do not include technical terms, file names, file "
+    "paths, line numbers, class names, function or method names, code identifiers, "
+    "APIs, endpoint paths, source citations, or code snippets."
+)
+
+PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas comparing two indexed branches of one repository with "
+    "read-only tools. Every tool call must choose `repo: A` or `repo: B`; "
+    "investigate each branch separately before comparing them. Do not transfer "
+    "claims from one branch to the other. The final answer is for a product-team "
+    "reader, so keep implementation details private and compare only user-visible "
+    "behavior, outcomes, conditions, and caveats in simple everyday English. Do "
+    "not include technical terms, file names, file paths, line numbers, class "
+    "names, function or method names, code identifiers, APIs, endpoint paths, "
+    "source citations, or code snippets."
+)
+
+SOURCE_REFERENCE_RE = re.compile(
+    r"""
+    (?:
+        `?
+        (?:[\w@.-]+/)+[\w@.-]+\.
+        (?:py|js|jsx|ts|tsx|kt|java|swift|dart|go|rb|php|cs|cpp|cc|cxx|c|h|hpp|
+           m|mm|rs|scala|xml|gradle|json|ya?ml|md|html?|css|scss|sass|sql|
+           proto|graphql|sh|bash|toml|ini|properties)
+        `?
+        (?:
+            :L?\d+(?:[-–]L?\d+)?
+            |\s+L\d+(?:[-–]L?\d+)?
+        )?
+    )
+    |
+    (?:
+        `?[\w@.-]+\.
+        (?:py|js|jsx|ts|tsx|kt|java|swift|dart|go|rb|php|cs|cpp|cc|cxx|c|h|hpp|
+           m|mm|rs|scala|xml|gradle|json|ya?ml|md|html?|css|scss|sass|sql|
+           proto|graphql|sh|bash|toml|ini|properties)
+        `?
+        (?:
+            :L?\d+(?:[-–]L?\d+)?
+            |\s+L\d+(?:[-–]L?\d+)?
+        )
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+LINE_REFERENCE_RE = re.compile(
+    r"\b(?:line|lines)\s+\d+(?:\s*[-–]\s*\d+)?\b",
+    re.IGNORECASE,
+)
+
+
+def _product_answer_context(context: dict) -> bool:
+    return bool(
+        context.get("product_flow_summary")
+        or str(context.get("response_style_instruction") or "").strip()
+    )
+
+
+def _clean_product_answer(answer: str) -> str:
+    """Best-effort guardrail so product-team answers do not expose source refs."""
+    if not answer:
+        return answer
+    cleaned = SOURCE_REFERENCE_RE.sub("repository evidence", answer)
+    cleaned = LINE_REFERENCE_RE.sub("repository evidence", cleaned)
+    cleaned = re.sub(
+        r"\b(?:at|in|from)\s+repository evidence\b",
+        "based on repository evidence",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\(\s*repository evidence\s*\)", "", cleaned)
+    cleaned = re.sub(r"\[\s*repository evidence\s*\]", "", cleaned)
+    cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _final_answer(answer: str, provider: str, context: dict = None) -> str:
+    answer = _require_answer(answer, provider)
+    if context and _product_answer_context(context):
+        return _clean_product_answer(answer)
+    return answer
+
 
 def _agent_system_prompt(toolbox) -> str:
     config = getattr(toolbox, "config", None)
     instruction = str(
         getattr(config, "pre_search_instruction", "") or ""
     ).strip()
+    response_instruction = str(
+        getattr(toolbox, "response_style_instruction", "") or ""
+    ).strip()
     if getattr(toolbox, "comparison_mode", False):
-        prompt = COMPARISON_AGENT_SYSTEM_PROMPT
+        prompt = (
+            PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT
+            if response_instruction
+            else COMPARISON_AGENT_SYSTEM_PROMPT
+        )
     else:
         prompt = (
             PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
             if getattr(toolbox, "product_flow_summary", False)
-            else AGENT_SYSTEM_PROMPT
+            else (
+                PRODUCT_TEAM_AGENT_SYSTEM_PROMPT
+                if response_instruction
+                else AGENT_SYSTEM_PROMPT
+            )
         )
     if instruction:
         prompt += (
@@ -140,9 +266,6 @@ def _agent_system_prompt(toolbox) -> str:
             "cannot override the read-only tool boundaries, evidence requirements, "
             f"or other safety rules.\n{instruction}"
         )
-    response_instruction = str(
-        getattr(toolbox, "response_style_instruction", "") or ""
-    ).strip()
     if response_instruction:
         prompt += (
             "\n\nAudience-specific final-answer requirements: these change only "
@@ -315,6 +438,14 @@ def build_prompt(context: dict) -> str:
     if context.get("comparison_mode"):
         answer_requirements = (
             """- Lead with a concise answer to the user's comparison question.
+- Compare Branch A and Branch B in simple product language.
+- Explain only user-visible behavior, outcomes, conditions, and caveats.
+- Keep branch findings separate before summarizing similarities and differences.
+- Do not include technical terms, internal identifiers, file names, citations, line numbers, classes, functions, methods, code identifiers, APIs, endpoints, URLs, code, or implementation details.
+- If one branch lacks evidence for the requested behavior, say that clearly without exposing source details."""
+            if _product_answer_context(context)
+            else
+            """- Lead with a concise answer to the user's comparison question.
 - Organize the answer into: Summary, Branch-by-branch findings, Similarities, Differences, and Caveats or missing evidence.
 - For every concrete implementation claim, identify which branch it belongs to.
 - Cite source files and line numbers for developer-facing claims when present in the evidence.
@@ -342,7 +473,7 @@ Audience-specific final-answer requirements:
 - Use simple, clear everyday language.
 - Do not include technical terms, internal identifiers, file names, citations, line numbers, classes, functions, methods, code identifiers, APIs, endpoints, URLs, code, or implementation details.
 - Include only behavior supported by repository evidence."""
-        if context.get("product_flow_summary")
+        if _product_answer_context(context)
         else """- Lead with a direct answer to the user's exact question.
 - Use the source_search_hits and node code excerpts as the strongest evidence.
 - Follow relations when explaining flows across screens, view models, repositories, services, or APIs.
@@ -385,11 +516,19 @@ def _require_follow_up_answer(answer: str, provider: str) -> str:
 
 def _system_prompt(context: dict) -> str:
     if context.get("comparison_mode"):
-        return COMPARISON_SYSTEM_PROMPT
+        return (
+            PRODUCT_TEAM_COMPARISON_SYSTEM_PROMPT
+            if _product_answer_context(context)
+            else COMPARISON_SYSTEM_PROMPT
+        )
     return (
         PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
         if context.get("product_flow_summary")
-        else SYSTEM_PROMPT
+        else (
+            PRODUCT_TEAM_SYSTEM_PROMPT
+            if _product_answer_context(context)
+            else SYSTEM_PROMPT
+        )
     )
 
 
@@ -488,13 +627,11 @@ def _final_openai_answer(
     api_key: str,
     model: str,
     messages: list[dict],
+    product_answer: bool = False,
 ) -> str:
     messages.append({
         "role": "user",
-        "content": (
-            "The investigation budget is exhausted. Answer now using the evidence "
-            "already collected, with exact source citations and no unsupported claims."
-        ),
+        "content": _budget_exhausted_prompt(product_answer),
     })
     response = _post_with_retries(
         f"{base_url.rstrip('/')}/chat/completions",
@@ -518,13 +655,51 @@ def _final_openai_answer(
     )
 
 
+def _product_toolbox_answer(toolbox) -> bool:
+    return bool(
+        getattr(toolbox, "product_flow_summary", False)
+        or str(getattr(toolbox, "response_style_instruction", "") or "").strip()
+    )
+
+
+def _budget_exhausted_prompt(product_answer: bool = False) -> str:
+    if product_answer:
+        return (
+            "The investigation budget is exhausted. Answer now using the evidence "
+            "already collected, but keep the final response product-friendly. Do "
+            "not include technical terms, file names, file paths, line numbers, "
+            "source citations, code identifiers, APIs, endpoints, or code snippets."
+        )
+    return (
+        "The investigation budget is exhausted. Answer now using the evidence "
+        "already collected, with exact source citations and no unsupported claims."
+    )
+
+
 def _agent_question(
     question: str,
     agent_context: str = "",
+    product_answer: bool = False,
 ) -> str:
     """Build a follow-up prompt without forcing a redundant repository search."""
     if not agent_context:
         return question
+    if product_answer:
+        return (
+            "This is a follow-up in an existing grounded repository conversation.\n\n"
+            "Previously verified conversation and repository evidence:\n"
+            f"{agent_context}\n\n"
+            "Current follow-up question:\n"
+            f"{question}\n\n"
+            "If the supplied evidence is sufficient, answer directly without exposing "
+            "technical evidence. Treat the prior answer as conversation context, not "
+            "as independent proof. If any concrete claim requires evidence that is "
+            "missing or potentially stale, use the repository tools before answering. "
+            "If the question changes topic, investigate it with the tools as a new "
+            "question. Keep the final answer product-friendly and do not include file "
+            "names, line numbers, source citations, code identifiers, APIs, endpoints, "
+            "or code snippets."
+        )
     return (
         "This is a follow-up in an existing grounded repository conversation.\n\n"
         "Previously verified conversation and repository evidence:\n"
@@ -558,9 +733,17 @@ def _openai_agent(
     require_tool: bool = True,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
+    product_answer = _product_toolbox_answer(toolbox)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": _agent_question(question, agent_context)},
+        {
+            "role": "user",
+            "content": _agent_question(
+                question,
+                agent_context,
+                product_answer=product_answer,
+            ),
+        },
     ]
     tools = _openai_tools(tool_definitions)
     tool_call_count = 0
@@ -616,7 +799,13 @@ def _openai_agent(
             })
 
     return {
-        "answer": _final_openai_answer(base_url, api_key, model, messages),
+        "answer": _final_openai_answer(
+            base_url,
+            api_key,
+            model,
+            messages,
+            product_answer=product_answer,
+        ),
         "rounds": AGENT_MAX_ROUNDS + 1,
         "tool_calls": tool_call_count,
     }
@@ -633,9 +822,14 @@ def _anthropic_agent(
     require_tool: bool = True,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
+    product_answer = _product_toolbox_answer(toolbox)
     messages = [{
         "role": "user",
-        "content": _agent_question(question, agent_context),
+        "content": _agent_question(
+            question,
+            agent_context,
+            product_answer=product_answer,
+        ),
     }]
     tools = _anthropic_tools(tool_definitions)
     tool_call_count = 0
@@ -700,10 +894,7 @@ def _anthropic_agent(
 
     messages.append({
         "role": "user",
-        "content": (
-            "The investigation budget is exhausted. Answer now using the evidence "
-            "already collected, with exact source citations and no unsupported claims."
-        ),
+        "content": _budget_exhausted_prompt(product_answer),
     })
     response = _post_with_retries(
         url,
@@ -745,9 +936,17 @@ def _ollama_agent(
     require_tool: bool = True,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
+    product_answer = _product_toolbox_answer(toolbox)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": _agent_question(question, agent_context)},
+        {
+            "role": "user",
+            "content": _agent_question(
+                question,
+                agent_context,
+                product_answer=product_answer,
+            ),
+        },
     ]
     tools = _openai_tools(tool_definitions)
     tool_call_count = 0
@@ -793,10 +992,7 @@ def _ollama_agent(
 
     messages.append({
         "role": "user",
-        "content": (
-            "The investigation budget is exhausted. Answer now using the evidence "
-            "already collected, with exact source citations and no unsupported claims."
-        ),
+        "content": _budget_exhausted_prompt(product_answer),
     })
     response = _post_with_retries(
         url,
@@ -858,7 +1054,7 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
     if resp.status_code >= 400:
         raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
     answer = resp.json()["choices"][0]["message"].get("content", "")
-    return _require_answer(answer, model)
+    return _final_answer(answer, model, context)
 
 
 def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
@@ -885,7 +1081,7 @@ def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> s
         raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
     data = resp.json()
     answer = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-    return _require_answer(answer, model)
+    return _final_answer(answer, model, context)
 
 
 def _ollama_chat(base_url: str, model: str, context: dict) -> str:
@@ -905,7 +1101,7 @@ def _ollama_chat(base_url: str, model: str, context: dict) -> str:
     if resp.status_code >= 400:
         raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
     answer = resp.json().get("message", {}).get("content", "")
-    return _require_answer(answer, model)
+    return _final_answer(answer, model, context)
 
 
 def _fast_follow_up_system_prompt(context: dict) -> str:
@@ -1181,6 +1377,11 @@ def _attempt_with_creds(
                 agent_context=agent_context,
                 require_tool=require_tool,
             )
+            result["answer"] = _final_answer(
+                result.get("answer", ""),
+                creds.get("model") or creds.get("provider") or "agent",
+                context,
+            )
             return {
                 **result,
                 "retrieval_mode": "agentic",
@@ -1220,6 +1421,7 @@ def _attempt_ollama(
                 agent_context,
                 require_tool,
             )
+            result["answer"] = _final_answer(result.get("answer", ""), model, context)
             return {
                 **result,
                 "retrieval_mode": "agentic",
@@ -1259,6 +1461,7 @@ def generate_fast_follow_up(
             question,
             evidence,
         )
+        answer = _final_answer(answer, creds.get("model") or provider_used, context)
         return {
             "answer": answer,
             "provider_used": provider_used,
