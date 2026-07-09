@@ -33,6 +33,15 @@ MAX_SEARCH_FILES = int(os.environ.get("CODEATLAS_AGENT_SEARCH_FILES", "3000"))
 MAX_SEARCH_FILE_BYTES = int(os.environ.get("CODEATLAS_AGENT_SEARCH_FILE_BYTES", "300000"))
 MAX_SEARCH_RESULT_CHARS = int(os.environ.get("CODEATLAS_AGENT_TOOL_RESULT_CHARS", "45000"))
 
+# A tool call the model can use to pause and ask the user a clarifying
+# question instead of guessing, e.g. when two unrelated features expose a
+# similarly named sub-flow. It is intercepted by the agent loop in
+# app/llm/client.py before reaching RepositoryToolbox.call, so it never
+# touches the filesystem or the graph.
+ASK_USER_TOOL_NAME = "ask_user"
+AMBIGUITY_CANDIDATE_WINDOW = int(os.environ.get("CODEATLAS_AMBIGUITY_CANDIDATE_WINDOW", "6"))
+AMBIGUITY_TIE_RATIO = float(os.environ.get("CODEATLAS_AMBIGUITY_TIE_RATIO", "0.7"))
+
 SOURCE_EXTENSIONS = {
     ".c", ".cc", ".cpp", ".cs", ".css", ".dart", ".go", ".gradle", ".h",
     ".hpp", ".html", ".java", ".js", ".json", ".jsx", ".kt", ".kts", ".md",
@@ -170,6 +179,32 @@ TOOL_DEFINITIONS = [
                 },
             },
             ["symbol"],
+        ),
+    },
+    {
+        "name": ASK_USER_TOOL_NAME,
+        "description": (
+            "Ask the user one short clarifying question instead of guessing. Use "
+            "this only when a search_code or find_definition result includes "
+            "`possible_ambiguity` — meaning the same or a very similar name "
+            "resolves to genuinely different parts of the repository — and the "
+            "question does not already say which one is meant. Name the specific "
+            "options from `possible_ambiguity` in the question. Do not use this for "
+            "ordinary uncertainty that another search or read_file call could "
+            "resolve instead. Calling this tool ends the turn: the question becomes "
+            "the answer, and the user's next message is treated as the reply to it."
+        ),
+        "parameters": _object_schema(
+            {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "The short clarifying question to show the user, naming the "
+                        "specific options found."
+                    ),
+                },
+            },
+            ["question"],
         ),
     },
 ]
@@ -494,6 +529,60 @@ class RepositoryToolbox:
             expanded.extend(self.config.synonyms.get(term, []))
         return list(dict.fromkeys(expanded or terms))[:24]
 
+    @staticmethod
+    def _module_group(path: str) -> str:
+        """The file's immediate parent directory, used as a "different feature"
+        signal. Deep, shared boilerplate prefixes (app/src/main/java/com/...) make
+        the leading path segments useless for this, but the innermost directory
+        is usually the feature/package name."""
+        parts = [part for part in str(path or "").split("/") if part]
+        if len(parts) <= 1:
+            return parts[0] if parts else ""
+        return parts[-2]
+
+    @classmethod
+    def _possible_ambiguity(cls, candidates: list[dict]) -> dict | None:
+        """Flag near-tied top matches that live in unrelated parts of the repo.
+
+        Two sub-flows can share a generic step name (e.g. "validation") while
+        living in different features. When that happens the model should ask
+        which one the user means instead of silently picking the top hit.
+        """
+        scored = []
+        for item in candidates[:AMBIGUITY_CANDIDATE_WINDOW]:
+            path = item.get("source_file") or item.get("path")
+            score = item.get("score")
+            name = item.get("name") or item.get("path")
+            if not path or score is None:
+                continue
+            scored.append((name, path, float(score)))
+        if len(scored) < 2 or scored[0][2] <= 0:
+            return None
+
+        groups: dict[str, dict] = {}
+        for name, path, score in scored:
+            group = cls._module_group(path)
+            if not group or group in groups:
+                continue
+            groups[group] = {
+                "area": group,
+                "top_score": score,
+                "example_name": name,
+                "example_path": path,
+            }
+        ranked = sorted(groups.values(), key=lambda g: -g["top_score"])
+        if len(ranked) < 2 or ranked[1]["top_score"] < AMBIGUITY_TIE_RATIO * ranked[0]["top_score"]:
+            return None
+        return {
+            "note": (
+                "These matches sit in unrelated parts of the repository with "
+                "similar relevance scores. If the user's question does not say "
+                f"which one they mean, call {ASK_USER_TOOL_NAME} before investigating "
+                "further."
+            ),
+            "areas": ranked[:4],
+        }
+
     def search_code(self, query: str, limit: int = 8) -> dict:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query is required")
@@ -508,7 +597,7 @@ class RepositoryToolbox:
             limit=limit,
             boosts=self.config.keyword_boosts,
         )
-        return {
+        result = {
             "query": query,
             "terms": terms,
             "source_hit_count": len(source_hits),
@@ -516,6 +605,10 @@ class RepositoryToolbox:
             "source_hits": source_hits,
             "graph_hits": graph_hits,
         }
+        ambiguity = self._possible_ambiguity(graph_hits) or self._possible_ambiguity(source_hits)
+        if ambiguity:
+            result["possible_ambiguity"] = ambiguity
+        return result
 
     def read_file(
         self,
@@ -610,11 +703,15 @@ class RepositoryToolbox:
                 "source_location": node.get("source_location") or match.get("source_location"),
                 "score": match.get("score"),
             })
-        return {
+        result = {
             "symbol": symbol,
             "definition_count": len(definitions),
             "definitions": definitions,
         }
+        ambiguity = self._possible_ambiguity(definitions)
+        if ambiguity:
+            result["possible_ambiguity"] = ambiguity
+        return result
 
     def find_references(self, symbol: str, limit: int = 30) -> dict:
         if not isinstance(symbol, str) or not symbol.strip():
@@ -723,6 +820,8 @@ class ComparisonRepositoryToolbox:
             f"or B for {self.repositories['B']['name']}."
         )
         for definition in definitions:
+            if definition.get("name") == ASK_USER_TOOL_NAME:
+                continue
             parameters = definition.setdefault("parameters", {})
             properties = parameters.setdefault("properties", {})
             properties["repo"] = {

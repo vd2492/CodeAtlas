@@ -636,6 +636,20 @@
       border-radius: 11px;
       background: var(--pre-bg);
     }
+    .clarification-banner {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      margin: 0 0 14px;
+      padding: 11px 14px;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: 11px;
+      background: var(--pre-bg);
+      color: var(--text);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
     .follow-up-question-recap-label {
       margin-bottom: 5px;
       color: var(--faint);
@@ -916,6 +930,39 @@
       padding: 16px 18px;
     }
     .error-box h2 { color: var(--danger); }
+
+    .cancelled-box {
+      border: 1px solid var(--border);
+      background: var(--pre-bg);
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .cancelled-box h2 { color: var(--muted); }
+
+    .cancel-btn {
+      flex: none;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .cancel-btn:hover { color: var(--danger); border-color: var(--danger); }
+    .cancel-btn[hidden] { display: none; }
+    .loading-heading-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .loading-heading-row h2 { margin: 0; }
 
     @media (max-width: 680px) {
       .container { padding: 32px 16px 72px; }
@@ -1213,6 +1260,7 @@
           </svg>
         </span>
         <textarea id="question" rows="1" placeholder="Ask anything about this codebase…" autocomplete="off"></textarea>
+        <button type="button" id="mainAskCancelBtn" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request" hidden>&times;</button>
         <button class="btn-primary" onclick="ask()">Ask</button>
       </div>
     </section>
@@ -1324,6 +1372,7 @@
     let PRODUCT_ANSWER_OVERRIDE = false;
     let LAST_FOLLOW_UP_QUESTION = '';
     let ASK_MODE = 'single';
+    let ACTIVE_REQUEST_CONTROLLER = null;
     const ADMIN_TEST_MODE = new URLSearchParams(window.location.search).get('from') === 'admin';
 
     function resultEmptyState(mode = ASK_MODE) {
@@ -2539,7 +2588,7 @@
       CONVERSATION_ID = data.conversation_id || null;
 
       result.innerHTML = `
-        ${followUpComposer()}
+        ${followUpComposer(data.needs_clarification)}
         <h2>CodeAtlas Branch Comparison</h2>
         <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(timingLabel)}${tokenLabel}</p>
         <div class="follow-up-question-recap">
@@ -2565,6 +2614,8 @@
       }
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
+      const controller = new AbortController();
+      ACTIVE_REQUEST_CONTROLLER = controller;
       result.innerHTML = deepInvestigation
         ? `
           <h2>Investigating comparison deeply…</h2>
@@ -2575,7 +2626,10 @@
         `
         : followUpWithContext
           ? `
-            <h2>Thinking…</h2>
+            <div class="loading-heading-row">
+              <h2>Thinking…</h2>
+              <button type="button" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request">&times;</button>
+            </div>
             <div class="loading-steps">
               <div class="step"><span class="spinner"></span> Reusing verified comparison evidence…</div>
               <div class="step"><span class="dot-pulse"></span> Checking whether fresh branch investigation is needed…</div>
@@ -2594,6 +2648,7 @@
         const res = await fetch(`/repo/compare?workspace=${encodeURIComponent(WORKSPACE)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             question: requestQuestion,
             left_branch: Number(left.value),
@@ -2619,18 +2674,35 @@
 
         renderCompareResult(data, requestQuestion, options);
       } catch (error) {
+        if (error && error.name === 'AbortError') {
+          result.innerHTML = `
+            <div class="cancelled-box">
+              <h2>Query Cancelled</h2>
+              <p>You cancelled this query before it finished.</p>
+            </div>
+          `;
+          return;
+        }
         result.innerHTML = `
           <div class="error-box">
             <h2>Request Failed</h2>
             <pre>${escapeHtml(error)}</pre>
           </div>
         `;
+      } finally {
+        if (ACTIVE_REQUEST_CONTROLLER === controller) {
+          ACTIVE_REQUEST_CONTROLLER = null;
+        }
       }
     }
 
 
-    function followUpComposer() {
+    function followUpComposer(needsClarification) {
+      const clarificationBanner = needsClarification
+        ? `<div class="clarification-banner">CodeAtlas is asking a clarifying question above. Answer it in the field below to continue.</div>`
+        : '';
       return `
+        ${clarificationBanner}
         <div class="follow-up-panel">
           <label class="follow-up-label" for="followUpQuestion">Ask a follow-up question</label>
           <div class="follow-up-box">
@@ -2650,6 +2722,17 @@
     function bindFollowUpInput() {
       const input = document.getElementById('followUpQuestion');
       bindQuestionTextarea(input, askFollowUp);
+    }
+
+    function setMainAskCancelVisible(visible) {
+      const btn = document.getElementById('mainAskCancelBtn');
+      if (btn) btn.hidden = !visible;
+    }
+
+    function cancelActiveRequest() {
+      if (ACTIVE_REQUEST_CONTROLLER) {
+        ACTIVE_REQUEST_CONTROLLER.abort();
+      }
     }
 
     async function ask() {
@@ -2696,6 +2779,9 @@
       );
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
+      const controller = new AbortController();
+      ACTIVE_REQUEST_CONTROLLER = controller;
+      setMainAskCancelVisible(true);
       result.innerHTML = productFlowSummary
         ? `
           <h2>Thinking…</h2>
@@ -2714,7 +2800,10 @@
           `
         : followUpWithContext
           ? `
-            <h2>Thinking…</h2>
+            <div class="loading-heading-row">
+              <h2>Thinking…</h2>
+              <button type="button" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request">&times;</button>
+            </div>
             <div class="loading-steps">
               <div class="step"><span class="spinner"></span> Reusing verified evidence from this conversation…</div>
               <div class="step"><span class="dot-pulse"></span> Checking whether more repository investigation is needed…</div>
@@ -2734,6 +2823,7 @@
         const res = await fetch(wsUrl(options.endpoint || '/repo/ask-llm'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify(
             options.flowSummary
               ? {
@@ -2887,7 +2977,7 @@
         }
         CONVERSATION_ID = data.conversation_id || null;
         result.innerHTML = `
-          ${followUpComposer()}
+          ${followUpComposer(data.needs_clarification)}
           ${followUpQuestionRecap}
           <h2>CodeAtlas Answer</h2>
           ${answerMetadata}
@@ -2897,12 +2987,26 @@
         `;
         bindFollowUpInput();
       } catch (error) {
+        if (error && error.name === 'AbortError') {
+          result.innerHTML = `
+            <div class="cancelled-box">
+              <h2>Query Cancelled</h2>
+              <p>You cancelled this query before it finished.</p>
+            </div>
+          `;
+          return;
+        }
         result.innerHTML = `
           <div class="error-box">
             <h2>Request Failed</h2>
             <pre>${error}</pre>
           </div>
         `;
+      } finally {
+        if (ACTIVE_REQUEST_CONTROLLER === controller) {
+          ACTIVE_REQUEST_CONTROLLER = null;
+        }
+        setMainAskCancelVisible(false);
       }
     }
 

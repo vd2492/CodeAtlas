@@ -175,6 +175,92 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(second_messages[-1]["role"], "tool")
         self.assertEqual(second_messages[-1]["tool_call_id"], "call_1")
 
+    def test_openai_agent_stops_and_returns_ask_user_question(self):
+        toolbox = FakeToolbox()
+        responses = [
+            FakeResponse({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "search_code",
+                                "arguments": '{"query":"validation"}',
+                            },
+                        }],
+                    }
+                }]
+            }),
+            FakeResponse({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {
+                                "name": "ask_user",
+                                "arguments": (
+                                    '{"question":"Did you mean the habit flow\'s '
+                                    'validation or the revision flow\'s validation?"}'
+                                ),
+                            },
+                        }],
+                    }
+                }]
+            }),
+        ]
+        with patch("app.llm.client.requests.post", side_effect=responses) as post:
+            result = client._openai_agent(
+                "https://example.test/v1",
+                "key",
+                "model",
+                "How does validation work?",
+                toolbox,
+                client.TOOL_DEFINITIONS,
+            )
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(result["rounds"], 2)
+        self.assertEqual(result["tool_calls"], 1)
+        self.assertIn("habit flow", result["answer"])
+        self.assertEqual(toolbox.trace[-1]["tool"], "ask_user")
+        self.assertTrue(toolbox.trace[-1]["result"]["needs_clarification"])
+        self.assertTrue(result["needs_clarification"])
+
+    def test_answer_response_surfaces_needs_clarification_flag(self):
+        clarifying = main._answer_response(
+            "How does validation work?",
+            {
+                "answer": "Did you mean the habit flow or the revision flow?",
+                "provider_used": "shared:mimo-v2.5",
+                "retrieval_mode": "agentic",
+                "rounds": 2,
+                "tool_calls": 1,
+                "needs_clarification": True,
+            },
+            context={},
+            workspace="default",
+        )
+        self.assertTrue(clarifying["needs_clarification"])
+
+        normal = main._answer_response(
+            "How does login work?",
+            {
+                "answer": "Login is handled in src/auth.py.",
+                "provider_used": "shared:mimo-v2.5",
+                "retrieval_mode": "agentic",
+                "rounds": 2,
+                "tool_calls": 1,
+            },
+            context={},
+            workspace="default",
+        )
+        self.assertFalse(normal["needs_clarification"])
+
     def test_anthropic_agent_uses_tool_result_blocks(self):
         toolbox = FakeToolbox()
         responses = [

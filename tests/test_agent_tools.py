@@ -155,6 +155,71 @@ class RepositoryToolboxTests(unittest.TestCase):
         self.assertFalse(missing_repo["ok"])
         self.assertIn("A or B", missing_repo["error"])
 
+    def test_possible_ambiguity_flags_near_tied_matches_in_different_features(self):
+        candidates = [
+            {
+                "name": "validate",
+                "source_file": "app/src/main/java/com/example/habit/Validator.kt",
+                "score": 40.0,
+            },
+            {
+                "name": "validate",
+                "source_file": "app/src/main/java/com/example/revision/Validator.kt",
+                "score": 36.0,
+            },
+        ]
+        ambiguity = RepositoryToolbox._possible_ambiguity(candidates)
+        self.assertIsNotNone(ambiguity)
+        areas = {item["area"] for item in ambiguity["areas"]}
+        self.assertEqual(areas, {"habit", "revision"})
+
+    def test_possible_ambiguity_ignores_lopsided_scores(self):
+        candidates = [
+            {"name": "validate", "source_file": "habit/Validator.kt", "score": 40.0},
+            {"name": "validate", "source_file": "revision/Validator.kt", "score": 5.0},
+        ]
+        self.assertIsNone(RepositoryToolbox._possible_ambiguity(candidates))
+
+    def test_possible_ambiguity_ignores_matches_in_the_same_feature(self):
+        candidates = [
+            {"name": "validate", "source_file": "habit/Validator.kt", "score": 40.0},
+            {"name": "validateOther", "source_file": "habit/Other.kt", "score": 38.0},
+        ]
+        self.assertIsNone(RepositoryToolbox._possible_ambiguity(candidates))
+
+    def test_search_and_find_definition_surface_possible_ambiguity(self):
+        nodes = [
+            {
+                "id": "habit_validate",
+                "label": "validate",
+                "source_file": "habit/Validator.kt",
+                "source_location": "L1",
+            },
+            {
+                "id": "revision_validate",
+                "label": "validate",
+                "source_file": "revision/Validator.kt",
+                "source_location": "L1",
+            },
+        ]
+        links = []
+        with patch("app.agent.tools.load_graph", return_value=(nodes, links)):
+            result = self.call("find_definition", {"symbol": "validate"})
+        self.assertTrue(result["ok"])
+        if result["definition_count"] >= 2:
+            self.assertIn("possible_ambiguity", result)
+
+    def test_ask_user_tool_is_exposed_without_a_repo_requirement(self):
+        box = ComparisonRepositoryToolbox(
+            {"name": "Repo One", "slug": "repo-one", "workspace": "one-workspace"},
+            {"name": "Repo Two", "slug": "repo-two", "workspace": "two-workspace"},
+        )
+        ask_schema = next(
+            item for item in box.tool_definitions if item["name"] == "ask_user"
+        )
+        self.assertNotIn("repo", ask_schema["parameters"]["properties"])
+        self.assertNotIn("repo", ask_schema["parameters"]["required"])
+
 
 if __name__ == "__main__":
     unittest.main()

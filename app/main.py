@@ -1466,6 +1466,7 @@ def _answer_response(
         "agent_trace": result.get("agent_trace", []),
         "agent_rounds": result.get("rounds"),
         "agent_tool_calls": result.get("tool_calls", 0),
+        "needs_clarification": bool(result.get("needs_clarification")),
         **(
             {"agent_fallback_reason": result["agent_fallback_reason"]}
             if result.get("agent_fallback_reason")
@@ -1729,6 +1730,7 @@ def answer_compare(
         "agent_trace": result.get("agent_trace", []),
         "agent_rounds": result.get("rounds"),
         "agent_tool_calls": result.get("tool_calls", 0),
+        "needs_clarification": bool(result.get("needs_clarification")),
         "context": context,
         "comparison_repositories": context["comparison_repositories"],
         "repository_versions": {

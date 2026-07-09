@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from ..agent.tools import TOOL_DEFINITIONS
+from ..agent.tools import ASK_USER_TOOL_NAME, TOOL_DEFINITIONS
 
 REQUEST_TIMEOUT = 90
 PROVIDER_RETRIES = max(
@@ -75,8 +75,11 @@ AGENT_SYSTEM_PROMPT = (
     "You may make multiple tool calls. Do not guess from symbol names alone. "
     "Cite concrete claims as `path/to/file:line` or `path/to/file:Lx-Ly`, using "
     "only lines returned by source tools. If the repository evidence is "
-    "incomplete, say exactly what could not be verified. Never ask to execute "
-    "code or modify files."
+    "incomplete, say exactly what could not be verified. If a tool result flags "
+    f"`possible_ambiguity` and the question does not say which option is meant, "
+    f"use {ASK_USER_TOOL_NAME} to ask, naming the specific components or files "
+    "found, before investigating further. Never ask to execute code or modify "
+    "files."
 )
 
 COMPARISON_AGENT_SYSTEM_PROMPT = (
@@ -85,7 +88,10 @@ COMPARISON_AGENT_SYSTEM_PROMPT = (
     "branch separately before comparing them. Do not transfer evidence or "
     "claims from one branch to the other. Cite concrete claims with the "
     "branch label plus file path and line numbers. If either branch lacks "
-    "evidence for the requested behavior, say that explicitly."
+    "evidence for the requested behavior, say that explicitly. If a tool result "
+    f"flags `possible_ambiguity` within a branch and the question does not say "
+    f"which option is meant, use {ASK_USER_TOOL_NAME} to ask, naming the specific "
+    "components or files found, before investigating further."
 )
 
 PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
@@ -120,7 +126,11 @@ PRODUCT_TEAM_AGENT_SYSTEM_PROMPT = (
     "English and describe only user-visible behavior, outcomes, conditions, and "
     "caveats. Do not include technical terms, file names, file paths, line numbers, "
     "class names, function or method names, code identifiers, APIs, endpoint paths, "
-    "source citations, or code snippets. Do not guess beyond repository evidence."
+    "source citations, or code snippets. Do not guess beyond repository evidence. If "
+    "a tool result flags `possible_ambiguity` between clearly different parts of the "
+    f"product and the question does not say which one is meant, use {ASK_USER_TOOL_NAME} "
+    "to ask which one, describing each option by its user-facing purpose only, "
+    "never by file, class, or code identifier."
 )
 
 PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
@@ -131,7 +141,11 @@ PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
     "steps, relevant alternate or failure outcomes, and final result. Do not include "
     "technical terms, internal flow identifiers, file names, source locations, line "
     "numbers, class names, function or method names, code identifiers, APIs, endpoint "
-    "paths, source citations, or code snippets. Do not invent unsupported behavior."
+    "paths, source citations, or code snippets. Do not invent unsupported behavior. If "
+    "a tool result flags `possible_ambiguity` between clearly different parts of the "
+    f"product and the question does not say which one is meant, use {ASK_USER_TOOL_NAME} "
+    "to ask which one, describing each option by its user-facing purpose only, "
+    "never by file, class, or code identifier."
 )
 
 COMPARISON_SYSTEM_PROMPT = (
@@ -162,7 +176,11 @@ PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT = (
     "behavior, outcomes, conditions, and caveats in simple everyday English. Do "
     "not include technical terms, file names, file paths, line numbers, class "
     "names, function or method names, code identifiers, APIs, endpoint paths, "
-    "source citations, or code snippets."
+    "source citations, or code snippets. If a tool result flags "
+    "`possible_ambiguity` within a branch between clearly different parts of the "
+    f"product and the question does not say which one is meant, use {ASK_USER_TOOL_NAME} "
+    "to ask which one, describing each option by its user-facing purpose only, "
+    "never by file, class, or code identifier."
 )
 
 SOURCE_REFERENCE_RE = re.compile(
@@ -608,6 +626,14 @@ def _tool_arguments(raw) -> dict:
     return parsed if isinstance(parsed, dict) else {"_invalid_arguments": raw[:500]}
 
 
+def _ask_user_trace_entry(question: str) -> dict:
+    return {
+        "tool": ASK_USER_TOOL_NAME,
+        "arguments": {"question": question},
+        "result": {"ok": True, "needs_clarification": True},
+    }
+
+
 def _tool_request_error(response, provider: str):
     """Raise an unsupported marker for schema/tool rejections, otherwise fail."""
     if response.status_code < 400:
@@ -767,6 +793,26 @@ def _openai_agent(
         _tool_request_error(response, model)
         message = response.json()["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
+        ask_call = next(
+            (
+                call for call in tool_calls
+                if (call.get("function") or {}).get("name") == ASK_USER_TOOL_NAME
+            ),
+            None,
+        )
+        if ask_call is not None:
+            question = str(
+                _tool_arguments((ask_call.get("function") or {}).get("arguments")).get("question")
+                or ""
+            ).strip()
+            if question:
+                toolbox.trace.append(_ask_user_trace_entry(question))
+                return {
+                    "answer": _require_answer(question, model),
+                    "rounds": round_number,
+                    "tool_calls": tool_call_count,
+                    "needs_clarification": True,
+                }
         if not tool_calls:
             if require_tool and tool_call_count == 0:
                 raise AgenticUnsupported(f"{model} answered without using repository tools")
@@ -862,6 +908,20 @@ def _anthropic_agent(
         data = response.json()
         blocks = data.get("content") or []
         tool_uses = [block for block in blocks if block.get("type") == "tool_use"]
+        ask_call = next(
+            (block for block in tool_uses if block.get("name") == ASK_USER_TOOL_NAME),
+            None,
+        )
+        if ask_call is not None:
+            question = str((ask_call.get("input") or {}).get("question") or "").strip()
+            if question:
+                toolbox.trace.append(_ask_user_trace_entry(question))
+                return {
+                    "answer": _require_answer(question, model),
+                    "rounds": round_number,
+                    "tool_calls": tool_call_count,
+                    "needs_clarification": True,
+                }
         if not tool_uses:
             if require_tool and tool_call_count == 0:
                 raise AgenticUnsupported(f"{model} answered without using repository tools")
@@ -967,6 +1027,26 @@ def _ollama_agent(
         _tool_request_error(response, model)
         message = response.json().get("message") or {}
         tool_calls = message.get("tool_calls") or []
+        ask_call = next(
+            (
+                call for call in tool_calls
+                if (call.get("function") or {}).get("name") == ASK_USER_TOOL_NAME
+            ),
+            None,
+        )
+        if ask_call is not None:
+            question = str(
+                _tool_arguments((ask_call.get("function") or {}).get("arguments")).get("question")
+                or ""
+            ).strip()
+            if question:
+                toolbox.trace.append(_ask_user_trace_entry(question))
+                return {
+                    "answer": _require_answer(question, model),
+                    "rounds": round_number,
+                    "tool_calls": tool_call_count,
+                    "needs_clarification": True,
+                }
         if not tool_calls:
             if require_tool and tool_call_count == 0:
                 raise AgenticUnsupported(f"{model} answered without using repository tools")
