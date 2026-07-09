@@ -750,6 +750,68 @@ class AgentLoopTests(unittest.TestCase):
         self.assertFalse(answer.call_args.kwargs["allow_shared_fallback"])
         self.assertEqual(result["token_usage"]["available"], False)
 
+    def test_compare_endpoint_allows_dev_user_to_request_product_style(self):
+        repo = {
+            "id": 1,
+            "name": "Repo",
+            "slug": "repo",
+            "workspace": "repo-workspace",
+            "allow_shared_fallback": 1,
+        }
+        left = {
+            "repo": repo,
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+        right = {
+            "repo": repo,
+            "branch": {"id": 12, "name": "release"},
+            "workspace": "repo-release-workspace",
+        }
+        response = {
+            "question": "Compare login",
+            "answer": "Compared simply.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "compare_one_shot",
+            "comparison_repositories": [],
+            "context": {},
+        }
+
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main,
+            "_resolve_compare_base_repo",
+            return_value=repo,
+        ), patch.object(
+            main,
+            "_resolve_compare_branch",
+            side_effect=[left, right],
+        ), patch.object(
+            main,
+            "enforce_strict_branch_freshness",
+        ), patch.object(
+            main,
+            "load_user_llm",
+            return_value=None,
+        ), patch.object(
+            main,
+            "answer_compare",
+            return_value=response,
+        ) as answer:
+            result = main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="Compare login",
+                    left_branch=11,
+                    right_branch=12,
+                    llm_mode="mimo",
+                    answer_user_type="product_team",
+                ),
+                workspace="repo-workspace",
+                user={"id": 7, "role": "user", "user_type": "dev_team"},
+            )
+
+        self.assertEqual(result["answer_user_type"], "product_team")
+        self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
+
     def test_compare_endpoint_rejects_same_branch(self):
         base_repo = {
             "id": 1,

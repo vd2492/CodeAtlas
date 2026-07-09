@@ -90,6 +90,10 @@
     button:disabled { opacity: .5; cursor: default; }
     .row { display:flex; gap: 10px; flex-wrap: wrap; align-items: end; }
     .row > div { flex: 1; min-width: 140px; }
+    .test-handoff-copy {
+      min-height:40px; display:flex; align-items:center;
+      font-size:12px; margin:0;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
     th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
@@ -160,17 +164,6 @@
     [data-theme="light"] .msg.ok { background:#ebfff4; color:#087949; }
     .user-edit-error { min-height:18px; color:#ff9a9a; font-size:12px; }
     .hidden { display: none; }
-    .test-status {
-      display:flex; align-items:center; gap:8px; margin-top:10px;
-      color:var(--muted); font-size:12px;
-    }
-    .test-status.hidden { display:none; }
-    .test-spinner {
-      width:14px; height:14px; border-radius:50%;
-      border:2px solid rgba(148,163,184,0.28); border-top-color:var(--accent);
-      animation:spin .75s linear infinite;
-    }
-    @keyframes spin { to { transform:rotate(360deg); } }
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .mono, code { font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -487,16 +480,13 @@
     <div class="panel">
       <div class="row">
         <div><label>Repository</label><select id="testRepo"><option value="" selected disabled>Select repository</option></select></div>
-        <div style="flex:3"><label>Question</label><input id="testQ" placeholder="How does X work?"/></div>
-        <div style="flex:0 0 auto"><button id="testBtn" disabled>Ask</button></div>
-      </div>
-      <div id="testStatus" class="test-status hidden" role="status" aria-live="polite">
-        <span class="test-spinner" aria-hidden="true"></span>
-        <span>Processing query… retrieving evidence and asking the LLM.</span>
-      </div>
-      <div id="testOut" class="hidden">
-        <p class="muted" style="font-size:12px">Provider: <span id="testProvider"></span></p>
-        <pre id="testAnswer"></pre>
+        <div style="flex:3">
+          <label>&nbsp;</label>
+          <p class="muted test-handoff-copy">
+            Open the selected repository in the regular Ask screen using your current admin session.
+          </p>
+        </div>
+        <div style="flex:0 0 auto"><button id="testScreenBtn" disabled>Go to test screen</button></div>
       </div>
     </div>
 
@@ -536,7 +526,6 @@
 const $ = (id) => document.getElementById(id);
 let REPOS = [];
 let CURRENT_USER = null;
-let TEST_ASKING = false;
 
 function formatLocalTimestamp(value, fallback = "") {
   if (!value) return fallback;
@@ -668,7 +657,7 @@ async function showConsole(me) {
 }
 
 function updateRepoToolActions() {
-  $("testBtn").disabled = TEST_ASKING || !$("testRepo").value;
+  $("testScreenBtn").disabled = !$("testRepo").value;
   const configSelected = Boolean($("cfgRepo").value);
   $("cfgDefault").disabled = !configSelected;
   $("cfgLoad").disabled = !configSelected;
@@ -1274,29 +1263,10 @@ $("addUserBtn").onclick = async () => {
   catch (e) { flash(e.message); }
 };
 
-$("testBtn").onclick = async () => {
-  const slug = $("testRepo").value, question = $("testQ").value;
+$("testScreenBtn").onclick = () => {
+  const slug = $("testRepo").value;
   if (!slug) return flash("Select a repository.");
-  if (!question) return;
-  TEST_ASKING = true;
-  $("testBtn").disabled = true;
-  $("testBtn").textContent = "Asking…";
-  $("testStatus").classList.remove("hidden");
-  $("testOut").classList.add("hidden");
-  flash("Asking…", true);
-  try {
-    const data = await api(`/admin/repos/${slug}/test`, { method: "POST", body: JSON.stringify({ question }) });
-    $("testProvider").textContent = data.provider_used || "?";
-    $("testAnswer").textContent = data.answer || "(no answer)";
-    $("testOut").classList.remove("hidden");
-    flash("Done", true);
-  } catch (e) { flash(e.message); }
-  finally {
-    TEST_ASKING = false;
-    $("testBtn").textContent = "Ask";
-    $("testStatus").classList.add("hidden");
-    updateRepoToolActions();
-  }
+  window.location.href = `/app?repo=${encodeURIComponent(slug)}&from=admin`;
 };
 
 let retrievalGuideReturnFocus = null;

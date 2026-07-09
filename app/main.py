@@ -680,6 +680,11 @@ def admin_console():
     return FileResponse(STATIC_DIR / "admin.html")
 
 
+@app.get("/admin", include_in_schema=False)
+def admin_console_alias():
+    return FileResponse(STATIC_DIR / "admin.html")
+
+
 # Map source-file extensions to a display language for the public catalog.
 _LANG_BY_EXT = {
     ".kt": "Kotlin", ".java": "Java", ".py": "Python", ".ts": "TypeScript",
@@ -749,12 +754,14 @@ class AskRequest(BaseModel):
     conversation_id: Optional[str] = None
     follow_up: bool = False
     deep_investigation: bool = False
+    answer_user_type: Optional[str] = None
     # Optional bring-your-own-key creds {provider, base_url, api_key, model}.
     user_llm: Optional[dict] = None
 
 
 class FlowSummaryRequest(BaseModel):
     llm_mode: Optional[str] = None
+    answer_user_type: Optional[str] = None
     user_llm: Optional[dict] = None
 
 
@@ -766,6 +773,7 @@ class CompareRequest(BaseModel):
     conversation_id: Optional[str] = None
     follow_up: bool = False
     deep_investigation: bool = False
+    answer_user_type: Optional[str] = None
     user_llm: Optional[dict] = None
 
 
@@ -1625,6 +1633,20 @@ def _comparison_revision(left: dict, right: dict) -> str:
     )
 
 
+def _effective_answer_user_type(user: dict, requested: str = None) -> str:
+    """Resolve the answer audience without changing the authenticated user type."""
+    authenticated_type = user.get("user_type") or "dev_team"
+    requested_type = (requested or authenticated_type or "dev_team").strip()
+    if requested_type not in {"dev_team", "product_team"}:
+        raise HTTPException(
+            status_code=400,
+            detail="answer_user_type must be 'dev_team' or 'product_team'.",
+        )
+    if authenticated_type == "product_team":
+        return "product_team"
+    return "product_team" if requested_type == "product_team" else "dev_team"
+
+
 def build_compare_context(question: str, left: dict, right: dict, user_type: str) -> dict:
     started_at = time.perf_counter()
     left_context = build_context(question, limit=12, workspace=left["workspace"])
@@ -2015,7 +2037,7 @@ def ask_llm_endpoint(
     # Tier 1: an explicit per-request key wins; otherwise the user's stored BYOK key.
     user_llm = request.user_llm or load_user_llm(user["id"])
     llm_mode = (request.llm_mode or "auto").lower()
-    user_type = user.get("user_type") or "dev_team"
+    user_type = _effective_answer_user_type(user, request.answer_user_type)
     revision = repository_revision(workspace)
     session_key = str(user.get("_session_key") or "")
     use_session_cache = not (
@@ -2048,6 +2070,7 @@ def ask_llm_endpoint(
                 response=response,
             )
             response["conversation_id"] = state.conversation_id
+            response["answer_user_type"] = user_type
             return response
 
     try:
@@ -2085,6 +2108,7 @@ def ask_llm_endpoint(
                 )
                 response["conversation_id"] = state.conversation_id
                 response["token_usage"] = token_usage_payload(token_usage)
+                response["answer_user_type"] = user_type
                 _remember_session_answer(
                     user=user,
                     workspace=workspace,
@@ -2117,6 +2141,7 @@ def ask_llm_endpoint(
             response["follow_up_reused"] = False
             response["follow_up_fallback"] = bool(request.follow_up)
             response["token_usage"] = token_usage_payload(token_usage)
+            response["answer_user_type"] = user_type
             _remember_session_answer(
                 user=user,
                 workspace=workspace,
@@ -2159,7 +2184,7 @@ def compare_repos_endpoint(
     allow_shared = bool(repo["allow_shared_fallback"])
     user_llm = request.user_llm or load_user_llm(user["id"])
     llm_mode = (request.llm_mode or "auto").lower()
-    user_type = user.get("user_type") or "dev_team"
+    user_type = _effective_answer_user_type(user, request.answer_user_type)
     comparison_workspace = _comparison_workspace_key(repo, left, right)
     comparison_revision = _comparison_revision(left, right)
     session_key = str(user.get("_session_key") or "")
@@ -2193,6 +2218,7 @@ def compare_repos_endpoint(
                 response=response,
             )
             response["conversation_id"] = state.conversation_id
+            response["answer_user_type"] = user_type
             return response
 
     try:
@@ -2231,6 +2257,7 @@ def compare_repos_endpoint(
                 )
                 response["conversation_id"] = state.conversation_id
                 response["token_usage"] = token_usage_payload(token_usage)
+                response["answer_user_type"] = user_type
                 _remember_session_answer(
                     user=user,
                     workspace=comparison_workspace,
@@ -2265,6 +2292,7 @@ def compare_repos_endpoint(
             response["follow_up_fallback"] = bool(request.follow_up)
             response["investigate_deeply_available"] = True
             response["token_usage"] = token_usage_payload(token_usage)
+            response["answer_user_type"] = user_type
             _remember_session_answer(
                 user=user,
                 workspace=comparison_workspace,
@@ -2297,7 +2325,7 @@ def flow_summary_endpoint(
     enforce_rate_limit(user["id"])
     enforce_strict_branch_freshness(workspace)
     flow_data = _flow(topic, workspace)
-    user_type = user.get("user_type") or "dev_team"
+    user_type = _effective_answer_user_type(user, request.answer_user_type)
     question = flow_summary_question(flow_data.get("title") or topic, user_type)
     repo = db.get_repo_by_workspace(workspace)
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
@@ -2328,6 +2356,7 @@ def flow_summary_endpoint(
             result["conversation_id"] = state.conversation_id
             result["follow_up_reused"] = False
             result["token_usage"] = token_usage_payload(token_usage)
+            result["answer_user_type"] = user_type
             return result
     except LLMCapacityError as error:
         raise HTTPException(

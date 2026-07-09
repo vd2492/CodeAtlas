@@ -289,8 +289,25 @@ class SecurityGuardTests(unittest.TestCase):
             self.assertEqual(updated["user"]["username"], "product-reader")
             self.assertEqual(updated["user"]["user_type"], "dev_team")
 
+    def test_normal_dev_user_me_exposes_answer_style_type(self):
+        user = {
+            "id": 7,
+            "username": "dev-reader",
+            "role": "user",
+            "user_type": "dev_team",
+        }
+
+        with patch.object(auth_routes.db, "list_repos_for_user", return_value=[]):
+            result = auth_routes.me(user)
+
+        self.assertEqual(result["user"]["role"], "user")
+        self.assertEqual(result["user"]["user_type"], "dev_team")
+
     def test_product_team_type_reaches_llm_answer_pipeline(self):
-        request = main.AskRequest(question="What happens during checkout?")
+        request = main.AskRequest(
+            question="What happens during checkout?",
+            deep_investigation=True,
+        )
         user = {"id": 7, "user_type": "product_team"}
         with patch.object(main, "enforce_rate_limit"), patch.object(
             main, "enforce_strict_branch_freshness"
@@ -307,6 +324,72 @@ class SecurityGuardTests(unittest.TestCase):
 
         self.assertEqual(result["answer"], "A simple answer.")
         self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
+
+    def test_dev_team_can_request_product_style_answer(self):
+        request = main.AskRequest(
+            question="What happens during checkout?",
+            answer_user_type="product_team",
+            deep_investigation=True,
+        )
+        user = {"id": 7, "user_type": "dev_team"}
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 0},
+        ), patch.object(
+            main, "load_user_llm", return_value=None
+        ), patch.object(
+            main, "answer_question", return_value={"answer": "A simple answer."}
+        ) as answer:
+            result = main.ask_llm_endpoint(request, "sample", user)
+
+        self.assertEqual(result["answer_user_type"], "product_team")
+        self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
+
+    def test_product_team_cannot_request_dev_style_answer(self):
+        request = main.AskRequest(
+            question="What happens during checkout?",
+            answer_user_type="dev_team",
+            deep_investigation=True,
+        )
+        user = {"id": 7, "user_type": "product_team"}
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 0},
+        ), patch.object(
+            main, "load_user_llm", return_value=None
+        ), patch.object(
+            main, "answer_question", return_value={"answer": "A simple answer."}
+        ) as answer:
+            result = main.ask_llm_endpoint(request, "sample", user)
+
+        self.assertEqual(result["answer_user_type"], "product_team")
+        self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
+
+    def test_invalid_answer_user_type_is_rejected(self):
+        request = main.AskRequest(
+            question="What happens during checkout?",
+            answer_user_type="sales_team",
+        )
+        user = {"id": 7, "user_type": "dev_team"}
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 0},
+        ), patch.object(
+            main, "load_user_llm", return_value=None
+        ), self.assertRaises(HTTPException) as raised:
+            main.ask_llm_endpoint(request, "sample", user)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("answer_user_type", raised.exception.detail)
 
 
 if __name__ == "__main__":

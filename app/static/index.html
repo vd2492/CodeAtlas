@@ -129,6 +129,9 @@
     .theme-toggle .icon-sun { display: block; }
     [data-theme="light"] .theme-toggle .icon-moon { display: block; }
     [data-theme="light"] .theme-toggle .icon-sun { display: none; }
+    .admin-return-btn {
+      white-space:nowrap;
+    }
 
     .logo-mark {
       width: 46px;
@@ -168,7 +171,7 @@
     /* ---------- Hero ask ---------- */
     .hero { margin-bottom: 16px; }
     .hero-heading {
-      display:flex; align-items:center; gap:9px; margin-bottom:14px;
+      display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:14px;
     }
     .hero-label {
       font-size: 13px;
@@ -177,12 +180,37 @@
       text-transform: uppercase;
       color: var(--accent);
     }
-    .user-mode-badge {
-      display:inline-flex; align-items:center; padding:3px 8px;
-      border:1px solid rgba(95,227,154,0.28); border-radius:999px;
-      background:rgba(95,227,154,0.08); color:var(--muted);
-      font-size:10px; font-weight:700; letter-spacing:0.04em;
-      text-transform:uppercase;
+    .answer-style-selector {
+      display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;
+    }
+    .answer-style-option {
+      display:inline-flex; align-items:center; gap:7px; min-height:28px;
+      padding:3px 9px; border:1px solid var(--border); border-radius:999px;
+      background:var(--card); color:var(--muted); font-size:10px; font-weight:700;
+      letter-spacing:0.04em; text-transform:uppercase; box-shadow:none;
+      cursor:pointer; user-select:none;
+    }
+    .answer-style-option:hover {
+      color:var(--text); border-color:rgba(95, 227, 154, 0.45);
+      transform:none;
+    }
+    .answer-style-option.active {
+      border-color:rgba(95,227,154,0.34);
+      background:rgba(95,227,154,0.08);
+      color:var(--muted);
+    }
+    .answer-style-option:disabled {
+      cursor:not-allowed; opacity:.48;
+    }
+    .answer-style-check {
+      width:13px; height:13px; flex:none; display:grid; place-items:center;
+      border:1.5px solid currentColor; border-radius:3px; font-size:10px;
+      line-height:1;
+    }
+    .answer-style-option.active .answer-style-check::before {
+      content:"✓";
+      color:var(--accent);
+      font-weight:800;
     }
     .ask-mode-switch {
       display: flex;
@@ -387,6 +415,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      flex-wrap: wrap;
       margin-bottom: 14px;
     }
     .card-title { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
@@ -1007,6 +1036,7 @@
       .header-spacer { display:none; }
       .header-context { order:3; width:100%; }
       .header-context .repo-picker { flex:1; max-width:none; width:50%; }
+      .admin-return-btn { flex:1 1 auto; max-width:none; }
     }
   </style>
   <script>
@@ -1154,13 +1184,26 @@
       <button id="compareAskModeBtn" type="button" class="ask-mode-tab"
         role="tab" aria-selected="false" aria-controls="compareAskFlow"
         onclick="setAskMode('compare')">Compare 2 branches</button>
+      <button id="adminReturnBtn" type="button" class="ask-mode-tab admin-return-btn"
+        onclick="goBackToAdminConsole()" hidden>Go back to admin console</button>
     </div>
 
     <!-- Main ask -->
     <section id="singleAskFlow" class="hero single-repo-flow">
       <div class="hero-heading">
         <div class="hero-label">Ask CodeAtlas</div>
-        <span id="userModeBadge" class="user-mode-badge">Dev team</span>
+        <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
+          <button type="button" class="answer-style-option" data-answer-style="dev_team"
+            role="radio" aria-checked="true" onclick="selectAnswerStyle('dev_team')">
+            <span class="answer-style-check" aria-hidden="true"></span>
+            Dev team
+          </button>
+          <button type="button" class="answer-style-option" data-answer-style="product_team"
+            role="radio" aria-checked="false" onclick="selectAnswerStyle('product_team')">
+            <span class="answer-style-check" aria-hidden="true"></span>
+            Product team
+          </button>
+        </div>
       </div>
       <div class="ask-box">
         <span class="ask-icon" aria-hidden="true">
@@ -1178,7 +1221,18 @@
       <div class="card-head">
         <span class="card-dot"></span>
         <h2 class="card-title">Compare branches</h2>
-        <span id="compareUserModeBadge" class="user-mode-badge">Dev team</span>
+        <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
+          <button type="button" class="answer-style-option" data-answer-style="dev_team"
+            role="radio" aria-checked="true" onclick="selectAnswerStyle('dev_team')">
+            <span class="answer-style-check" aria-hidden="true"></span>
+            Dev team
+          </button>
+          <button type="button" class="answer-style-option" data-answer-style="product_team"
+            role="radio" aria-checked="false" onclick="selectAnswerStyle('product_team')">
+            <span class="answer-style-check" aria-hidden="true"></span>
+            Product team
+          </button>
+        </div>
       </div>
       <p class="compare-copy">Ask a side-by-side question across two indexed branches of the selected repository.</p>
       <div class="compare-controls">
@@ -1267,8 +1321,10 @@
     let TOAST_TIMER = null;
     let CONVERSATION_ID = null;
     let CURRENT_USER_TYPE = 'dev_team';
+    let PRODUCT_ANSWER_OVERRIDE = false;
     let LAST_FOLLOW_UP_QUESTION = '';
     let ASK_MODE = 'single';
+    const ADMIN_TEST_MODE = new URLSearchParams(window.location.search).get('from') === 'admin';
 
     function resultEmptyState(mode = ASK_MODE) {
       if (mode === 'compare') {
@@ -1356,6 +1412,57 @@
       window.location.href = '/';
     }
 
+    function goBackToAdminConsole() {
+      window.location.href = '/admin.html';
+    }
+
+    function effectiveAnswerUserType() {
+      if (CURRENT_USER_TYPE === 'product_team') return 'product_team';
+      return PRODUCT_ANSWER_OVERRIDE ? 'product_team' : 'dev_team';
+    }
+
+    function refreshAnswerStyleUi() {
+      if (CURRENT_USER_TYPE !== 'dev_team') {
+        PRODUCT_ANSWER_OVERRIDE = false;
+      }
+      const effectiveType = effectiveAnswerUserType();
+      const canToggle = CURRENT_USER_TYPE === 'dev_team';
+      document.querySelectorAll('.answer-style-option').forEach((button) => {
+        const style = button.getAttribute('data-answer-style');
+        const active = style === effectiveType;
+        const disabled = !canToggle && style !== 'product_team';
+        button.classList.toggle('active', active);
+        button.disabled = disabled;
+        button.setAttribute('aria-checked', String(active));
+        button.title = disabled
+          ? 'Product-team accounts always use product-style answers.'
+          : '';
+      });
+    }
+
+    function selectAnswerStyle(style) {
+      if (!['dev_team', 'product_team'].includes(style)) return;
+      const previousType = effectiveAnswerUserType();
+      if (CURRENT_USER_TYPE !== 'dev_team' && style !== 'product_team') {
+        PRODUCT_ANSWER_OVERRIDE = false;
+        refreshAnswerStyleUi();
+        showToast('Product-team accounts always use product-style answers.');
+        return;
+      }
+      PRODUCT_ANSWER_OVERRIDE = style === 'product_team';
+      const nextType = effectiveAnswerUserType();
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      refreshAnswerStyleUi();
+      if (previousType !== nextType) {
+        showToast(
+          nextType === 'product_team'
+            ? 'Product-style answers enabled for new questions.'
+            : 'Dev-style answers enabled for new questions.'
+        );
+      }
+    }
+
     function setLoginPasswordVisibility(visible) {
       const password = document.getElementById('loginPass');
       const toggle = document.getElementById('loginPasswordToggle');
@@ -1396,9 +1503,10 @@
         }
       } catch (e) {}
 
+      const adminReturnParam = ADMIN_TEST_MODE ? '&from=admin' : '';
       const nextUrl = repo
-        ? `/app?repo=${encodeURIComponent(repo.slug)}`
-        : '/app';
+        ? `/app?repo=${encodeURIComponent(repo.slug)}${adminReturnParam}`
+        : `/app${ADMIN_TEST_MODE ? '?from=admin' : ''}`;
       window.history.replaceState({}, '', nextUrl);
     }
 
@@ -1816,12 +1924,11 @@
         return false;
       }
       CURRENT_USER_TYPE = data.user.user_type || 'dev_team';
-      const modeBadgeLabel = CURRENT_USER_TYPE === 'product_team'
-        ? 'Product team'
-        : 'Dev team';
-      document.querySelectorAll('.user-mode-badge').forEach((badge) => {
-        badge.textContent = modeBadgeLabel;
-      });
+      const adminReturnBtn = document.getElementById('adminReturnBtn');
+      if (adminReturnBtn) {
+        adminReturnBtn.hidden = !(ADMIN_TEST_MODE && data.user.role === 'admin');
+      }
+      refreshAnswerStyleUi();
       populateRepos(data.repos);
       await loadBranches();
       await loadFlowButtons();
@@ -1841,6 +1948,7 @@
       WORKSPACE = null;
       BRANCH_ID = null;
       CURRENT_USER_TYPE = 'dev_team';
+      PRODUCT_ANSWER_OVERRIDE = false;
       stopBranchPolling();
       CONVERSATION_ID = null;
       window.location.href = '/';   // back to the landing page
@@ -2491,6 +2599,7 @@
             left_branch: Number(left.value),
             right_branch: Number(right.value),
             llm_mode: LLM_MODE,
+            answer_user_type: effectiveAnswerUserType(),
             follow_up: Boolean(options.followUp),
             conversation_id: options.followUp ? CONVERSATION_ID : null,
             deep_investigation: deepInvestigation,
@@ -2583,7 +2692,7 @@
     async function submitQuestion(requestQuestion, options = {}) {
       const result = document.getElementById('result');
       const productFlowSummary = Boolean(
-        options.flowSummary && CURRENT_USER_TYPE === 'product_team'
+        options.flowSummary && effectiveAnswerUserType() === 'product_team'
       );
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
@@ -2627,10 +2736,14 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(
             options.flowSummary
-              ? { llm_mode: LLM_MODE }
+              ? {
+                  llm_mode: LLM_MODE,
+                  answer_user_type: effectiveAnswerUserType(),
+                }
               : {
                   question: requestQuestion,
                   llm_mode: LLM_MODE,
+                  answer_user_type: effectiveAnswerUserType(),
                   follow_up: Boolean(options.followUp),
                   conversation_id: options.followUp ? CONVERSATION_ID : null,
                   deep_investigation: deepInvestigation,
