@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.agent.tools import RepositoryToolbox
+from app.agent.tools import ComparisonRepositoryToolbox, RepositoryToolbox
 
 
 class RepositoryToolboxTests(unittest.TestCase):
@@ -117,6 +117,43 @@ class RepositoryToolboxTests(unittest.TestCase):
         self.assertGreaterEqual(references["reference_count"], 1)
         self.assertEqual(callers["caller_count"], 1)
         self.assertEqual(callers["callers"][0]["source_location"], "L2")
+
+    def test_comparison_toolbox_routes_each_call_to_selected_repo(self):
+        box = ComparisonRepositoryToolbox(
+            {"name": "Repo One", "slug": "repo-one", "workspace": "one-workspace"},
+            {"name": "Repo Two", "slug": "repo-two", "workspace": "two-workspace"},
+        )
+        read_file_schema = next(
+            item for item in box.tool_definitions if item["name"] == "read_file"
+        )
+        self.assertIn("repo", read_file_schema["parameters"]["required"])
+        self.assertEqual(
+            read_file_schema["parameters"]["properties"]["repo"]["enum"],
+            ["A", "B"],
+        )
+
+        with patch.object(
+            RepositoryToolbox,
+            "call",
+            return_value=json.dumps({"ok": True, "path": "src/auth.py"}),
+        ) as routed_call:
+            result = json.loads(box.call(
+                "read_file",
+                {"repo": "B", "path": "src/auth.py", "start_line": 1},
+            ))
+
+        routed_call.assert_called_once_with(
+            "read_file",
+            {"path": "src/auth.py", "start_line": 1},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["repo"], "B")
+        self.assertEqual(result["repo_name"], "Repo Two")
+        self.assertEqual(box.trace[0]["arguments"]["repo"], "B")
+
+        missing_repo = json.loads(box.call("read_file", {"path": "src/auth.py"}))
+        self.assertFalse(missing_repo["ok"])
+        self.assertIn("A or B", missing_repo["error"])
 
 
 if __name__ == "__main__":

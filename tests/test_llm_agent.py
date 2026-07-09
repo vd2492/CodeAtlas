@@ -565,6 +565,197 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(result["question"], "CreatebadgeView flow")
         self.assertEqual(result["flow_topic"], "createbadgeview")
 
+    def test_answer_compare_combines_context_from_both_branches(self):
+        left = {
+            "repo": {
+                "id": 1,
+                "name": "Repo",
+                "slug": "repo",
+                "allow_shared_fallback": 1,
+            },
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+        right = {
+            "repo": {
+                "id": 1,
+                "name": "Repo",
+                "slug": "repo",
+                "allow_shared_fallback": 1,
+            },
+            "branch": {"id": 12, "name": "release"},
+            "workspace": "repo-release-workspace",
+        }
+        contexts = {
+            "repo-main-workspace": {
+                "context_nodes": [{"name": "LoginA"}],
+                "context_relations": [],
+                "source_hits": [{"path": "a/login.py", "snippets": []}],
+                "llm_context_preview": {"question": "Compare login", "nodes": []},
+            },
+            "repo-release-workspace": {
+                "context_nodes": [{"name": "LoginB"}],
+                "context_relations": [],
+                "source_hits": [{"path": "b/login.py", "snippets": []}],
+                "llm_context_preview": {"question": "Compare login", "nodes": []},
+            },
+        }
+
+        with patch.object(
+            main,
+            "build_context",
+            side_effect=lambda question, limit, workspace: contexts[workspace],
+        ) as build_context, patch.object(
+            main,
+            "repository_version_payload",
+            return_value=None,
+        ), patch.object(
+            main,
+            "generate",
+            return_value={
+                "answer": "main and release handle login differently.",
+                "provider_used": "shared:mimo-v2.5",
+            },
+        ) as generate:
+            result = main.answer_compare(
+                "Compare login",
+                left,
+                right,
+                llm_mode="mimo",
+            )
+
+        self.assertEqual(build_context.call_count, 2)
+        generated_context = generate.call_args.args[0]
+        self.assertTrue(generated_context["comparison_mode"])
+        self.assertEqual(
+            [repo["name"] for repo in generated_context["comparison_repositories"]],
+            ["main", "release"],
+        )
+        self.assertEqual(
+            [branch["branch_id"] for branch in generated_context["comparison_repositories"]],
+            [11, 12],
+        )
+        self.assertEqual(result["retrieval_mode"], "compare_one_shot")
+        self.assertEqual(len(result["comparison_repositories"]), 2)
+
+    def test_compare_endpoint_uses_repo_shared_fallback_setting_for_branches(self):
+        repo = {
+            "id": 1,
+            "name": "Repo",
+            "slug": "repo",
+            "workspace": "repo-workspace",
+            "allow_shared_fallback": 0,
+        }
+        left = {
+            "repo": repo,
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+        right = {
+            "repo": repo,
+            "branch": {"id": 12, "name": "release"},
+            "workspace": "repo-release-workspace",
+        }
+        response = {
+            "question": "Compare login",
+            "answer": "Compared.",
+            "provider_used": "user:openai",
+            "retrieval_mode": "compare_one_shot",
+            "comparison_repositories": [],
+            "context": {},
+        }
+
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main,
+            "_resolve_compare_base_repo",
+            return_value=repo,
+        ), patch.object(
+            main,
+            "_resolve_compare_branch",
+            side_effect=[left, right],
+        ), patch.object(
+            main,
+            "enforce_strict_branch_freshness",
+        ), patch.object(
+            main,
+            "load_user_llm",
+            return_value={"provider": "openai", "api_key": "saved"},
+        ), patch.object(
+            main,
+            "answer_compare",
+            return_value=response,
+        ) as answer:
+            result = main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="Compare login",
+                    left_branch=11,
+                    right_branch=12,
+                    llm_mode="auto",
+                ),
+                workspace="repo-workspace",
+                user={"id": 7, "role": "user", "user_type": "dev_team"},
+            )
+
+        self.assertEqual(result["answer"], "Compared.")
+        self.assertFalse(answer.call_args.kwargs["allow_shared_fallback"])
+        self.assertEqual(result["token_usage"]["available"], False)
+
+    def test_compare_endpoint_rejects_same_branch(self):
+        base_repo = {
+            "id": 1,
+            "name": "Repo",
+            "slug": "repo",
+            "workspace": "repo-workspace",
+            "allow_shared_fallback": 1,
+        }
+        repo = {
+            "repo": base_repo,
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main,
+            "_resolve_compare_base_repo",
+            return_value=base_repo,
+        ), patch.object(
+            main,
+            "_resolve_compare_branch",
+            side_effect=[repo, repo],
+        ), self.assertRaises(main.HTTPException) as raised:
+            main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="Compare login",
+                    left_branch=11,
+                    right_branch=11,
+                    llm_mode="mimo",
+                ),
+                workspace="repo-workspace",
+                user={"id": 7, "role": "user", "user_type": "dev_team"},
+            )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("different branches", raised.exception.detail)
+
+    def test_comparison_prompt_is_used_for_compare_context(self):
+        prompt = client.build_prompt({
+            "comparison_mode": True,
+            "llm_context_preview": {
+                "question": "Compare login",
+                "branches": [
+                    {"label": "Branch A", "name": "main"},
+                    {"label": "Branch B", "name": "release"},
+                ],
+            },
+        })
+
+        self.assertIn("Comparison evidence", prompt)
+        self.assertIn("Branch-by-branch findings", prompt)
+        self.assertEqual(
+            client._system_prompt({"comparison_mode": True}),
+            client.COMPARISON_SYSTEM_PROMPT,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

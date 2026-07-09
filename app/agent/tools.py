@@ -681,3 +681,126 @@ class RepositoryToolbox:
             "caller_count": len(callers),
             "callers": callers,
         }
+
+
+class ComparisonRepositoryToolbox:
+    """Route read-only tool calls to one of two comparison workspaces.
+
+    The existing agentic implementation is workspace-scoped. Comparison mode
+    keeps that safety model by requiring every tool call to choose target A or B,
+    then delegates to the normal RepositoryToolbox for that branch workspace.
+    """
+
+    comparison_mode = True
+    product_flow_summary = False
+
+    def __init__(self, left: dict, right: dict):
+        self.repositories = {
+            "A": {
+                "label": "Repo A",
+                "name": left.get("name") or left.get("slug") or "Repo A",
+                "slug": left.get("slug") or "",
+                "workspace": left["workspace"],
+                "toolbox": RepositoryToolbox(left["workspace"]),
+            },
+            "B": {
+                "label": "Repo B",
+                "name": right.get("name") or right.get("slug") or "Repo B",
+                "slug": right.get("slug") or "",
+                "workspace": right["workspace"],
+                "toolbox": RepositoryToolbox(right["workspace"]),
+            },
+        }
+        self.trace: list[dict] = []
+        self.tool_definitions = self._tool_definitions()
+        self.response_style_instruction = ""
+        self.config = None
+
+    def _tool_definitions(self) -> list[dict]:
+        definitions = json.loads(json.dumps(TOOL_DEFINITIONS))
+        repo_description = (
+            f"Comparison target to inspect. Use A for {self.repositories['A']['name']} "
+            f"or B for {self.repositories['B']['name']}."
+        )
+        for definition in definitions:
+            parameters = definition.setdefault("parameters", {})
+            properties = parameters.setdefault("properties", {})
+            properties["repo"] = {
+                "type": "string",
+                "enum": ["A", "B"],
+                "description": repo_description,
+            }
+            required = parameters.setdefault("required", [])
+            if "repo" not in required:
+                required.insert(0, "repo")
+            definition["description"] = (
+                f"{definition.get('description', '')} In comparison mode, always "
+                "set repo to A or B and verify each target separately."
+            )
+        return definitions
+
+    def _repo_key(self, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "a": "A",
+            "repo a": "A",
+            "left": "A",
+            "first": "A",
+            "b": "B",
+            "repo b": "B",
+            "right": "B",
+            "second": "B",
+        }
+        if normalized in aliases:
+            return aliases[normalized]
+        for key, repo in self.repositories.items():
+            if normalized in {
+                str(repo.get("name") or "").lower(),
+                str(repo.get("slug") or "").lower(),
+                str(repo.get("workspace") or "").lower(),
+            }:
+                return key
+        raise ValueError("repo is required and must be A or B")
+
+    def call(self, name: str, arguments: dict | None) -> str:
+        args = dict(arguments) if isinstance(arguments, dict) else {}
+        try:
+            key = self._repo_key(args.pop("repo", ""))
+            repo = self.repositories[key]
+            raw = repo["toolbox"].call(name, args)
+            result = json.loads(raw)
+            if isinstance(result, dict):
+                result.update({
+                    "repo": key,
+                    "repo_label": repo["label"],
+                    "repo_name": repo["name"],
+                    "repo_slug": repo["slug"],
+                })
+            else:
+                result = {"ok": False, "error": "invalid tool result"}
+        except (ValueError, json.JSONDecodeError) as exc:
+            key = ""
+            repo = {}
+            result = {"ok": False, "error": str(exc)}
+
+        encoded = json.dumps(result, ensure_ascii=False)
+        if len(encoded) > MAX_SEARCH_RESULT_CHARS:
+            result = {
+                "ok": bool(result.get("ok")),
+                "repo": key,
+                "repo_label": repo.get("label"),
+                "truncated": True,
+                "message": "Tool result exceeded the server limit. Narrow the query or line range.",
+                "preview": encoded[:MAX_SEARCH_RESULT_CHARS],
+            }
+            encoded = json.dumps(result, ensure_ascii=False)
+
+        trace_args = dict(args)
+        if key:
+            trace_args["repo"] = key
+        self.trace.append({
+            "tool": name,
+            "arguments": trace_args,
+            "result": RepositoryToolbox._trace_summary(result),
+        })
+        return encoded

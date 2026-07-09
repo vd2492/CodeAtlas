@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import db
-from .agent import RepositoryToolbox
+from .agent import ComparisonRepositoryToolbox, RepositoryToolbox
 from .config import (
     DEFAULT_WORKSPACE,
     graph_path,
@@ -754,6 +754,14 @@ class AskRequest(BaseModel):
 
 
 class FlowSummaryRequest(BaseModel):
+    llm_mode: Optional[str] = None
+    user_llm: Optional[dict] = None
+
+
+class CompareRequest(BaseModel):
+    question: str
+    left_branch: int
+    right_branch: int
     llm_mode: Optional[str] = None
     user_llm: Optional[dict] = None
 
@@ -1513,6 +1521,169 @@ def _create_conversation_from_response(
     )
 
 
+def _resolve_compare_base_repo(workspace: str, user: dict) -> dict:
+    value = str(workspace or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Repository is required.")
+    repo = db.get_repo_by_workspace(value)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    if repo["status"] != "published":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Repository '{repo['name']}' is not published.",
+        )
+    if user["role"] != "admin" and not db.user_has_repo(user["id"], repo["workspace"]):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this repository.",
+        )
+    return repo
+
+
+def _resolve_compare_branch(repo: dict, branch_id: int, label: str) -> dict:
+    branch = db.get_repo_branch(branch_id)
+    if not branch or branch["repo_id"] != repo["id"]:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{label} was not found for this repository.",
+        )
+    workspace = branch.get("workspace")
+    if not workspace or branch["index_status"] not in {"ready", "indexing"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} has not been indexed successfully yet.",
+        )
+    if not graph_path(workspace).exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} does not have indexed graph data available.",
+        )
+    return {
+        "repo": repo,
+        "branch": branch,
+        "workspace": workspace,
+    }
+
+
+def _comparison_branch_payload(label: str, resolved: dict, context: dict) -> dict:
+    repo = resolved["repo"]
+    branch = resolved.get("branch")
+    workspace = resolved["workspace"]
+    branch_name = branch.get("name") if branch else None
+    return {
+        "label": label,
+        "name": branch_name or repo["name"],
+        "repo_name": repo["name"],
+        "slug": repo["slug"],
+        "workspace": workspace,
+        "branch_id": branch.get("id") if branch else None,
+        "branch": branch_name,
+        "repository_version": repository_version_payload(workspace),
+        "context_nodes": context.get("context_nodes", []),
+        "context_relations": context.get("context_relations", []),
+        "source_hits": context.get("source_hits", []),
+        "llm_context_preview": context.get("llm_context_preview", {}),
+    }
+
+
+def build_compare_context(question: str, left: dict, right: dict, user_type: str) -> dict:
+    started_at = time.perf_counter()
+    left_context = build_context(question, limit=12, workspace=left["workspace"])
+    right_context = build_context(question, limit=12, workspace=right["workspace"])
+    response_style_instruction = (
+        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        if user_type == "product_team"
+        else ""
+    )
+    llm_question = (
+        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        if user_type == "product_team"
+        else question
+    )
+    left_payload = _comparison_branch_payload("Branch A", left, left_context)
+    right_payload = _comparison_branch_payload("Branch B", right, right_context)
+    return {
+        "question": question,
+        "comparison_mode": True,
+        "response_style_instruction": response_style_instruction,
+        "comparison_repositories": [left_payload, right_payload],
+        "retrieval_ms": round((time.perf_counter() - started_at) * 1000, 1),
+        "llm_context_preview": {
+            "instruction": (
+                "Compare the two indexed branches using only their evidence. Keep "
+                "Branch A and Branch B findings separate before summarizing similarities "
+                "and differences."
+            ),
+            "question": llm_question,
+            "branches": [
+                {
+                    "label": payload["label"],
+                    "name": payload["name"],
+                    "repo_name": payload["repo_name"],
+                    "slug": payload["slug"],
+                    "branch": payload["branch"],
+                    "branch_id": payload["branch_id"],
+                    "repository_version": payload["repository_version"],
+                    "evidence": payload["llm_context_preview"],
+                }
+                for payload in (left_payload, right_payload)
+            ],
+        },
+    }
+
+
+def answer_compare(
+    question: str,
+    left: dict,
+    right: dict,
+    user_llm: dict = None,
+    allow_shared_fallback: bool = True,
+    llm_mode: str = None,
+    user_type: str = "dev_team",
+) -> dict:
+    started_at = time.perf_counter()
+    context = build_compare_context(question, left, right, user_type)
+    toolbox = ComparisonRepositoryToolbox(
+        context["comparison_repositories"][0],
+        context["comparison_repositories"][1],
+    )
+    toolbox.response_style_instruction = context.get("response_style_instruction", "")
+    generation_started_at = time.perf_counter()
+    result = generate(
+        context,
+        user_llm=user_llm,
+        allow_shared_fallback=allow_shared_fallback,
+        llm_mode=llm_mode,
+        question=context["llm_context_preview"]["question"],
+        toolbox=toolbox,
+    )
+    result_mode = result.get("retrieval_mode")
+    response = {
+        "question": question,
+        "answer": result["answer"],
+        "provider_used": result["provider_used"],
+        "retrieval_mode": (
+            "compare_agentic" if result_mode == "agentic" else "compare_one_shot"
+        ),
+        "agent_trace": result.get("agent_trace", []),
+        "agent_rounds": result.get("rounds"),
+        "agent_tool_calls": result.get("tool_calls", 0),
+        "context": context,
+        "comparison_repositories": context["comparison_repositories"],
+        "repository_versions": {
+            "left": context["comparison_repositories"][0]["repository_version"],
+            "right": context["comparison_repositories"][1]["repository_version"],
+        },
+    }
+    response["timings_ms"] = {
+        "retrieval": context["retrieval_ms"],
+        "generation": round((time.perf_counter() - generation_started_at) * 1000, 1),
+        "total": round((time.perf_counter() - started_at) * 1000, 1),
+    }
+    return response
+
+
 
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
@@ -1815,6 +1986,52 @@ def ask_llm_endpoint(
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"LLM request failed: {str(error)}")
+
+
+@app.post("/repo/compare")
+def compare_repos_endpoint(
+    request: CompareRequest,
+    workspace: str = Query(DEFAULT_WORKSPACE),
+    user: dict = Depends(require_user),
+):
+    enforce_rate_limit(user["id"])
+    repo = _resolve_compare_base_repo(workspace, user)
+    left = _resolve_compare_branch(repo, request.left_branch, "Branch A")
+    right = _resolve_compare_branch(repo, request.right_branch, "Branch B")
+    if left["branch"]["id"] == right["branch"]["id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose two different branches to compare.",
+        )
+    enforce_strict_branch_freshness(left["workspace"])
+    enforce_strict_branch_freshness(right["workspace"])
+    allow_shared = bool(repo["allow_shared_fallback"])
+    user_llm = request.user_llm or load_user_llm(user["id"])
+    llm_mode = (request.llm_mode or "auto").lower()
+    user_type = user.get("user_type") or "dev_team"
+    try:
+        with llm_admission.slot(), collect_token_usage() as token_usage:
+            response = answer_compare(
+                request.question,
+                left,
+                right,
+                user_llm=user_llm,
+                allow_shared_fallback=allow_shared,
+                llm_mode=llm_mode,
+                user_type=user_type,
+            )
+            response["token_usage"] = token_usage_payload(token_usage)
+            return response
+    except LLMCapacityError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+            headers={"Retry-After": "5"},
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(error)}")
 
 
 @app.post("/repo/flows/{topic}/summary")

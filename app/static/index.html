@@ -184,6 +184,24 @@
       font-size:10px; font-weight:700; letter-spacing:0.04em;
       text-transform:uppercase;
     }
+    .ask-mode-switch {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 0 0 14px;
+    }
+    .ask-mode-tab {
+      display: inline-flex;
+      align-items: center;
+      min-width: 150px;
+      justify-content: center;
+    }
+    .ask-mode-tab.active {
+      color: #04221f;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border-color: transparent;
+      box-shadow: 0 8px 22px -10px rgba(95, 227, 154, 0.75);
+    }
 
     .ask-box {
       display: flex;
@@ -221,6 +239,88 @@
       max-height: 180px;
     }
     #question::placeholder { color: var(--faint); }
+    [hidden] { display: none !important; }
+
+    .compare-card {
+      margin: 0 0 16px;
+    }
+    .compare-card .card-head {
+      margin-bottom: 10px;
+    }
+    .compare-copy {
+      margin: -4px 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .compare-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .compare-controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .compare-controls select {
+      width: 100%;
+      min-width: 0;
+      padding: 11px 14px;
+      border-radius: 11px;
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      cursor: pointer;
+      pointer-events: auto;
+      position: relative;
+      z-index: 1;
+    }
+    .compare-controls select:disabled {
+      cursor: not-allowed;
+      opacity: 0.7;
+    }
+    .compare-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 10px 10px 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 13px;
+      background: var(--input-bg);
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .compare-box:focus-within {
+      border-color: rgba(95, 227, 154, 0.5);
+      box-shadow: 0 0 0 3px rgba(95, 227, 154, 0.09);
+    }
+    #compareQuestion {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 2px;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      line-height: 1.45;
+      resize: none;
+      overflow-y: auto;
+      min-height: 39px;
+      max-height: 160px;
+    }
+    #compareQuestion::placeholder { color: var(--faint); }
+    .compare-hint {
+      margin: 8px 2px 0;
+      color: var(--faint);
+      font-size: 12px;
+    }
 
     /* ---------- Buttons ---------- */
     button {
@@ -253,6 +353,13 @@
     .btn-primary:hover {
       background: linear-gradient(135deg, #7aecaf, #9bf2bf);
       box-shadow: 0 10px 28px -8px rgba(95, 227, 154, 0.85);
+    }
+    button:disabled,
+    button:disabled:hover {
+      cursor: not-allowed;
+      opacity: 0.55;
+      transform: none;
+      box-shadow: none;
     }
 
     /* ---------- Cards / tools grid ---------- */
@@ -890,6 +997,11 @@
     .branch-status-title { font-size:13px; font-weight:700; }
     .branch-status-detail { color:var(--muted); font-size:11px; margin-top:3px; }
     .branch-status button { flex:none; padding:8px 12px; font-size:12px; }
+    @media (max-width: 720px) {
+      .compare-controls { grid-template-columns: 1fr; }
+      .compare-box { align-items: stretch; flex-direction: column; }
+      .compare-box .btn-primary { width: 100%; }
+    }
     @media (max-width: 900px) {
       .header { flex-wrap:wrap; }
       .header-spacer { display:none; }
@@ -945,7 +1057,7 @@
         <div class="subtitle">Graph-powered codebase intelligence</div>
       </div>
       <div class="header-spacer"></div>
-      <div class="header-context">
+      <div class="header-context single-repo-flow">
         <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
         <select id="branchPicker" class="repo-picker" onchange="onBranchChange()" title="Indexed branch" style="display:none;"></select>
       </div>
@@ -962,12 +1074,19 @@
         </svg>
       </button>
     </header>
-    <div id="branchStatusBar" class="branch-status hidden">
+    <div id="branchStatusBar" class="branch-status hidden single-repo-flow">
       <div class="branch-status-copy">
         <div id="branchStatusTitle" class="branch-status-title"></div>
         <div id="branchStatusDetail" class="branch-status-detail"></div>
       </div>
       <button id="syncBranchBtn" type="button" onclick="syncSelectedBranch()">Sync &amp; index now</button>
+    </div>
+    <div id="compareBranchStatusBar" class="branch-status compare-flow" hidden>
+      <div class="branch-status-copy">
+        <div id="compareBranchStatusTitle" class="branch-status-title">Compare selected branches</div>
+        <div id="compareBranchStatusDetail" class="branch-status-detail"></div>
+      </div>
+      <button id="syncCompareBranchesBtn" type="button" onclick="syncCompareBranches()">Sync &amp; index both</button>
     </div>
 
     <!-- LLM choice -->
@@ -1028,8 +1147,17 @@
       <div id="keyErr" class="login-err"></div>
     </section>
 
+    <div class="ask-mode-switch" role="tablist" aria-label="Question mode">
+      <button id="singleAskModeBtn" type="button" class="ask-mode-tab active"
+        role="tab" aria-selected="true" aria-controls="singleAskFlow"
+        onclick="setAskMode('single')">Ask a single branch</button>
+      <button id="compareAskModeBtn" type="button" class="ask-mode-tab"
+        role="tab" aria-selected="false" aria-controls="compareAskFlow"
+        onclick="setAskMode('compare')">Compare 2 branches</button>
+    </div>
+
     <!-- Main ask -->
-    <section class="hero">
+    <section id="singleAskFlow" class="hero single-repo-flow">
       <div class="hero-heading">
         <div class="hero-label">Ask CodeAtlas</div>
         <span id="userModeBadge" class="user-mode-badge">Dev team</span>
@@ -1046,6 +1174,30 @@
       </div>
     </section>
 
+    <section id="compareAskFlow" class="card compare-card compare-flow span-2" hidden>
+      <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Compare branches</h2></div>
+      <p class="compare-copy">Ask a side-by-side question across two indexed branches of the selected repository.</p>
+      <div class="compare-controls">
+        <label for="compareBranchA">
+          Branch A
+          <select id="compareBranchA" aria-label="First branch to compare"
+            onchange="updateCompareBranchStatus()"></select>
+        </label>
+        <label for="compareBranchB">
+          Branch B
+          <select id="compareBranchB" aria-label="Second branch to compare"
+            onchange="updateCompareBranchStatus()"></select>
+        </label>
+      </div>
+      <div class="compare-box">
+        <textarea id="compareQuestion" rows="1"
+          placeholder="Compare changes, flows, features, screens, or implementation choices…"
+          autocomplete="off"></textarea>
+        <button id="compareAskBtn" type="button" class="btn-primary" onclick="compareBranches()">Compare</button>
+      </div>
+      <p id="compareHint" class="compare-hint"></p>
+    </section>
+
     <!-- Result -->
     <section class="card result-card span-2">
       <div id="result">
@@ -1057,7 +1209,7 @@
     </section>
 
     <!-- Secondary tools -->
-    <div class="tools">
+    <div class="tools single-repo-flow">
       <section class="card">
         <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Repo Summary</h2></div>
         <button onclick="loadSummary()">Load Summary</button>
@@ -1112,6 +1264,51 @@
     let CONVERSATION_ID = null;
     let CURRENT_USER_TYPE = 'dev_team';
     let LAST_FOLLOW_UP_QUESTION = '';
+    let ASK_MODE = 'single';
+
+    function resultEmptyState(mode = ASK_MODE) {
+      if (mode === 'compare') {
+        return '<div class="empty-state"><div class="eyebrow">Ready</div><p>Select two indexed branches, ask a comparison question, and the side-by-side answer will appear here.</p></div>';
+      }
+      return '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question above, choose an LLM option, and the grounded answer will appear here.</p></div>';
+    }
+
+    function setAskMode(mode, options = {}) {
+      ASK_MODE = mode === 'compare' ? 'compare' : 'single';
+      const isCompare = ASK_MODE === 'compare';
+      document.querySelectorAll('.single-repo-flow').forEach(item => {
+        item.hidden = isCompare;
+      });
+      document.querySelectorAll('.compare-flow').forEach(item => {
+        item.hidden = !isCompare;
+      });
+
+      const singleBtn = document.getElementById('singleAskModeBtn');
+      const compareBtn = document.getElementById('compareAskModeBtn');
+      if (singleBtn) {
+        singleBtn.classList.toggle('active', !isCompare);
+        singleBtn.setAttribute('aria-selected', String(!isCompare));
+      }
+      if (compareBtn) {
+        compareBtn.classList.toggle('active', isCompare);
+        compareBtn.setAttribute('aria-selected', String(isCompare));
+      }
+
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      updateBranchStatus();
+      updateCompareBranchStatus();
+      const result = document.getElementById('result');
+      if (result && options.resetResult !== false) {
+        result.innerHTML = resultEmptyState(ASK_MODE);
+      }
+      const focusTarget = isCompare
+        ? document.getElementById('compareQuestion')
+        : document.getElementById('question');
+      if (focusTarget && options.focus !== false) {
+        focusTarget.focus();
+      }
+    }
 
     function formatLocalTimestamp(value, fallback) {
       if (!value) return fallback;
@@ -1262,6 +1459,10 @@
 
     function updateBranchStatus() {
       const bar = document.getElementById('branchStatusBar');
+      if (ASK_MODE === 'compare') {
+        bar.classList.add('hidden');
+        return;
+      }
       const branch = BRANCHES.find(item => item.id === BRANCH_ID);
       if (!branch) {
         bar.classList.add('hidden');
@@ -1281,6 +1482,54 @@
       bar.classList.remove('hidden');
     }
 
+    function selectedCompareBranches() {
+      const left = document.getElementById('compareBranchA');
+      const right = document.getElementById('compareBranchB');
+      const leftId = left ? Number(left.value) : null;
+      const rightId = right ? Number(right.value) : null;
+      return {
+        left: BRANCHES.find(branch => branch.id === leftId) || null,
+        right: BRANCHES.find(branch => branch.id === rightId) || null,
+      };
+    }
+
+    function updateCompareBranchStatus() {
+      const bar = document.getElementById('compareBranchStatusBar');
+      if (!bar) return;
+      const detail = document.getElementById('compareBranchStatusDetail');
+      const title = document.getElementById('compareBranchStatusTitle');
+      const button = document.getElementById('syncCompareBranchesBtn');
+      if (ASK_MODE !== 'compare') {
+        bar.hidden = true;
+        return;
+      }
+      const { left, right } = selectedCompareBranches();
+      if (!left || !right || left.id === right.id) {
+        title.textContent = 'Compare selected branches';
+        detail.textContent = 'Select two different indexed branches to sync and compare.';
+        button.disabled = true;
+        button.textContent = 'Sync & index both';
+        bar.hidden = false;
+        return;
+      }
+
+      const leftCommit = left.indexed_commit_sha
+        ? left.indexed_commit_sha.slice(0, 12)
+        : 'not indexed';
+      const rightCommit = right.indexed_commit_sha
+        ? right.indexed_commit_sha.slice(0, 12)
+        : 'not indexed';
+      const leftStatus = freshnessLabel(left);
+      const rightStatus = freshnessLabel(right);
+      title.textContent = `${left.name} · ${leftCommit} vs ${right.name} · ${rightCommit}`;
+      detail.textContent = `${left.name}: ${leftStatus} · ${right.name}: ${rightStatus}`;
+      const canSyncBoth = Boolean(left.can_sync && right.can_sync);
+      const eitherRunning = Boolean(left.job_running || right.job_running);
+      button.disabled = !canSyncBoth || eitherRunning;
+      button.textContent = eitherRunning ? 'Syncing…' : 'Sync & index both';
+      bar.hidden = false;
+    }
+
     async function loadBranches() {
       stopBranchPolling();
       const picker = document.getElementById('branchPicker');
@@ -1288,6 +1537,7 @@
         BRANCH_ID = null;
         BRANCHES = [];
         picker.style.display = 'none';
+        populateCompareBranches([]);
         updateBranchStatus();
         return;
       }
@@ -1316,7 +1566,9 @@
         picker.disabled = BRANCHES.length <= 1;
         if (selected) picker.value = String(selected.id);
         rememberBranchId(BRANCH_ID);
+        populateCompareBranches(BRANCHES);
         updateBranchStatus();
+        updateCompareBranchStatus();
         if (BRANCHES.some(branch => branch.job_running)) {
           BRANCH_POLL_TIMER = setTimeout(loadBranches, 1500);
         }
@@ -1324,7 +1576,9 @@
         BRANCH_ID = null;
         BRANCHES = [];
         picker.style.display = 'none';
+        populateCompareBranches([]);
         updateBranchStatus();
+        updateCompareBranchStatus();
       }
     }
 
@@ -1350,6 +1604,38 @@
       }
     }
 
+    async function syncCompareBranches() {
+      if (!WORKSPACE) return;
+      const { left, right } = selectedCompareBranches();
+      if (!left || !right || left.id === right.id) {
+        updateCompareBranchStatus();
+        return;
+      }
+      const button = document.getElementById('syncCompareBranchesBtn');
+      const detail = document.getElementById('compareBranchStatusDetail');
+      button.disabled = true;
+      button.textContent = 'Starting…';
+      detail.textContent = `Starting sync for ${left.name} and ${right.name}…`;
+      try {
+        for (const branch of [left, right]) {
+          const res = await fetch(
+            `/repo/branches/${encodeURIComponent(branch.id)}/sync?workspace=${encodeURIComponent(WORKSPACE)}`,
+            { method: 'POST' },
+          );
+          if (handle401(res)) return;
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.detail || `Unable to synchronize ${branch.name}`);
+          }
+        }
+        await loadBranches();
+      } catch (error) {
+        detail.textContent = String(error);
+        button.disabled = false;
+        button.textContent = 'Sync & index both';
+      }
+    }
+
     function onBranchChange() {
       const picker = document.getElementById('branchPicker');
       BRANCH_ID = Number(picker.value) || null;
@@ -1360,6 +1646,7 @@
       document.getElementById('result').innerHTML =
         '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question about this branch, or use a tool to explore its graph.</p></div>';
       updateBranchStatus();
+      populateCompareBranches(BRANCHES);
       loadFlowButtons();
     }
 
@@ -1421,6 +1708,57 @@
           : '<div class="error-box"><h2>Select a repository</h2><p>Return to the home page, select the repository you want to use, then open the Ask UI.</p></div>';
       }
       CONVERSATION_ID = null;
+    }
+
+    function populateCompareBranches(branches) {
+      const left = document.getElementById('compareBranchA');
+      const right = document.getElementById('compareBranchB');
+      const hint = document.getElementById('compareHint');
+      const button = document.getElementById('compareAskBtn');
+      if (!left || !right) return;
+      const usable = (branches || []).filter(branch => branch.available);
+      left.replaceChildren();
+      right.replaceChildren();
+      const addOption = (select, branch, label = null) => {
+        const option = document.createElement('option');
+        option.value = branch ? String(branch.id) : '';
+        option.textContent = label || `${branch.name}${branch.indexed_commit_sha ? ` · ${branch.indexed_commit_sha.slice(0, 8)}` : ''}`;
+        select.appendChild(option);
+      };
+
+      if (usable.length === 0) {
+        addOption(left, null, 'No indexed branches available');
+        addOption(right, null, 'No indexed branches available');
+      } else {
+        usable.forEach(branch => addOption(left, branch));
+        if (usable.length >= 2) {
+          usable.forEach(branch => addOption(right, branch));
+        } else {
+          addOption(right, null, 'Need another indexed branch');
+        }
+      }
+
+      left.disabled = usable.length < 2;
+      right.disabled = usable.length < 2;
+      left.title = usable.length < 2
+        ? 'Comparison needs at least two indexed branches.'
+        : 'First branch to compare';
+      right.title = usable.length < 2
+        ? 'Comparison needs at least two indexed branches.'
+        : 'Second branch to compare';
+      if (button) button.disabled = usable.length < 2;
+      if (usable.length >= 2) {
+        const current = usable.find(branch => branch.id === BRANCH_ID) || usable[0];
+        const other = usable.find(branch => branch.id !== current.id) || usable[1];
+        left.value = String(current.id);
+        right.value = String(other.id);
+        if (hint) hint.textContent = 'Comparison uses indexed evidence from the selected branches of this repository.';
+      } else if (hint) {
+        hint.textContent = usable.length === 1
+          ? 'Only one indexed branch is available for this repository. Ask admin to approve and index another branch before comparing.'
+          : 'You need at least two indexed branches in this repository to compare them.';
+      }
+      updateCompareBranchStatus();
     }
 
     function onRepoChange() {
@@ -1974,6 +2312,133 @@
       }
     }
 
+    function compareEvidenceSection(data) {
+      const branches = data.comparison_repositories || [];
+      if (!branches.length) return '';
+      return `
+        <details open>
+          <summary>Comparison evidence <span class="badge">${branches.length}</span></summary>
+          <div class="details-body">
+            ${branches.map(branch => {
+              const nodes = branch.context_nodes || [];
+              const sourceHits = branch.source_hits || [];
+              const version = branch.repository_version || {};
+              const versionText = version.commit_sha
+                ? `${version.branch || branch.branch || 'branch'} · ${String(version.commit_sha).slice(0, 12)}`
+                : (branch.branch || 'indexed branch');
+              return `
+                <div class="group-label">${escapeHtml(branch.label || 'Branch')} · ${escapeHtml(branch.branch || branch.name || '')}</div>
+                <p class="src">${escapeHtml(branch.repo_name || branch.slug || '')}</p>
+                <p class="src">${escapeHtml(versionText)}</p>
+                ${nodes.length ? `
+                  <ul>
+                    ${nodes.slice(0, 8).map(item => `
+                      <li>
+                        ${nodeChip(item)}
+                        ${srcLine(item)}
+                      </li>
+                    `).join('')}
+                  </ul>
+                ` : ''}
+                ${sourceHits.length ? `
+                  <ul>
+                    ${sourceHits.slice(0, 6).map(hit => `
+                      <li>
+                        <b>${escapeHtml(hit.path)}</b>
+                        <div class="src">${(hit.snippets || []).map(snippet => `L${snippet.start_line}-L${snippet.end_line}`).join(', ')}</div>
+                      </li>
+                    `).join('')}
+                  </ul>
+                ` : ''}
+              `;
+            }).join('')}
+          </div>
+        </details>
+      `;
+    }
+
+    async function compareBranches() {
+      const left = document.getElementById('compareBranchA');
+      const right = document.getElementById('compareBranchB');
+      const input = document.getElementById('compareQuestion');
+      const question = input ? input.value.trim() : '';
+      const result = document.getElementById('result');
+      if (!question) return;
+      if (!requireWorkspace()) return;
+      if (!left.value || !right.value || left.value === right.value) {
+        result.innerHTML = '<div class="error-box"><h2>Select two branches</h2><p>Choose two different indexed branches to compare.</p></div>';
+        return;
+      }
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      result.innerHTML = `
+        <h2>Comparing branches…</h2>
+        <div class="loading-steps">
+          <div class="step"><span class="spinner"></span> Retrieving evidence from both branches…</div>
+          <div class="step"><span class="dot-pulse"></span> Preparing a side-by-side comparison…</div>
+        </div>
+      `;
+      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      try {
+        const res = await fetch(`/repo/compare?workspace=${encodeURIComponent(WORKSPACE)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question,
+            left_branch: Number(left.value),
+            right_branch: Number(right.value),
+            llm_mode: LLM_MODE,
+          }),
+        });
+        if (handle401(res)) return;
+        const data = await res.json();
+        if (!res.ok) {
+          result.innerHTML = `
+            <div class="error-box">
+              <h2>Comparison Error</h2>
+              <p>${escapeHtml(llmErrorMessage(data))}</p>
+            </div>
+          `;
+          return;
+        }
+
+        const prov = data.provider_used || '';
+        const provLabel = prov.startsWith('user:') ? 'your key'
+          : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
+        const totalMs = Number(data.timings_ms?.total);
+        const timingLabel = Number.isFinite(totalMs)
+          ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
+          : '';
+        const usage = data.token_usage || {};
+        const totalTokens = Number(usage.total_tokens);
+        const tokenLabel = usage.available && Number.isFinite(totalTokens)
+          ? ` · ${totalTokens.toLocaleString()} tokens`
+          : ' · tokens unavailable';
+        const retrievalLabel = data.retrieval_mode === 'compare_agentic'
+          ? 'agentic retrieval'
+          : 'one-shot evidence';
+
+        result.innerHTML = `
+          <h2>CodeAtlas Branch Comparison</h2>
+          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}${tokenLabel}</p>
+          <div class="follow-up-question-recap">
+            <div class="follow-up-question-recap-label">Comparison question</div>
+            <p>${escapeHtml(data.question || question)}</p>
+          </div>
+          <div class="answer">${renderAnswer(data.answer)}</div>
+          ${compareEvidenceSection(data)}
+        `;
+      } catch (error) {
+        result.innerHTML = `
+          <div class="error-box">
+            <h2>Request Failed</h2>
+            <pre>${escapeHtml(error)}</pre>
+          </div>
+        `;
+      }
+    }
+
 
     function followUpComposer() {
       return `
@@ -2316,6 +2781,9 @@
 
       const askInput = document.getElementById('question');
       bindQuestionTextarea(askInput, ask);
+
+      const compareInput = document.getElementById('compareQuestion');
+      bindQuestionTextarea(compareInput, compareBranches);
 
       const searchInput = document.getElementById('search');
       if (searchInput) {

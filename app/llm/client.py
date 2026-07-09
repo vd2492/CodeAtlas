@@ -78,6 +78,15 @@ AGENT_SYSTEM_PROMPT = (
     "code or modify files."
 )
 
+COMPARISON_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas comparing two indexed branches of one repository with read-only tools. "
+    "Every tool call must choose `repo: A` or `repo: B`; investigate each "
+    "branch separately before comparing them. Do not transfer evidence or "
+    "claims from one branch to the other. Cite concrete claims with the "
+    "branch label plus file path and line numbers. If either branch lacks "
+    "evidence for the requested behavior, say that explicitly."
+)
+
 PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
     "The final answer is for a product-team reader. Keep it simple, clear, and "
     "concise. Use everyday language only. Do not include technical terms, code "
@@ -102,17 +111,28 @@ PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
     "paths, source citations, or code snippets. Do not invent unsupported behavior."
 )
 
+COMPARISON_SYSTEM_PROMPT = (
+    "You are CodeAtlas comparing two indexed branches of one repository. Use only "
+    "the provided branch evidence. Keep Branch A and Branch B evidence separate, "
+    "do not transfer claims from one branch to the other, and state when evidence "
+    "is missing. For developer-focused answers, cite concrete claims with branch "
+    "name plus file path and line numbers."
+)
+
 
 def _agent_system_prompt(toolbox) -> str:
     config = getattr(toolbox, "config", None)
     instruction = str(
         getattr(config, "pre_search_instruction", "") or ""
     ).strip()
-    prompt = (
-        PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
-        if getattr(toolbox, "product_flow_summary", False)
-        else AGENT_SYSTEM_PROMPT
-    )
+    if getattr(toolbox, "comparison_mode", False):
+        prompt = COMPARISON_AGENT_SYSTEM_PROMPT
+    else:
+        prompt = (
+            PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
+            if getattr(toolbox, "product_flow_summary", False)
+            else AGENT_SYSTEM_PROMPT
+        )
     if instruction:
         prompt += (
             "\n\nRepository-specific pre-search instruction: apply the following "
@@ -292,6 +312,28 @@ def _post_with_retries(*args, **kwargs):
 
 def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
+    if context.get("comparison_mode"):
+        answer_requirements = (
+            """- Lead with a concise answer to the user's comparison question.
+- Organize the answer into: Summary, Branch-by-branch findings, Similarities, Differences, and Caveats or missing evidence.
+- For every concrete implementation claim, identify which branch it belongs to.
+- Cite source files and line numbers for developer-facing claims when present in the evidence.
+- If one branch lacks evidence for the requested behavior, say that explicitly instead of guessing."""
+        )
+        return f"""
+Question:
+{preview.get("question", "")}
+
+Comparison evidence:
+{json.dumps(preview, indent=2)}
+
+Answer requirements:
+{answer_requirements}
+
+Audience-specific final-answer requirements:
+{context.get("response_style_instruction", "") or "Use the existing developer-focused answer style."}
+"""
+
     evidence = dict(preview)
     evidence.pop("pre_search_instruction", None)
     answer_requirements = (
@@ -342,6 +384,8 @@ def _require_follow_up_answer(answer: str, provider: str) -> str:
 
 
 def _system_prompt(context: dict) -> str:
+    if context.get("comparison_mode"):
+        return COMPARISON_SYSTEM_PROMPT
     return (
         PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT
         if context.get("product_flow_summary")
@@ -1093,6 +1137,7 @@ def _call_agent_with_creds(
     if not api_key:
         raise RuntimeError("missing api_key")
     _validate_outbound_base_url(base_url)
+    tool_definitions = getattr(toolbox, "tool_definitions", TOOL_DEFINITIONS)
 
     if provider in {"anthropic", "anthropic_compatible", "claude"}:
         return _anthropic_agent(
@@ -1101,7 +1146,7 @@ def _call_agent_with_creds(
             model or "claude-sonnet-4-5",
             question,
             toolbox,
-            TOOL_DEFINITIONS,
+            tool_definitions,
             agent_context,
             require_tool,
         )
@@ -1111,7 +1156,7 @@ def _call_agent_with_creds(
         model or "gpt-4o-mini",
         question,
         toolbox,
-        TOOL_DEFINITIONS,
+        tool_definitions,
         agent_context,
         require_tool,
     )
@@ -1165,12 +1210,13 @@ def _attempt_ollama(
     if AGENT_ENABLED and question and toolbox is not None:
         toolbox.trace.clear()
         try:
+            tool_definitions = getattr(toolbox, "tool_definitions", TOOL_DEFINITIONS)
             result = _ollama_agent(
                 base_url,
                 model,
                 question,
                 toolbox,
-                TOOL_DEFINITIONS,
+                tool_definitions,
                 agent_context,
                 require_tool,
             )
