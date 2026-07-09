@@ -72,6 +72,45 @@ class RepositoryCloneRetryTests(unittest.TestCase):
         self.assertIn("already exists", duplicate.exception.detail)
         self.assertEqual(attempts, 2)
 
+    def test_add_repo_rejects_embedded_credentials_before_clone(self):
+        request = repo_routes.AddRepoRequest(
+            slug="private",
+            name="Private",
+            source_url="https://user:secret@github.com/org/private.git",
+            clone_method="https",
+        )
+
+        with patch.object(repo_routes, "clone_repo") as clone:
+            with self.assertRaises(HTTPException) as raised:
+                repo_routes.add_repo(request, self.admin)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("must not include embedded credentials", raised.exception.detail)
+        clone.assert_not_called()
+        self.assertIsNone(db.get_repo_by_slug("private"))
+
+    def test_reclone_rejects_embedded_credentials_before_clone(self):
+        db.create_repo(
+            "private",
+            "Private",
+            "https://github.com/org/private.git",
+            "https",
+            "private",
+            status="published",
+        )
+        request = repo_routes.RecloneRepoRequest(
+            source_url="https://user:secret@github.com/org/private.git",
+            clone_method="https",
+        )
+
+        with patch.object(repo_routes, "clone_repo") as clone:
+            with self.assertRaises(HTTPException) as raised:
+                repo_routes.reclone_repo("private", request, self.admin)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("must not include embedded credentials", raised.exception.detail)
+        clone.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

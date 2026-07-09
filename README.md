@@ -83,9 +83,13 @@ sudo chown -R 10001:10001 /srv/codeatlas/data
 sudo chmod 750 /srv/codeatlas/data
 ```
 
-For private repositories, inject `GH_TOKEN` for the `gh` clone method or add a
-Compose override that mounts a read-only deploy-key directory at
-`/home/codeatlas/.ssh`. Never bake repository credentials into the image.
+For private GitHub and Bitbucket HTTPS repositories, inject centrally managed
+read-only credentials into the container (`GH_TOKEN` and
+`CODEATLAS_BITBUCKET_API_TOKEN`). CodeAtlas supplies them to Git through
+`GIT_ASKPASS` only for `github.com` and `bitbucket.org`; credentials are never
+stored in clone URLs, SQLite, audit logs, or command arguments. SSH deploy keys
+are still supported through a read-only `/home/codeatlas/.ssh` mount when that
+fits your deployment better. Never bake repository credentials into the image.
 
 The container intentionally runs one Uvicorn worker because branch polling is
 in-process and the application uses SQLite. When placing it behind a GCP
@@ -123,6 +127,8 @@ to boot; the relevant groups are:
   used as a fallback for answering questions.
 - **Reserved Ollama integration** — retained behind a disabled feature flag for
   a future release; it is not exposed to users.
+- **Private Git credentials** — optional read-only GitHub/Bitbucket secrets used
+  for private HTTPS clone, branch discovery, fetch, freshness checks, and sync.
 - **Paths / source root** — optional overrides for data directory and the source
   tree used to pull code excerpts into answers.
 - **Branch synchronization** — worker count, freshness polling, user-triggered

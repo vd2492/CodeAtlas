@@ -1,49 +1,33 @@
 """Clone a repository into a workspace via HTTPS, SSH, or the GitHub CLI.
 
-Used by the admin "add repository" flow (Phase 2). Private repos rely on the
-host's existing git/SSH credentials or `gh auth login`.
+Used by the admin "add repository" and reclone flows. Private GitHub and
+Bitbucket HTTPS repos use centrally configured read-only credentials via
+GIT_ASKPASS; credentials are never embedded in URLs or command arguments.
 """
 
 import shutil
 import subprocess
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..config import repo_clone_dir, workspace_dir
+from .git_auth import (
+    git_env_for_gh_cli,
+    git_env_for_url,
+    sanitize_git_error,
+    sanitize_url_for_storage,
+    validate_clone_url,
+)
 
 CLONE_TIMEOUT = 600
-SENSITIVE_URL_QUERY_KEYS = {
-    "access_token", "api_key", "apikey", "auth", "authorization", "oauth_token",
-    "password", "passwd", "private_token", "token",
-}
 
 
 def sanitize_clone_url(source_url: str) -> str:
     """Remove URL credentials from the value persisted to the DB and audit log."""
-    if "://" not in source_url:
-        return source_url
-    parsed = urlsplit(source_url)
-    sanitized_netloc = parsed.netloc.rsplit("@", 1)[-1]
-    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    sanitized_query_pairs = [
-        (key, "[redacted]" if key.lower() in SENSITIVE_URL_QUERY_KEYS else value)
-        for key, value in query_pairs
-    ]
-    if (
-        sanitized_netloc == parsed.netloc
-        and sanitized_query_pairs == query_pairs
-    ):
-        return source_url
-    return urlunsplit((
-        parsed.scheme,
-        sanitized_netloc,
-        parsed.path,
-        urlencode(sanitized_query_pairs),
-        parsed.fragment,
-    ))
+    return sanitize_url_for_storage(source_url)
 
 
 def clone_repo(source_url: str, method: str, workspace: str):
     """Clone source_url into the workspace's repo dir. method: https|ssh|gh."""
+    validate_clone_url(source_url, method)
     dest = repo_clone_dir(workspace)
     if dest.exists():
         raise RuntimeError(f"workspace repo already exists at {dest}")
@@ -51,15 +35,24 @@ def clone_repo(source_url: str, method: str, workspace: str):
 
     if method == "gh":
         cmd = ["gh", "repo", "clone", source_url, str(dest)]
+        env = git_env_for_gh_cli()
     elif method in ("https", "ssh"):
         # git infers protocol from the URL form; --depth 1 keeps indexing fast.
         cmd = ["git", "clone", "--depth", "1", source_url, str(dest)]
+        env = git_env_for_url(source_url)
     else:
         raise ValueError(f"unknown clone method: {method!r}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=CLONE_TIMEOUT)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=CLONE_TIMEOUT,
+        env=env,
+    )
     if result.returncode != 0:
-        raise RuntimeError(f"clone failed: {result.stderr.strip() or result.stdout.strip()}")
+        detail = sanitize_git_error(result.stderr or result.stdout)
+        raise RuntimeError(f"clone failed: {detail}")
     return dest
 
 

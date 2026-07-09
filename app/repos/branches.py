@@ -6,7 +6,6 @@ workspace pointer changes only after Graphify completes successfully.
 
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 import threading
@@ -27,15 +26,15 @@ from ..config import (
     workspace_dir,
 )
 from .indexing import index_repo
+from .git_auth import git_env_for_repo, sanitize_git_error
 
 GIT_TIMEOUT = 300
-_CREDENTIAL_URL_RE = re.compile(r"(https?://)[^/@\s]+@", re.IGNORECASE)
 _git_locks: dict[str, threading.Lock] = {}
 _git_locks_guard = threading.Lock()
 
 
 def _safe_git_error(value: str) -> str:
-    return _CREDENTIAL_URL_RE.sub(r"\1[redacted]@", (value or "").strip())[:1000]
+    return sanitize_git_error(value)
 
 
 def _git_lock(repo: Path) -> threading.Lock:
@@ -47,6 +46,7 @@ def _git_lock(repo: Path) -> threading.Lock:
 
 
 def _git(repo: Path, *args: str, timeout: int = GIT_TIMEOUT, check: bool = True):
+    env = git_env_for_repo(repo)
     with _git_lock(repo):
         result = subprocess.run(
             ["git", *args],
@@ -54,6 +54,7 @@ def _git(repo: Path, *args: str, timeout: int = GIT_TIMEOUT, check: bool = True)
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     if check and result.returncode != 0:
         detail = _safe_git_error(result.stderr or result.stdout)

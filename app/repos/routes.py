@@ -24,6 +24,7 @@ from ..retrieval.config_schema import (
     validate_retrieval_config,
 )
 from .cloning import clone_repo, remove_repo_clone, remove_workspace, sanitize_clone_url
+from .git_auth import GitAuthError, validate_clone_url
 from .branches import (
     copy_config_to_active_branch_workspaces,
     ensure_repo_branch,
@@ -97,6 +98,10 @@ def add_repo(req: AddRepoRequest, admin: dict = Depends(require_admin)):
         )
     if req.clone_method not in ("https", "ssh", "gh"):
         raise HTTPException(status_code=400, detail="clone_method must be https, ssh, or gh.")
+    try:
+        validate_clone_url(req.source_url, req.clone_method)
+    except GitAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     existing = db.get_repo_by_slug(req.slug)
     retrying = existing is not None
@@ -179,6 +184,10 @@ def reclone_repo(
             status_code=400,
             detail="clone_method must be https, ssh, or gh.",
         )
+    try:
+        validate_clone_url(source_url, clone_method)
+    except GitAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         clone_repo(source_url, clone_method, repo["workspace"])
@@ -322,12 +331,17 @@ def list_members(slug: str, admin: dict = Depends(require_admin)):
 def update_repo_details(slug: str, req: UpdateRepoRequest, admin: dict = Depends(require_admin)):
     """Edit a repo's display name (and optionally source URL). slug/workspace
     are immutable; status and shared-LLM have their own controls."""
-    _require_repo(slug)
+    repo = _require_repo(slug)
     name = req.name.strip() if req.name is not None else None
     if name == "":
         raise HTTPException(status_code=400, detail="name cannot be empty.")
     if name is None and req.source_url is None:
         raise HTTPException(status_code=400, detail="nothing to update.")
+    if req.source_url is not None:
+        try:
+            validate_clone_url(req.source_url, repo.get("clone_method"))
+        except GitAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     stored_source_url = (
         sanitize_clone_url(req.source_url) if req.source_url is not None else None
     )

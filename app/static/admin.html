@@ -293,6 +293,9 @@
         <option value="ssh">ssh</option>
         <option value="gh">gh (GitHub CLI)</option>
       </select>
+      <p class="muted" style="font-size:12px;margin:8px 0 0;">
+        Private GitHub and Bitbucket HTTPS repositories use the server's configured read-only credentials. Do not paste tokens into the URL.
+      </p>
       <div id="recloneError" class="user-edit-error" style="margin-top:8px;"></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
         <button type="button" class="ghost" id="recloneCancel">Cancel</button>
@@ -448,7 +451,9 @@
           <option value="gh">gh (GitHub CLI)</option>
         </select>
         <div style="margin-top:12px;"><button id="addRepoBtn">Clone repository</button></div>
-        <p class="muted" style="font-size:12px">Clone runs synchronously — large repos may take a moment.</p>
+        <p class="muted" style="font-size:12px">
+          Clone runs synchronously — large repos may take a moment. Private GitHub and Bitbucket HTTPS repositories use the server's configured read-only credentials; do not paste tokens into the URL.
+        </p>
       </div>
 
       <div class="panel">

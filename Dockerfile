@@ -27,6 +27,7 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin codeatlas \
     && chown -R codeatlas:codeatlas /app
 
 COPY --chown=codeatlas:codeatlas app ./app
+RUN chmod 0755 /app/app/repos/git_askpass.py
 
 USER codeatlas
 
