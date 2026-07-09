@@ -763,6 +763,9 @@ class CompareRequest(BaseModel):
     left_branch: int
     right_branch: int
     llm_mode: Optional[str] = None
+    conversation_id: Optional[str] = None
+    follow_up: bool = False
+    deep_investigation: bool = False
     user_llm: Optional[dict] = None
 
 
@@ -1380,35 +1383,55 @@ def compact_follow_up_evidence(state: ConversationState) -> str:
         for turn in state.turns[-2:]
     )
     preview = (state.context or {}).get("llm_context_preview", {})
-    compact_preview = {
-        "repo_overview": preview.get("repo_overview"),
-        "nodes": [
-            {
-                "name": node.get("name"),
-                "source": node.get("source"),
-                **(
-                    {"code": str(node.get("code", ""))[:700]}
-                    if node.get("code")
-                    else {}
-                ),
-            }
-            for node in (preview.get("nodes") or [])[:6]
-        ],
-        "relations": (preview.get("relations") or [])[:12],
-        "source_search_hits": [
-            {
-                "path": hit.get("path"),
-                "snippets": [
-                    {
-                        "range": snippet.get("range"),
-                        "code": str(snippet.get("code", ""))[:800],
-                    }
-                    for snippet in (hit.get("snippets") or [])[:1]
-                ],
-            }
-            for hit in (preview.get("source_search_hits") or [])[:6]
-        ],
-    }
+    def compact_single_evidence(item: dict) -> dict:
+        return {
+            "repo_overview": item.get("repo_overview"),
+            "nodes": [
+                {
+                    "name": node.get("name"),
+                    "source": node.get("source"),
+                    **(
+                        {"code": str(node.get("code", ""))[:700]}
+                        if node.get("code")
+                        else {}
+                    ),
+                }
+                for node in (item.get("nodes") or [])[:6]
+            ],
+            "relations": (item.get("relations") or [])[:12],
+            "source_search_hits": [
+                {
+                    "path": hit.get("path"),
+                    "snippets": [
+                        {
+                            "range": snippet.get("range"),
+                            "code": str(snippet.get("code", ""))[:800],
+                        }
+                        for snippet in (hit.get("snippets") or [])[:1]
+                    ],
+                }
+                for hit in (item.get("source_search_hits") or [])[:6]
+            ],
+        }
+
+    if preview.get("branches"):
+        compact_preview = {
+            "comparison": "two indexed branches of one repository",
+            "branches": [
+                {
+                    "label": branch.get("label"),
+                    "name": branch.get("name"),
+                    "branch": branch.get("branch"),
+                    "branch_id": branch.get("branch_id"),
+                    "repo_name": branch.get("repo_name"),
+                    "repository_version": branch.get("repository_version"),
+                    "evidence": compact_single_evidence(branch.get("evidence") or {}),
+                }
+                for branch in (preview.get("branches") or [])[:2]
+            ],
+        }
+    else:
+        compact_preview = compact_single_evidence(preview)
     evidence = json.dumps(
         compact_preview,
         ensure_ascii=False,
@@ -1454,7 +1477,7 @@ def _zero_token_usage_payload() -> dict:
 def _session_cached_answer_response(
     cached_response: dict,
     question: str,
-    workspace: str,
+    workspace: str = None,
 ) -> dict:
     response = copy.deepcopy(cached_response or {})
     response["question"] = question
@@ -1464,7 +1487,8 @@ def _session_cached_answer_response(
     response["follow_up_fallback"] = False
     response["deep_investigation"] = False
     response["investigate_deeply_available"] = True
-    response["repository_version"] = repository_version_payload(workspace)
+    if workspace:
+        response["repository_version"] = repository_version_payload(workspace)
     response["timings_ms"] = {
         "retrieval": 0.0,
         "generation": 0.0,
@@ -1587,6 +1611,20 @@ def _comparison_branch_payload(label: str, resolved: dict, context: dict) -> dic
     }
 
 
+def _comparison_workspace_key(repo: dict, left: dict, right: dict) -> str:
+    return (
+        f"compare:{repo['workspace']}:"
+        f"{left['branch']['id']}:{right['branch']['id']}"
+    )
+
+
+def _comparison_revision(left: dict, right: dict) -> str:
+    return (
+        f"left:{left['branch']['id']}:{repository_revision(left['workspace'])}"
+        f"|right:{right['branch']['id']}:{repository_revision(right['workspace'])}"
+    )
+
+
 def build_compare_context(question: str, left: dict, right: dict, user_type: str) -> dict:
     started_at = time.perf_counter()
     left_context = build_context(question, limit=12, workspace=left["workspace"])
@@ -1682,6 +1720,119 @@ def answer_compare(
         "total": round((time.perf_counter() - started_at) * 1000, 1),
     }
     return response
+
+
+def _comparison_repository_versions(context: dict) -> dict:
+    repositories = context.get("comparison_repositories") or []
+    return {
+        "left": repositories[0].get("repository_version") if len(repositories) > 0 else None,
+        "right": repositories[1].get("repository_version") if len(repositories) > 1 else None,
+    }
+
+
+def answer_compare_follow_up(
+    question: str,
+    state: ConversationState,
+    left: dict,
+    right: dict,
+    user_llm: dict = None,
+    allow_shared_fallback: bool = True,
+    llm_mode: str = None,
+    user_type: str = "dev_team",
+    deep_investigation: bool = False,
+) -> dict:
+    """Answer a follow-up from branch-comparison evidence or rerun comparison."""
+    started_at = time.perf_counter()
+    if deep_investigation:
+        response = answer_compare(
+            question,
+            left,
+            right,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared_fallback,
+            llm_mode=llm_mode,
+            user_type=user_type,
+        )
+        response["follow_up_reused"] = False
+        response["follow_up_fallback"] = True
+        response["deep_investigation"] = True
+        response["investigate_deeply_available"] = False
+        response["timings_ms"]["total"] = round(
+            (time.perf_counter() - started_at) * 1000,
+            1,
+        )
+        return response
+
+    context = copy.deepcopy(state.context or {})
+    preview = context.setdefault("llm_context_preview", {})
+    response_style_instruction = (
+        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        if user_type == "product_team"
+        else ""
+    )
+    llm_question = (
+        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        if user_type == "product_team"
+        else question
+    )
+    context["question"] = question
+    context["response_style_instruction"] = response_style_instruction
+    preview["question"] = llm_question
+    evidence = compact_follow_up_evidence(state)
+
+    fast_started_at = time.perf_counter()
+    try:
+        result = generate_fast_follow_up(
+            context,
+            evidence,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared_fallback,
+            llm_mode=llm_mode,
+            question=llm_question,
+        )
+    except FollowUpNeedsEvidence:
+        fast_gate_ms = round((time.perf_counter() - fast_started_at) * 1000, 1)
+        response = answer_compare(
+            question,
+            left,
+            right,
+            user_llm=user_llm,
+            allow_shared_fallback=allow_shared_fallback,
+            llm_mode=llm_mode,
+            user_type=user_type,
+        )
+        response["follow_up_reused"] = False
+        response["follow_up_fallback"] = True
+        response["deep_investigation"] = False
+        response["investigate_deeply_available"] = False
+        response["timings_ms"]["follow_up_gate"] = fast_gate_ms
+        response["timings_ms"]["total"] = round(
+            (time.perf_counter() - started_at) * 1000,
+            1,
+        )
+        return response
+
+    generation_ms = round((time.perf_counter() - fast_started_at) * 1000, 1)
+    return {
+        "question": question,
+        "answer": result["answer"],
+        "provider_used": result["provider_used"],
+        "retrieval_mode": "compare_follow_up_cache",
+        "agent_trace": result.get("agent_trace", []),
+        "agent_rounds": result.get("rounds"),
+        "agent_tool_calls": result.get("tool_calls", 0),
+        "context": context,
+        "comparison_repositories": context.get("comparison_repositories", []),
+        "repository_versions": _comparison_repository_versions(context),
+        "follow_up_reused": True,
+        "follow_up_fallback": False,
+        "deep_investigation": False,
+        "investigate_deeply_available": True,
+        "timings_ms": {
+            "follow_up_generation": generation_ms,
+            "total": round((time.perf_counter() - started_at) * 1000, 1),
+        },
+    }
 
 
 
@@ -2009,8 +2160,88 @@ def compare_repos_endpoint(
     user_llm = request.user_llm or load_user_llm(user["id"])
     llm_mode = (request.llm_mode or "auto").lower()
     user_type = user.get("user_type") or "dev_team"
+    comparison_workspace = _comparison_workspace_key(repo, left, right)
+    comparison_revision = _comparison_revision(left, right)
+    session_key = str(user.get("_session_key") or "")
+    use_session_cache = not (
+        request.deep_investigation
+        or (llm_mode == "mimo" and not allow_shared)
+    )
+    if use_session_cache:
+        cached_response = conversation_store.get_cached_answer(
+            session_key=session_key,
+            user_id=user["id"],
+            workspace=comparison_workspace,
+            llm_mode=llm_mode,
+            user_type=user_type,
+            repository_revision=comparison_revision,
+            question=request.question,
+        )
+        if cached_response:
+            response = _session_cached_answer_response(
+                cached_response,
+                request.question,
+                workspace=None,
+            )
+            state = _create_conversation_from_response(
+                user=user,
+                workspace=comparison_workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=comparison_revision,
+                question=request.question,
+                response=response,
+            )
+            response["conversation_id"] = state.conversation_id
+            return response
+
     try:
         with llm_admission.slot(), collect_token_usage() as token_usage:
+            state = None
+            if request.follow_up and request.conversation_id:
+                state = conversation_store.get(
+                    request.conversation_id,
+                    user_id=user["id"],
+                    session_key=session_key,
+                    workspace=comparison_workspace,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                    repository_revision=comparison_revision,
+                )
+            if state and (
+                request.deep_investigation
+                or is_related_follow_up(state, request.question)
+            ):
+                response = answer_compare_follow_up(
+                    request.question,
+                    state,
+                    left,
+                    right,
+                    user_llm=user_llm,
+                    allow_shared_fallback=allow_shared,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                    deep_investigation=request.deep_investigation,
+                )
+                conversation_store.append(
+                    state.conversation_id,
+                    question=request.question,
+                    answer=response["answer"],
+                    context=response.get("context"),
+                )
+                response["conversation_id"] = state.conversation_id
+                response["token_usage"] = token_usage_payload(token_usage)
+                _remember_session_answer(
+                    user=user,
+                    workspace=comparison_workspace,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                    repository_revision=comparison_revision,
+                    question=request.question,
+                    response=response,
+                )
+                return response
+
             response = answer_compare(
                 request.question,
                 left,
@@ -2020,7 +2251,29 @@ def compare_repos_endpoint(
                 llm_mode=llm_mode,
                 user_type=user_type,
             )
+            state = _create_conversation_from_response(
+                user=user,
+                workspace=comparison_workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=comparison_revision,
+                question=request.question,
+                response=response,
+            )
+            response["conversation_id"] = state.conversation_id
+            response["follow_up_reused"] = False
+            response["follow_up_fallback"] = bool(request.follow_up)
+            response["investigate_deeply_available"] = True
             response["token_usage"] = token_usage_payload(token_usage)
+            _remember_session_answer(
+                user=user,
+                workspace=comparison_workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=comparison_revision,
+                question=request.question,
+                response=response,
+            )
             return response
     except LLMCapacityError as error:
         raise HTTPException(

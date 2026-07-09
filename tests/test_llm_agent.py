@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app import main
+from app.conversations import ConversationStore
 from app.llm import client
 
 
@@ -736,6 +737,310 @@ class AgentLoopTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("different branches", raised.exception.detail)
+
+    def test_compare_endpoint_returns_repeated_question_from_session_cache(self):
+        store = ConversationStore(ttl_seconds=300, max_states=10, max_cached_answers=10)
+        repo = {
+            "id": 1,
+            "name": "Repo",
+            "slug": "repo",
+            "workspace": "repo-workspace",
+            "allow_shared_fallback": 1,
+        }
+        left = {
+            "repo": repo,
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+        right = {
+            "repo": repo,
+            "branch": {"id": 12, "name": "release"},
+            "workspace": "repo-release-workspace",
+        }
+        response = {
+            "question": "Compare login",
+            "answer": "Compared.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "compare_one_shot",
+            "comparison_repositories": [],
+            "context": {},
+        }
+
+        with patch.object(main, "conversation_store", store), patch.object(
+            main, "enforce_rate_limit"
+        ), patch.object(
+            main,
+            "_resolve_compare_base_repo",
+            return_value=repo,
+        ), patch.object(
+            main,
+            "_resolve_compare_branch",
+            side_effect=[left, right, left, right],
+        ), patch.object(
+            main,
+            "_comparison_revision",
+            return_value="comparison-revision",
+        ), patch.object(
+            main,
+            "enforce_strict_branch_freshness",
+        ), patch.object(
+            main,
+            "load_user_llm",
+            return_value=None,
+        ), patch.object(
+            main,
+            "answer_compare",
+            return_value=response,
+        ) as answer:
+            request = main.CompareRequest(
+                question="Compare login",
+                left_branch=11,
+                right_branch=12,
+                llm_mode="mimo",
+            )
+            first = main.compare_repos_endpoint(
+                request,
+                workspace="repo-workspace",
+                user={
+                    "id": 7,
+                    "role": "user",
+                    "user_type": "dev_team",
+                    "_session_key": "session",
+                },
+            )
+            second = main.compare_repos_endpoint(
+                request,
+                workspace="repo-workspace",
+                user={
+                    "id": 7,
+                    "role": "user",
+                    "user_type": "dev_team",
+                    "_session_key": "session",
+                },
+            )
+
+        self.assertEqual(first["answer"], "Compared.")
+        self.assertEqual(answer.call_count, 1)
+        self.assertTrue(second["session_cache_hit"])
+        self.assertEqual(second["retrieval_mode"], "session_cache")
+        self.assertEqual(second["token_usage"]["available"], True)
+        self.assertIn("conversation_id", second)
+
+    def test_compare_follow_up_reuses_comparison_conversation(self):
+        store = ConversationStore(ttl_seconds=300, max_states=10, max_cached_answers=10)
+        repo = {
+            "id": 1,
+            "name": "Repo",
+            "slug": "repo",
+            "workspace": "repo-workspace",
+            "allow_shared_fallback": 1,
+        }
+        left = {
+            "repo": repo,
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+        right = {
+            "repo": repo,
+            "branch": {"id": 12, "name": "release"},
+            "workspace": "repo-release-workspace",
+        }
+        initial = {
+            "question": "Compare login",
+            "answer": "Initial comparison.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "compare_one_shot",
+            "comparison_repositories": [],
+            "context": {"llm_context_preview": {"question": "Compare login"}},
+        }
+        follow_up = {
+            "question": "what about this flow?",
+            "answer": "Follow-up comparison.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "compare_follow_up_cache",
+            "comparison_repositories": [],
+            "context": {},
+            "follow_up_reused": True,
+            "follow_up_fallback": False,
+            "deep_investigation": False,
+            "investigate_deeply_available": True,
+        }
+
+        with patch.object(main, "conversation_store", store), patch.object(
+            main, "enforce_rate_limit"
+        ), patch.object(
+            main,
+            "_resolve_compare_base_repo",
+            return_value=repo,
+        ), patch.object(
+            main,
+            "_resolve_compare_branch",
+            side_effect=[left, right, left, right],
+        ), patch.object(
+            main,
+            "_comparison_revision",
+            return_value="comparison-revision",
+        ), patch.object(
+            main,
+            "enforce_strict_branch_freshness",
+        ), patch.object(
+            main,
+            "load_user_llm",
+            return_value=None,
+        ), patch.object(
+            main,
+            "answer_compare",
+            return_value=initial,
+        ), patch.object(
+            main,
+            "answer_compare_follow_up",
+            return_value=follow_up,
+        ) as follow:
+            first = main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="Compare login",
+                    left_branch=11,
+                    right_branch=12,
+                    llm_mode="mimo",
+                ),
+                workspace="repo-workspace",
+                user={
+                    "id": 7,
+                    "role": "user",
+                    "user_type": "dev_team",
+                    "_session_key": "session",
+                },
+            )
+            second = main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="what about this flow?",
+                    left_branch=11,
+                    right_branch=12,
+                    llm_mode="mimo",
+                    conversation_id=first["conversation_id"],
+                    follow_up=True,
+                ),
+                workspace="repo-workspace",
+                user={
+                    "id": 7,
+                    "role": "user",
+                    "user_type": "dev_team",
+                    "_session_key": "session",
+                },
+            )
+
+        follow.assert_called_once()
+        self.assertTrue(second["follow_up_reused"])
+        self.assertEqual(second["conversation_id"], first["conversation_id"])
+
+    def test_compare_deep_investigation_bypasses_repeated_question_cache(self):
+        store = ConversationStore(ttl_seconds=300, max_states=10, max_cached_answers=10)
+        repo = {
+            "id": 1,
+            "name": "Repo",
+            "slug": "repo",
+            "workspace": "repo-workspace",
+            "allow_shared_fallback": 1,
+        }
+        left = {
+            "repo": repo,
+            "branch": {"id": 11, "name": "main"},
+            "workspace": "repo-main-workspace",
+        }
+        right = {
+            "repo": repo,
+            "branch": {"id": 12, "name": "release"},
+            "workspace": "repo-release-workspace",
+        }
+        initial = {
+            "question": "Compare login",
+            "answer": "Initial comparison.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "compare_one_shot",
+            "comparison_repositories": [],
+            "context": {"llm_context_preview": {"question": "Compare login"}},
+        }
+        deep = {
+            "question": "Compare login",
+            "answer": "Deep comparison.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "compare_agentic",
+            "comparison_repositories": [],
+            "context": {},
+            "follow_up_reused": False,
+            "follow_up_fallback": True,
+            "deep_investigation": True,
+            "investigate_deeply_available": False,
+        }
+
+        with patch.object(main, "conversation_store", store), patch.object(
+            main, "enforce_rate_limit"
+        ), patch.object(
+            main,
+            "_resolve_compare_base_repo",
+            return_value=repo,
+        ), patch.object(
+            main,
+            "_resolve_compare_branch",
+            side_effect=[left, right, left, right],
+        ), patch.object(
+            main,
+            "_comparison_revision",
+            return_value="comparison-revision",
+        ), patch.object(
+            main,
+            "enforce_strict_branch_freshness",
+        ), patch.object(
+            main,
+            "load_user_llm",
+            return_value=None,
+        ), patch.object(
+            main,
+            "answer_compare",
+            return_value=initial,
+        ), patch.object(
+            main,
+            "answer_compare_follow_up",
+            return_value=deep,
+        ) as deep_follow_up:
+            first = main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="Compare login",
+                    left_branch=11,
+                    right_branch=12,
+                    llm_mode="mimo",
+                ),
+                workspace="repo-workspace",
+                user={
+                    "id": 7,
+                    "role": "user",
+                    "user_type": "dev_team",
+                    "_session_key": "session",
+                },
+            )
+            second = main.compare_repos_endpoint(
+                main.CompareRequest(
+                    question="Compare login",
+                    left_branch=11,
+                    right_branch=12,
+                    llm_mode="mimo",
+                    conversation_id=first["conversation_id"],
+                    follow_up=True,
+                    deep_investigation=True,
+                ),
+                workspace="repo-workspace",
+                user={
+                    "id": 7,
+                    "role": "user",
+                    "user_type": "dev_team",
+                    "_session_key": "session",
+                },
+            )
+
+        deep_follow_up.assert_called_once()
+        self.assertNotIn("session_cache_hit", second)
+        self.assertTrue(second["deep_investigation"])
+        self.assertFalse(second["investigate_deeply_available"])
 
     def test_comparison_prompt_is_used_for_compare_context(self):
         prompt = client.build_prompt({

@@ -1181,12 +1181,12 @@
         <label for="compareBranchA">
           Branch A
           <select id="compareBranchA" aria-label="First branch to compare"
-            onchange="updateCompareBranchStatus()"></select>
+            onchange="onCompareBranchChange()"></select>
         </label>
         <label for="compareBranchB">
           Branch B
           <select id="compareBranchB" aria-label="Second branch to compare"
-            onchange="updateCompareBranchStatus()"></select>
+            onchange="onCompareBranchChange()"></select>
         </label>
       </div>
       <div class="compare-box">
@@ -1528,6 +1528,12 @@
       button.disabled = !canSyncBoth || eitherRunning;
       button.textContent = eitherRunning ? 'Syncing…' : 'Sync & index both';
       bar.hidden = false;
+    }
+
+    function onCompareBranchChange() {
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      updateCompareBranchStatus();
     }
 
     async function loadBranches() {
@@ -2358,26 +2364,116 @@
     }
 
     async function compareBranches() {
-      const left = document.getElementById('compareBranchA');
-      const right = document.getElementById('compareBranchB');
       const input = document.getElementById('compareQuestion');
       const question = input ? input.value.trim() : '';
-      const result = document.getElementById('result');
       if (!question) return;
+      CONVERSATION_ID = null;
+      await submitCompareQuestion(question);
+    }
+
+    function comparisonRetrievalLabel(data) {
+      const toolCalls = data.agent_tool_calls || (data.agent_trace || []).length;
+      if (data.session_cache_hit) return 'answered from session cache';
+      if (data.deep_investigation) {
+        return data.retrieval_mode === 'compare_agentic'
+          ? `comparison deep investigation · ${toolCalls} tool calls`
+          : 'comparison deep investigation · one-shot evidence';
+      }
+      if (data.follow_up_reused) {
+        return 'fast comparison follow-up · compact verified evidence';
+      }
+      if (data.follow_up_fallback) {
+        return data.retrieval_mode === 'compare_agentic'
+          ? `comparison fresh investigation · ${toolCalls} tool calls`
+          : 'comparison fresh investigation · one-shot evidence';
+      }
+      return data.retrieval_mode === 'compare_agentic'
+        ? `agentic retrieval · ${toolCalls} tool calls`
+        : 'one-shot evidence';
+    }
+
+    function renderCompareResult(data, requestQuestion, options = {}) {
+      const result = document.getElementById('result');
+      const prov = data.provider_used || '';
+      const provLabel = prov.startsWith('user:') ? 'your key'
+        : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
+      const totalMs = Number(data.timings_ms?.total);
+      const timingLabel = Number.isFinite(totalMs)
+        ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
+        : '';
+      const usage = data.token_usage || {};
+      const totalTokens = Number(usage.total_tokens);
+      const tokenLabel = data.session_cache_hit
+        ? ' · <span title="No new LLM request was made.">0 new tokens</span>'
+        : usage.available && Number.isFinite(totalTokens)
+          ? ` · ${totalTokens.toLocaleString()} tokens`
+          : ' · tokens unavailable';
+      const questionLabel = options.followUp ? 'Follow-up question' : 'Comparison question';
+      const investigateAction = data.investigate_deeply_available
+        ? `
+          <div class="investigate-actions">
+            <button type="button" class="btn-primary" onclick="investigateDeeply()">Investigate deeply</button>
+          </div>
+        `
+        : '';
+
+      if (data.investigate_deeply_available) {
+        LAST_FOLLOW_UP_QUESTION = data.question || requestQuestion;
+      } else if (!options.followUp) {
+        LAST_FOLLOW_UP_QUESTION = '';
+      }
+      CONVERSATION_ID = data.conversation_id || null;
+
+      result.innerHTML = `
+        ${followUpComposer()}
+        <h2>CodeAtlas Branch Comparison</h2>
+        <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(timingLabel)}${tokenLabel}</p>
+        <div class="follow-up-question-recap">
+          <div class="follow-up-question-recap-label">${questionLabel}</div>
+          <p>${escapeHtml(data.question || requestQuestion)}</p>
+        </div>
+        <div class="answer">${renderAnswer(data.answer)}</div>
+        ${investigateAction}
+        ${compareEvidenceSection(data)}
+      `;
+      bindFollowUpInput();
+    }
+
+    async function submitCompareQuestion(requestQuestion, options = {}) {
+      const left = document.getElementById('compareBranchA');
+      const right = document.getElementById('compareBranchB');
+      const result = document.getElementById('result');
+      if (!requestQuestion) return;
       if (!requireWorkspace()) return;
       if (!left.value || !right.value || left.value === right.value) {
         result.innerHTML = '<div class="error-box"><h2>Select two branches</h2><p>Choose two different indexed branches to compare.</p></div>';
         return;
       }
-      CONVERSATION_ID = null;
-      LAST_FOLLOW_UP_QUESTION = '';
-      result.innerHTML = `
-        <h2>Comparing branches…</h2>
-        <div class="loading-steps">
-          <div class="step"><span class="spinner"></span> Retrieving evidence from both branches…</div>
-          <div class="step"><span class="dot-pulse"></span> Preparing a side-by-side comparison…</div>
-        </div>
-      `;
+      const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
+      const deepInvestigation = Boolean(options.deepInvestigation);
+      result.innerHTML = deepInvestigation
+        ? `
+          <h2>Investigating comparison deeply…</h2>
+          <div class="loading-steps">
+            <div class="step"><span class="spinner"></span> Running fresh investigations on both branches…</div>
+            <div class="step"><span class="dot-pulse"></span> Verifying branch-specific files, symbols, and behavior…</div>
+          </div>
+        `
+        : followUpWithContext
+          ? `
+            <h2>Thinking…</h2>
+            <div class="loading-steps">
+              <div class="step"><span class="spinner"></span> Reusing verified comparison evidence…</div>
+              <div class="step"><span class="dot-pulse"></span> Checking whether fresh branch investigation is needed…</div>
+            </div>
+          `
+          : `
+            <h2>Comparing branches…</h2>
+            <div class="loading-steps">
+              <div class="step"><span class="spinner"></span> Retrieving evidence from both branches…</div>
+              <div class="step"><span class="dot-pulse"></span> Preparing a side-by-side comparison…</div>
+            </div>
+          `;
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
       try {
@@ -2385,10 +2481,13 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            question,
+            question: requestQuestion,
             left_branch: Number(left.value),
             right_branch: Number(right.value),
             llm_mode: LLM_MODE,
+            follow_up: Boolean(options.followUp),
+            conversation_id: options.followUp ? CONVERSATION_ID : null,
+            deep_investigation: deepInvestigation,
           }),
         });
         if (handle401(res)) return;
@@ -2403,32 +2502,7 @@
           return;
         }
 
-        const prov = data.provider_used || '';
-        const provLabel = prov.startsWith('user:') ? 'your key'
-          : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
-        const totalMs = Number(data.timings_ms?.total);
-        const timingLabel = Number.isFinite(totalMs)
-          ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
-          : '';
-        const usage = data.token_usage || {};
-        const totalTokens = Number(usage.total_tokens);
-        const tokenLabel = usage.available && Number.isFinite(totalTokens)
-          ? ` · ${totalTokens.toLocaleString()} tokens`
-          : ' · tokens unavailable';
-        const retrievalLabel = data.retrieval_mode === 'compare_agentic'
-          ? 'agentic retrieval'
-          : 'one-shot evidence';
-
-        result.innerHTML = `
-          <h2>CodeAtlas Branch Comparison</h2>
-          <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}${tokenLabel}</p>
-          <div class="follow-up-question-recap">
-            <div class="follow-up-question-recap-label">Comparison question</div>
-            <p>${escapeHtml(data.question || question)}</p>
-          </div>
-          <div class="answer">${renderAnswer(data.answer)}</div>
-          ${compareEvidenceSection(data)}
-        `;
+        renderCompareResult(data, requestQuestion, options);
       } catch (error) {
         result.innerHTML = `
           <div class="error-box">
@@ -2477,12 +2551,23 @@
       const question = input ? input.value.trim() : '';
       if (!question) return;
       if (!requireWorkspace()) return;
+      if (ASK_MODE === 'compare') {
+        await submitCompareQuestion(question, { followUp: true });
+        return;
+      }
       await submitQuestion(question, { followUp: true });
     }
 
     async function investigateDeeply() {
       if (!LAST_FOLLOW_UP_QUESTION) return;
       if (!requireWorkspace()) return;
+      if (ASK_MODE === 'compare') {
+        await submitCompareQuestion(LAST_FOLLOW_UP_QUESTION, {
+          followUp: true,
+          deepInvestigation: true,
+        });
+        return;
+      }
       await submitQuestion(LAST_FOLLOW_UP_QUESTION, {
         followUp: true,
         deepInvestigation: true,
