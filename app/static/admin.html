@@ -160,6 +160,17 @@
     [data-theme="light"] .msg.ok { background:#ebfff4; color:#087949; }
     .user-edit-error { min-height:18px; color:#ff9a9a; font-size:12px; }
     .hidden { display: none; }
+    .test-status {
+      display:flex; align-items:center; gap:8px; margin-top:10px;
+      color:var(--muted); font-size:12px;
+    }
+    .test-status.hidden { display:none; }
+    .test-spinner {
+      width:14px; height:14px; border-radius:50%;
+      border:2px solid rgba(148,163,184,0.28); border-top-color:var(--accent);
+      animation:spin .75s linear infinite;
+    }
+    @keyframes spin { to { transform:rotate(360deg); } }
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .mono, code { font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -479,6 +490,10 @@
         <div style="flex:3"><label>Question</label><input id="testQ" placeholder="How does X work?"/></div>
         <div style="flex:0 0 auto"><button id="testBtn" disabled>Ask</button></div>
       </div>
+      <div id="testStatus" class="test-status hidden" role="status" aria-live="polite">
+        <span class="test-spinner" aria-hidden="true"></span>
+        <span>Processing query… retrieving evidence and asking the LLM.</span>
+      </div>
       <div id="testOut" class="hidden">
         <p class="muted" style="font-size:12px">Provider: <span id="testProvider"></span></p>
         <pre id="testAnswer"></pre>
@@ -521,6 +536,7 @@
 const $ = (id) => document.getElementById(id);
 let REPOS = [];
 let CURRENT_USER = null;
+let TEST_ASKING = false;
 
 function formatLocalTimestamp(value, fallback = "") {
   if (!value) return fallback;
@@ -652,7 +668,7 @@ async function showConsole(me) {
 }
 
 function updateRepoToolActions() {
-  $("testBtn").disabled = !$("testRepo").value;
+  $("testBtn").disabled = TEST_ASKING || !$("testRepo").value;
   const configSelected = Boolean($("cfgRepo").value);
   $("cfgDefault").disabled = !configSelected;
   $("cfgLoad").disabled = !configSelected;
@@ -1262,7 +1278,11 @@ $("testBtn").onclick = async () => {
   const slug = $("testRepo").value, question = $("testQ").value;
   if (!slug) return flash("Select a repository.");
   if (!question) return;
-  $("testBtn").disabled = true; $("testOut").classList.add("hidden");
+  TEST_ASKING = true;
+  $("testBtn").disabled = true;
+  $("testBtn").textContent = "Asking…";
+  $("testStatus").classList.remove("hidden");
+  $("testOut").classList.add("hidden");
   flash("Asking…", true);
   try {
     const data = await api(`/admin/repos/${slug}/test`, { method: "POST", body: JSON.stringify({ question }) });
@@ -1271,7 +1291,12 @@ $("testBtn").onclick = async () => {
     $("testOut").classList.remove("hidden");
     flash("Done", true);
   } catch (e) { flash(e.message); }
-  finally { updateRepoToolActions(); }
+  finally {
+    TEST_ASKING = false;
+    $("testBtn").textContent = "Ask";
+    $("testStatus").classList.add("hidden");
+    updateRepoToolActions();
+  }
 };
 
 let retrievalGuideReturnFocus = null;
