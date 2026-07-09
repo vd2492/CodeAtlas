@@ -1531,6 +1531,40 @@ def _remember_session_answer(
     )
 
 
+def _request_uses_shared_tier_only(llm_mode: str, user_llm: Optional[dict]) -> bool:
+    """True only when this request is guaranteed to be answered by the shared
+    ("Mimo") tier: either explicitly requested, or auto mode with no personal
+    key on file to try first. Mirrors the tier order in llm.client.generate()."""
+    if llm_mode == "mimo":
+        return True
+    return llm_mode == "auto" and not (user_llm and user_llm.get("api_key"))
+
+
+def _remember_repo_answer(
+    *,
+    workspace: str,
+    user_type: str,
+    repository_revision: str,
+    question: str,
+    response: dict,
+) -> None:
+    """Cache a fresh shared-tier answer for reuse across any user asking the
+    same question against the same indexed revision. Only the shared tier is
+    eligible: a BYOK answer is that user's own paid-for compute, not something
+    to hand to a different user without their key."""
+    if response.get("session_cache_hit"):
+        return
+    if not str(response.get("provider_used") or "").startswith("shared:"):
+        return
+    conversation_store.store_repo_cached_answer(
+        workspace=workspace,
+        user_type=user_type,
+        repository_revision=repository_revision,
+        question=question,
+        response=response,
+    )
+
+
 def _create_conversation_from_response(
     *,
     user: dict,
@@ -2075,6 +2109,41 @@ def ask_llm_endpoint(
             response["answer_user_type"] = user_type
             return response
 
+    # Repo-scoped cache: a fresh (non-follow-up) question answered by the
+    # shared tier can be reused across every user asking the same thing
+    # against the same indexed revision, not just within one user's session.
+    use_repo_cache = (
+        allow_shared
+        and not request.follow_up
+        and not request.deep_investigation
+        and _request_uses_shared_tier_only(llm_mode, user_llm)
+    )
+    if use_repo_cache:
+        repo_cached_response = conversation_store.get_repo_cached_answer(
+            workspace=workspace,
+            user_type=user_type,
+            repository_revision=revision,
+            question=request.question,
+        )
+        if repo_cached_response:
+            response = _session_cached_answer_response(
+                repo_cached_response,
+                request.question,
+                workspace,
+            )
+            state = _create_conversation_from_response(
+                user=user,
+                workspace=workspace,
+                llm_mode=llm_mode,
+                user_type=user_type,
+                repository_revision=revision,
+                question=request.question,
+                response=response,
+            )
+            response["conversation_id"] = state.conversation_id
+            response["answer_user_type"] = user_type
+            return response
+
     try:
         with llm_admission.slot(), collect_token_usage() as token_usage:
             state = None
@@ -2153,6 +2222,14 @@ def ask_llm_endpoint(
                 question=request.question,
                 response=response,
             )
+            if use_repo_cache:
+                _remember_repo_answer(
+                    workspace=workspace,
+                    user_type=user_type,
+                    repository_revision=revision,
+                    question=request.question,
+                    response=response,
+                )
             return response
     except LLMCapacityError as error:
         raise HTTPException(

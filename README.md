@@ -149,10 +149,11 @@ shared endpoint. The dormant Ollama code is disabled by default with
 
 ### Agentic retrieval
 
-Tool-capable models receive six read-only repository tools:
+Tool-capable models receive seven read-only repository tools:
 
 - `search_code`, `read_file`, and `list_directory`
 - `find_definition`, `find_references`, and `get_callers`
+- `ask_user` — pause and ask a short clarifying question instead of guessing
 
 The model can search, inspect the result, follow a relation, and read additional
 source over several rounds. Tools are workspace-scoped, path traversal and
@@ -160,6 +161,17 @@ likely secret files are blocked, and all reads have line/byte limits. If an
 endpoint does not support tool calling—or the selected model answers without
 using a tool—CodeAtlas automatically uses the original one-shot context path for
 that provider.
+
+When a search or definition result turns up multiple similarly-ranked matches
+in unrelated parts of the repository — two features sharing a generic step
+name like "validation," for example — the model can call `ask_user` instead of
+silently picking one. That question becomes the answer for the turn; reply in
+the **follow-up question** field (not a new question) so the investigation
+resumes with the right context instead of starting over. Product-team answers
+keep the clarifying question in plain language, the same as any other answer.
+
+A query in progress can be cancelled from either the main ask field or the
+follow-up field.
 
 The API response reports `retrieval_mode` (`agentic` or `one_shot`) and a compact
 `agent_trace`; the Ask UI displays this investigation under Grounded Evidence.
@@ -182,6 +194,17 @@ LLM tokens. Those repeated-question answers are clearly labeled and also offer
 **Investigate deeply** to bypass the cache and refresh the answer.
 Unrelated questions, expired state, repository reindexing, and mode changes also
 take the full retrieval path.
+
+A second, broader cache sits behind that per-session one. A fresh (non-follow-up)
+question answered by the **shared LLM tier** is cached per repository, indexed
+revision, and audience type — not per user or session — so if ten people on a
+team ask the same question, only the first pays for a full investigation; the
+rest are served instantly with zero new tokens. Deep investigations and
+BYOK-answered questions are never stored or served this way, since a personal
+key's answer is that user's own paid-for compute, not something to hand to a
+teammate without their key. This repo-scoped cache defaults to a 6-hour
+lifetime and up to 1,000 entries — see `CODEATLAS_REPO_ANSWER_CACHE_*` in
+`.env.example`.
 
 Conversation state is an in-process TTL cache and contains no API credentials.
 It is an optional acceleration layer: losing it on restart only makes the next

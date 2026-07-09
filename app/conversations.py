@@ -33,6 +33,16 @@ CONVERSATION_MAX_ANSWER_CHARS = max(
 CONVERSATION_MAX_CACHED_ANSWERS = max(
     10, int(os.environ.get("CODEATLAS_CONVERSATION_MAX_CACHED_ANSWERS", "500"))
 )
+# Repo-scoped cache: shared across every user asking the same fresh question
+# against the same indexed revision (unlike the per-session cache above, which
+# is scoped to one user's own session). Longer-lived by default since the
+# point is to serve a team over a workday, not just one active session.
+REPO_ANSWER_CACHE_TTL_SECONDS = max(
+    60, int(os.environ.get("CODEATLAS_REPO_ANSWER_CACHE_TTL_SECONDS", "21600"))
+)
+REPO_ANSWER_CACHE_MAX_ENTRIES = max(
+    10, int(os.environ.get("CODEATLAS_REPO_ANSWER_CACHE_MAX_ENTRIES", "1000"))
+)
 
 
 @dataclass
@@ -57,12 +67,17 @@ class ConversationStore:
         ttl_seconds: int = CONVERSATION_TTL_SECONDS,
         max_states: int = CONVERSATION_MAX_STATES,
         max_cached_answers: int = CONVERSATION_MAX_CACHED_ANSWERS,
+        repo_cache_ttl_seconds: int = REPO_ANSWER_CACHE_TTL_SECONDS,
+        repo_cache_max_entries: int = REPO_ANSWER_CACHE_MAX_ENTRIES,
     ):
         self.ttl_seconds = max(1, int(ttl_seconds))
         self.max_states = max(1, int(max_states))
         self.max_cached_answers = max(1, int(max_cached_answers))
+        self.repo_cache_ttl_seconds = max(1, int(repo_cache_ttl_seconds))
+        self.repo_cache_max_entries = max(1, int(repo_cache_max_entries))
         self._states: dict[str, ConversationState] = {}
         self._answer_cache: dict[tuple[str, ...], dict] = {}
+        self._repo_answer_cache: dict[tuple[str, ...], dict] = {}
         self._lock = threading.Lock()
 
     @staticmethod
@@ -102,6 +117,29 @@ class ConversationStore:
             normalized_question,
         )
 
+    @classmethod
+    def _repo_answer_cache_key(
+        cls,
+        *,
+        workspace: str,
+        user_type: str,
+        repository_revision: str,
+        question: str,
+    ) -> Optional[tuple[str, ...]]:
+        """Shared across every user/session — deliberately excludes session_key,
+        user_id, and llm_mode. Callers only use this for requests guaranteed to
+        be served by the shared LLM tier, so llm_mode never needs to disambiguate
+        entries here the way it does for the per-session cache above."""
+        normalized_question = cls.normalize_question(question)
+        if not normalized_question:
+            return None
+        return (
+            str(workspace),
+            str(user_type),
+            str(repository_revision),
+            normalized_question,
+        )
+
     def _prune_locked(self, now: float) -> None:
         expired = [
             conversation_id
@@ -136,6 +174,23 @@ class ConversationStore:
             )[:answer_overflow]
             for cache_key, _ in oldest_answers:
                 self._answer_cache.pop(cache_key, None)
+
+        expired_repo_answers = [
+            cache_key
+            for cache_key, item in self._repo_answer_cache.items()
+            if now - item.get("updated_at", 0.0) > self.repo_cache_ttl_seconds
+        ]
+        for cache_key in expired_repo_answers:
+            self._repo_answer_cache.pop(cache_key, None)
+
+        repo_answer_overflow = len(self._repo_answer_cache) - self.repo_cache_max_entries
+        if repo_answer_overflow > 0:
+            oldest_repo_answers = sorted(
+                self._repo_answer_cache.items(),
+                key=lambda item: item[1].get("updated_at", 0.0),
+            )[:repo_answer_overflow]
+            for cache_key, _ in oldest_repo_answers:
+                self._repo_answer_cache.pop(cache_key, None)
 
     def create(
         self,
@@ -269,6 +324,60 @@ class ConversationStore:
             }
             self._prune_locked(now)
 
+    def get_repo_cached_answer(
+        self,
+        *,
+        workspace: str,
+        user_type: str,
+        repository_revision: str,
+        question: str,
+    ) -> Optional[dict]:
+        cache_key = self._repo_answer_cache_key(
+            workspace=workspace,
+            user_type=user_type,
+            repository_revision=repository_revision,
+            question=question,
+        )
+        if cache_key is None:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            self._prune_locked(now)
+            item = self._repo_answer_cache.get(cache_key)
+            if not item:
+                return None
+            item["updated_at"] = now
+            return copy.deepcopy(item["response"])
+
+    def store_repo_cached_answer(
+        self,
+        *,
+        workspace: str,
+        user_type: str,
+        repository_revision: str,
+        question: str,
+        response: dict,
+    ) -> None:
+        cache_key = self._repo_answer_cache_key(
+            workspace=workspace,
+            user_type=user_type,
+            repository_revision=repository_revision,
+            question=question,
+        )
+        if cache_key is None or not response.get("answer"):
+            return
+        cached_response = copy.deepcopy(response)
+        cached_response.pop("conversation_id", None)
+        cached_response.pop("token_usage", None)
+        now = time.monotonic()
+        with self._lock:
+            self._prune_locked(now)
+            self._repo_answer_cache[cache_key] = {
+                "response": cached_response,
+                "updated_at": now,
+            }
+            self._prune_locked(now)
+
     def append(
         self,
         conversation_id: str,
@@ -294,6 +403,7 @@ class ConversationStore:
         with self._lock:
             self._states.clear()
             self._answer_cache.clear()
+            self._repo_answer_cache.clear()
 
 
 conversation_store = ConversationStore()
