@@ -2162,6 +2162,24 @@
       return message;
     }
 
+    async function readResponseData(res) {
+      const text = await res.text();
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        const status = res.status ? `HTTP ${res.status}` : 'non-JSON';
+        const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 220);
+        return {
+          detail:
+            `The hosted service returned a ${status} non-JSON response. `
+            + 'This usually means the upstream server, proxy, or load balancer timed out before CodeAtlas could return JSON.'
+            + (snippet ? ` Server response: ${snippet}` : ''),
+          non_json_response: true,
+        };
+      }
+    }
+
     async function saveKey() {
       const errEl = document.getElementById('keyErr');
       errEl.textContent = '';
@@ -2661,7 +2679,7 @@
           }),
         });
         if (handle401(res)) return;
-        const data = await res.json();
+        const data = await readResponseData(res);
         if (!res.ok) {
           result.innerHTML = `
             <div class="error-box">
@@ -2686,7 +2704,7 @@
         result.innerHTML = `
           <div class="error-box">
             <h2>Request Failed</h2>
-            <pre>${escapeHtml(error)}</pre>
+            <pre>${escapeHtml(String(error))}</pre>
           </div>
         `;
       } finally {
@@ -2842,7 +2860,7 @@
         });
 
         if (handle401(res)) return;
-        const data = await res.json();
+        const data = await readResponseData(res);
 
         if (!res.ok) {
           const errorMessage = llmErrorMessage(data);
@@ -2999,7 +3017,7 @@
         result.innerHTML = `
           <div class="error-box">
             <h2>Request Failed</h2>
-            <pre>${error}</pre>
+            <pre>${escapeHtml(String(error))}</pre>
           </div>
         `;
       } finally {

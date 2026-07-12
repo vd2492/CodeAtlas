@@ -43,6 +43,15 @@ REPO_ANSWER_CACHE_TTL_SECONDS = max(
 REPO_ANSWER_CACHE_MAX_ENTRIES = max(
     10, int(os.environ.get("CODEATLAS_REPO_ANSWER_CACHE_MAX_ENTRIES", "1000"))
 )
+MALFORMED_TOOL_ANSWER_RE = re.compile(
+    r"<\s*/?\s*tool_call\b|<\s*function\s*=|<\s*parameter\s*=",
+    re.IGNORECASE,
+)
+
+
+def cacheable_answer(answer: str) -> bool:
+    answer = str(answer or "").strip()
+    return bool(answer) and not MALFORMED_TOOL_ANSWER_RE.search(answer)
 
 
 @dataclass
@@ -286,6 +295,9 @@ class ConversationStore:
             item = self._answer_cache.get(cache_key)
             if not item:
                 return None
+            if not cacheable_answer((item.get("response") or {}).get("answer")):
+                self._answer_cache.pop(cache_key, None)
+                return None
             item["updated_at"] = now
             return copy.deepcopy(item["response"])
 
@@ -310,7 +322,7 @@ class ConversationStore:
             repository_revision=repository_revision,
             question=question,
         )
-        if cache_key is None or not response.get("answer"):
+        if cache_key is None or not cacheable_answer(response.get("answer")):
             return
         cached_response = copy.deepcopy(response)
         cached_response.pop("conversation_id", None)
@@ -346,6 +358,9 @@ class ConversationStore:
             item = self._repo_answer_cache.get(cache_key)
             if not item:
                 return None
+            if not cacheable_answer((item.get("response") or {}).get("answer")):
+                self._repo_answer_cache.pop(cache_key, None)
+                return None
             item["updated_at"] = now
             return copy.deepcopy(item["response"])
 
@@ -364,7 +379,7 @@ class ConversationStore:
             repository_revision=repository_revision,
             question=question,
         )
-        if cache_key is None or not response.get("answer"):
+        if cache_key is None or not cacheable_answer(response.get("answer")):
             return
         cached_response = copy.deepcopy(response)
         cached_response.pop("conversation_id", None)

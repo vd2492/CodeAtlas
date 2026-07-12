@@ -217,6 +217,10 @@ LINE_REFERENCE_RE = re.compile(
     r"\b(?:line|lines)\s+\d+(?:\s*[-–]\s*\d+)?\b",
     re.IGNORECASE,
 )
+MALFORMED_TOOL_ANSWER_RE = re.compile(
+    r"<\s*/?\s*tool_call\b|<\s*function\s*=|<\s*parameter\s*=",
+    re.IGNORECASE,
+)
 
 
 def _product_answer_context(context: dict) -> bool:
@@ -522,6 +526,10 @@ def _require_answer(answer: str, provider: str) -> str:
     answer = (answer or "").strip()
     if not answer:
         raise RuntimeError(f"{provider} returned an empty answer.")
+    if MALFORMED_TOOL_ANSWER_RE.search(answer):
+        raise RuntimeError(
+            f"{provider} returned a tool call instead of a final answer. Please retry."
+        )
     return answer
 
 

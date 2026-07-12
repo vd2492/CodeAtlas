@@ -1,8 +1,10 @@
 import unittest
+import time
 from unittest.mock import patch
 
 from app import main
 from app.conversations import ConversationStore
+from app.llm import client
 
 
 class ConversationStoreTests(unittest.TestCase):
@@ -86,6 +88,64 @@ class ConversationStoreTests(unittest.TestCase):
             repository_revision="branch:def456",
             question="How does login work?",
         ))
+
+    def test_malformed_tool_call_text_is_not_cached(self):
+        bad_response = {
+            "question": "What are the features?",
+            "answer": (
+                "<tool_call>\n"
+                "<function=list_directory>\n"
+                "<parameter=path>app/src/main</parameter>\n"
+                "</function>\n"
+                "</tool_call>"
+            ),
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "agentic",
+            "context": {},
+        }
+        cache_args = {
+            "session_key": "session-a",
+            "user_id": 7,
+            "workspace": "repo-main",
+            "llm_mode": "mimo",
+            "user_type": "dev_team",
+            "repository_revision": "branch:abc123",
+            "question": "What are the features?",
+        }
+
+        self.store.store_cached_answer(**cache_args, response=bad_response)
+        self.assertIsNone(self.store.get_cached_answer(**cache_args))
+
+        cache_key = self.store._answer_cache_key(**cache_args)
+        self.store._answer_cache[cache_key] = {
+            "response": bad_response,
+            "updated_at": time.monotonic(),
+        }
+        self.assertIsNone(self.store.get_cached_answer(**cache_args))
+        self.assertNotIn(cache_key, self.store._answer_cache)
+
+        self.store.store_repo_cached_answer(
+            workspace="repo-main",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="What are the features?",
+            response=bad_response,
+        )
+        self.assertIsNone(
+            self.store.get_repo_cached_answer(
+                workspace="repo-main",
+                user_type="dev_team",
+                repository_revision="branch:abc123",
+                question="What are the features?",
+            )
+        )
+
+    def test_llm_rejects_tool_call_text_as_final_answer(self):
+        with self.assertRaisesRegex(RuntimeError, "tool call instead of a final answer"):
+            client._require_answer(
+                "<tool_call><function=list_directory></function></tool_call>",
+                "shared:mimo-v2.5",
+            )
 
     def test_repo_cached_answer_is_shared_across_sessions_but_scoped_to_revision_and_audience(self):
         response = {
