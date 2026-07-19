@@ -17,10 +17,15 @@ from .config import (
     SQLITE_BUSY_TIMEOUT_MS,
 )
 
+GOOGLE_LOGIN_ONLY_PASSWORD_HASH = "google_login_only$disabled"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT UNIQUE NOT NULL,
+    email         TEXT,
+    google_sub    TEXT,
+    display_name  TEXT,
     password_hash TEXT NOT NULL,
     role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
     user_type     TEXT NOT NULL DEFAULT 'dev_team'
@@ -133,6 +138,20 @@ def init_db() -> None:
                 "DEFAULT 'dev_team' "
                 "CHECK (user_type IN ('product_team', 'dev_team'))"
             )
+        if "email" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        if "google_sub" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        if "display_name" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email "
+            "ON users(email) WHERE email IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub "
+            "ON users(google_sub) WHERE google_sub IS NOT NULL"
+        )
         session_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
         }
@@ -172,12 +191,24 @@ def create_user(
     password_hash: str,
     role: str = "user",
     user_type: str = "dev_team",
+    email: str = None,
+    google_sub: str = None,
+    display_name: str = None,
 ) -> dict:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO users (username, password_hash, role, user_type) "
-            "VALUES (?, ?, ?, ?)",
-            (username, password_hash, role, user_type),
+            "INSERT INTO users "
+            "(username, email, google_sub, display_name, password_hash, role, user_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                username,
+                email,
+                google_sub,
+                display_name,
+                password_hash,
+                role,
+                user_type,
+            ),
         )
         row = conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
         return dict(row)
@@ -186,6 +217,24 @@ def create_user(
 def get_user_by_username(username: str) -> Optional[dict]:
     with connect() as conn:
         row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE lower(email) = lower(?)",
+            (email,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_google_sub(google_sub: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE google_sub = ?",
+            (google_sub,),
+        ).fetchone()
         return dict(row) if row else None
 
 
@@ -198,9 +247,22 @@ def get_user_by_id(user_id: int) -> Optional[dict]:
 def list_users() -> List[dict]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, username, role, user_type, created_at FROM users ORDER BY id"
+            "SELECT id, username, email, display_name, role, user_type, created_at, "
+            "CASE WHEN password_hash LIKE 'pbkdf2_sha256$%' THEN 1 ELSE 0 END "
+            "AS credential_login, "
+            "CASE WHEN google_sub IS NOT NULL AND google_sub != '' THEN 1 ELSE 0 END "
+            "AS google_linked "
+            "FROM users ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_user_by_login_identifier(identifier: str) -> Optional[dict]:
+    """Resolve an admin-entered username or Google email to a user row."""
+    user = get_user_by_username(identifier)
+    if user:
+        return user
+    return get_user_by_email(identifier)
 
 
 def update_user_credentials(
@@ -225,6 +287,68 @@ def update_user_credentials(
             )
         row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return dict(row) if row else None
+
+
+def update_user_google_identity(
+    user_id: int,
+    email: str = None,
+    google_sub: str = None,
+    display_name: str = None,
+) -> Optional[dict]:
+    """Attach or refresh Google identity fields without changing grants/role."""
+    sets, values = [], []
+    if email is not None:
+        sets.append("email = ?"); values.append(email)
+    if google_sub is not None:
+        sets.append("google_sub = ?"); values.append(google_sub)
+    if display_name is not None:
+        sets.append("display_name = ?"); values.append(display_name)
+    if not sets:
+        return get_user_by_id(user_id)
+    values.append(user_id)
+    with connect() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", values)
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def update_user_role_and_type(
+    user_id: int,
+    role: str = None,
+    user_type: str = None,
+) -> Optional[dict]:
+    """Update role and/or answer user type without changing credentials."""
+    sets, values = [], []
+    if role is not None:
+        sets.append("role = ?"); values.append(role)
+    if user_type is not None:
+        sets.append("user_type = ?"); values.append(user_type)
+    if not sets:
+        return get_user_by_id(user_id)
+    values.append(user_id)
+    with connect() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", values)
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def create_google_user(
+    email: str,
+    role: str = "user",
+    user_type: str = "dev_team",
+    google_sub: str = None,
+    display_name: str = None,
+) -> dict:
+    """Create a Google-login account that cannot authenticate by password."""
+    return create_user(
+        email,
+        GOOGLE_LOGIN_ONLY_PASSWORD_HASH,
+        role=role,
+        user_type=user_type,
+        email=email,
+        google_sub=google_sub,
+        display_name=display_name,
+    )
 
 
 def admin_count() -> int:
@@ -724,7 +848,12 @@ def list_repo_members(repo_id: int) -> List[dict]:
     """Users (non-admins are the typical case) granted access to a repo."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT u.id, u.username, u.role, a.granted_at "
+            "SELECT u.id, u.username, u.email, u.role, "
+            "CASE WHEN password_hash LIKE 'pbkdf2_sha256$%' THEN 1 ELSE 0 END "
+            "AS credential_login, "
+            "CASE WHEN google_sub IS NOT NULL AND google_sub != '' THEN 1 ELSE 0 END "
+            "AS google_linked, "
+            "a.granted_at "
             "FROM repo_access a JOIN users u ON u.id = a.user_id "
             "WHERE a.repo_id = ? ORDER BY u.username",
             (repo_id,),

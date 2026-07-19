@@ -7,6 +7,7 @@ access.
 
 import json
 import os
+import re
 import time
 from collections import defaultdict
 from typing import List, Optional
@@ -28,13 +29,33 @@ from .sessions import (
     set_session_cookie,
 )
 
+try:
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
+except ImportError:  # pragma: no cover - depends on deployment extras.
+    google_requests = None
+    google_id_token = None
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+AUTH_MODE = os.environ.get("CODEATLAS_AUTH_MODE", "password").strip().lower()
+if AUTH_MODE not in {"password", "mixed", "google"}:
+    AUTH_MODE = "password"
+GOOGLE_CLIENT_ID = os.environ.get("CODEATLAS_GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_ALLOWED_DOMAINS = {
+    domain.strip().lower().lstrip("@")
+    for domain in os.environ.get("CODEATLAS_GOOGLE_ALLOWED_DOMAINS", "").split(",")
+    if domain.strip()
+}
+GOOGLE_AUTO_CREATE = os.environ.get(
+    "CODEATLAS_GOOGLE_AUTO_CREATE", "false"
+).lower() in {"1", "true", "yes"}
 LOGIN_RATE_LIMIT = int(os.environ.get("CODEATLAS_LOGIN_RATE_LIMIT", "10"))
 LOGIN_RATE_WINDOW_SECONDS = int(
     os.environ.get("CODEATLAS_LOGIN_RATE_WINDOW_SECONDS", "300")
 )
 _login_failures: "dict[str, list[float]]" = defaultdict(list)
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def enforce_login_rate_limit(username: str) -> None:
@@ -66,6 +87,73 @@ def clear_login_failures(username: str) -> None:
     _login_failures.pop(key, None)
 
 
+def password_login_enabled() -> bool:
+    return AUTH_MODE in {"password", "mixed"}
+
+
+def google_login_enabled() -> bool:
+    return AUTH_MODE in {"mixed", "google"}
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def validate_email(email: str) -> str:
+    normalized = normalize_email(email)
+    if not normalized or not EMAIL_RE.match(normalized):
+        raise HTTPException(status_code=400, detail="A valid email address is required.")
+    return normalized
+
+
+def enforce_allowed_google_domain(email: str, hosted_domain: str = None) -> None:
+    if not GOOGLE_ALLOWED_DOMAINS:
+        return
+    email_domain = email.rsplit("@", 1)[-1].lower()
+    hd_domain = (hosted_domain or "").strip().lower()
+    if email_domain in GOOGLE_ALLOWED_DOMAINS or hd_domain in GOOGLE_ALLOWED_DOMAINS:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="This Google account is not allowed for this CodeAtlas instance.",
+    )
+
+
+def user_auth_status(user: dict) -> str:
+    credential_login = bool(user.get("credential_login")) or str(
+        user.get("password_hash") or ""
+    ).startswith("pbkdf2_sha256$")
+    google_linked = bool(user.get("google_linked")) or bool(user.get("google_sub"))
+    google_pending = bool(user.get("email")) and not google_linked
+    if credential_login and google_linked:
+        return "password_google"
+    if credential_login and google_pending:
+        return "password_google_pending"
+    if google_linked:
+        return "google_linked"
+    if google_pending:
+        return "google_pending"
+    return "password_only"
+
+
+def verify_google_credential(credential: str) -> dict:
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google login is not configured.")
+    if google_id_token is None or google_requests is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Google login dependency is not installed on the server.",
+        )
+    try:
+        return google_id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Google credential.") from exc
+
+
 def load_user_llm(user_id: int) -> Optional[dict]:
     """Decrypt a user's stored BYOK creds into {provider, base_url, api_key,
     model}, or None if unset/undecryptable. Used as LLM tier 1 for that user."""
@@ -82,8 +170,11 @@ def _public_user(user: dict) -> dict:
     return {
         "id": user["id"],
         "username": user["username"],
+        "email": user.get("email"),
+        "display_name": user.get("display_name"),
         "role": user["role"],
         "user_type": user.get("user_type") or "dev_team",
+        "auth_status": user_auth_status(user),
     }
 
 
@@ -101,12 +192,24 @@ class Credentials(BaseModel):
     password: str
 
 
+class GoogleCredentialRequest(BaseModel):
+    credential: str
+
+
 class CreateUserRequest(BaseModel):
     username: str
     password: str
     role: str = "user"
     user_type: str = "dev_team"
     grant_slugs: Optional[List[str]] = None
+
+
+class GrantGoogleAccessRequest(BaseModel):
+    email: str
+    confirm_email: str
+    grant_slugs: List[str]
+    role: str = "user"
+    user_type: str = "dev_team"
 
 
 class UpdateUserRequest(BaseModel):
@@ -156,6 +259,17 @@ def status():
     return {"bootstrapped": db.user_count() > 0}
 
 
+@router.get("/config")
+def auth_config():
+    """Public auth settings needed by the static login screens."""
+    return {
+        "auth_mode": AUTH_MODE,
+        "password_login_enabled": password_login_enabled(),
+        "google_login_enabled": google_login_enabled() and bool(GOOGLE_CLIENT_ID),
+        "google_client_id": GOOGLE_CLIENT_ID,
+    }
+
+
 @router.post("/bootstrap")
 def bootstrap(creds: Credentials, response: Response):
     """Create the first admin. Only allowed while the user store is empty."""
@@ -172,6 +286,8 @@ def bootstrap(creds: Credentials, response: Response):
 
 @router.post("/login")
 def login(creds: Credentials, response: Response):
+    if not password_login_enabled():
+        raise HTTPException(status_code=403, detail="Credential login is disabled.")
     enforce_login_rate_limit(creds.username)
     user = db.get_user_by_username(creds.username)
     if not user or not verify_password(creds.password, user["password_hash"]):
@@ -182,6 +298,64 @@ def login(creds: Credentials, response: Response):
     token = db.create_session(user["id"])
     set_session_cookie(response, token)
     db.record_audit(user["username"], "login")
+    return {"user": _public_user(user)}
+
+
+@router.post("/google")
+def google_login(req: GoogleCredentialRequest, response: Response):
+    if not google_login_enabled():
+        raise HTTPException(status_code=403, detail="Google login is disabled.")
+    id_info = verify_google_credential(req.credential)
+    email = validate_email(id_info.get("email") or "")
+    if str(id_info.get("email_verified")).lower() not in {"true", "1"}:
+        raise HTTPException(status_code=403, detail="Google email is not verified.")
+    google_sub = (id_info.get("sub") or "").strip()
+    if not google_sub:
+        raise HTTPException(status_code=401, detail="Invalid Google credential.")
+    enforce_allowed_google_domain(email, id_info.get("hd"))
+
+    user = db.get_user_by_google_sub(google_sub)
+    if user:
+        existing_by_email = db.get_user_by_email(email)
+        if existing_by_email and existing_by_email["id"] != user["id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="This Google email is already assigned to another user.",
+            )
+        user = db.update_user_google_identity(
+            user["id"],
+            email=email,
+            display_name=id_info.get("name") or user.get("display_name"),
+        )
+    else:
+        user = db.get_user_by_email(email) or db.get_user_by_username(email)
+        if not user and GOOGLE_AUTO_CREATE:
+            user = db.create_google_user(
+                email,
+                google_sub=google_sub,
+                display_name=id_info.get("name"),
+            )
+        if not user:
+            db.record_audit(email, "google_login_unprovisioned")
+            raise HTTPException(
+                status_code=403,
+                detail="This Google account has not been granted CodeAtlas access.",
+            )
+        if user.get("google_sub") and user["google_sub"] != google_sub:
+            raise HTTPException(
+                status_code=409,
+                detail="This user is already linked to a different Google account.",
+            )
+        user = db.update_user_google_identity(
+            user["id"],
+            email=email,
+            google_sub=google_sub,
+            display_name=id_info.get("name") or user.get("display_name"),
+        )
+
+    token = db.create_session(user["id"])
+    set_session_cookie(response, token)
+    db.record_audit(user["username"], "google_login", email)
     return {"user": _public_user(user)}
 
 
@@ -205,7 +379,10 @@ def me(user: Optional[dict] = Depends(get_current_user)):
 
 @router.get("/admin/users")
 def list_users(admin: dict = Depends(require_admin)):
-    return {"users": db.list_users()}
+    users = []
+    for user in db.list_users():
+        users.append({**user, "auth_status": user_auth_status(user)})
+    return {"users": users}
 
 
 @router.get("/admin/audit")
@@ -244,6 +421,89 @@ def create_user(req: CreateUserRequest, admin: dict = Depends(require_admin)):
             db.grant_access(user["id"], repo["id"])
             db.record_audit(admin["username"], "grant", slug, req.username)
             granted.append(slug)
+    return {"user": _public_user(user), "granted": granted}
+
+
+@router.post("/admin/google-access")
+def grant_google_access(
+    req: GrantGoogleAccessRequest,
+    admin: dict = Depends(require_admin),
+):
+    email = validate_email(req.email)
+    confirm_email = validate_email(req.confirm_email)
+    if email != confirm_email:
+        raise HTTPException(status_code=400, detail="Email addresses do not match.")
+    enforce_allowed_google_domain(email)
+    if req.role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="role must be 'admin' or 'user'.")
+    if req.user_type not in ("product_team", "dev_team"):
+        raise HTTPException(
+            status_code=400,
+            detail="user_type must be 'product_team' or 'dev_team'.",
+        )
+    slugs = [slug.strip() for slug in req.grant_slugs if slug and slug.strip()]
+    if not slugs:
+        raise HTTPException(status_code=400, detail="Select at least one repository.")
+
+    repos = []
+    missing = []
+    unavailable = []
+    for slug in slugs:
+        repo = db.get_repo_by_slug(slug)
+        if not repo:
+            missing.append(slug)
+        elif repo["status"] == "new":
+            unavailable.append(slug)
+        else:
+            repos.append(repo)
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No repo with slug '{missing[0]}'.",
+        )
+    if unavailable:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Repository '{unavailable[0]}' has not been cloned yet.",
+        )
+
+    user = db.get_user_by_email(email) or db.get_user_by_username(email)
+    if user:
+        if not user.get("email"):
+            user = db.update_user_google_identity(user["id"], email=email)
+        role_change = req.role != user["role"]
+        user_type_change = req.user_type != (user.get("user_type") or "dev_team")
+        if role_change:
+            if user["id"] == admin["id"] and req.role != "admin":
+                raise HTTPException(
+                    status_code=400,
+                    detail="You cannot change your own admin role.",
+                )
+            if user["role"] == "admin" and req.role != "admin" and db.admin_count() <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot remove the last admin.",
+                )
+        if role_change or user_type_change:
+            user = db.update_user_role_and_type(
+                user["id"],
+                role=req.role if role_change else None,
+                user_type=req.user_type,
+            )
+    else:
+        user = db.create_google_user(email, role=req.role, user_type=req.user_type)
+
+    granted = []
+    for repo in repos:
+        db.grant_access(user["id"], repo["id"])
+        db.record_audit(admin["username"], "grant", repo["slug"], email)
+        granted.append(repo["slug"])
+    db.record_audit(
+        admin["username"],
+        "provision_google_user",
+        email,
+        f"role={req.role}; user_type={req.user_type}; repos={', '.join(granted)}",
+    )
     return {"user": _public_user(user), "granted": granted}
 
 

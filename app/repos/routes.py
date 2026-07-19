@@ -298,7 +298,7 @@ def publish_repo(slug: str, admin: dict = Depends(require_admin)):
 def grant_access(slug: str, req: GrantRequest, admin: dict = Depends(require_admin)):
     """Grant a user access to this repo."""
     repo = _require_repo(slug)
-    user = db.get_user_by_username(req.username)
+    user = db.get_user_by_login_identifier(req.username)
     if not user:
         raise HTTPException(status_code=404, detail=f"No user '{req.username}'.")
     db.grant_access(user["id"], repo["id"])
@@ -311,7 +311,7 @@ def revoke_access(slug: str, req: GrantRequest, admin: dict = Depends(require_ad
     """Revoke a user's access to this repo. Takes effect on their next page load
     (the Ask UI re-reads authorized repos from /auth/me)."""
     repo = _require_repo(slug)
-    user = db.get_user_by_username(req.username)
+    user = db.get_user_by_login_identifier(req.username)
     if not user:
         raise HTTPException(status_code=404, detail=f"No user '{req.username}'.")
     db.revoke_access(user["id"], repo["id"])

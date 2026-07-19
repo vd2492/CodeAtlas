@@ -74,6 +74,18 @@
     .password-toggle:focus-visible {
       outline:2px solid var(--accent); outline-offset:1px;
     }
+    .google-login-wrap { display:grid; gap:10px; margin-top:12px; }
+    .google-login-button { min-height:40px; display:flex; justify-content:center; }
+    .auth-divider {
+      display:flex; align-items:center; gap:10px; margin:12px 0 4px;
+      color:var(--muted); font-size:12px;
+    }
+    .auth-divider::before,
+    .auth-divider::after {
+      content:""; height:1px; flex:1; background:var(--line);
+    }
+    .credential-auth.hidden,
+    .google-login-wrap.hidden { display:none; }
     textarea { min-height: 200px; resize:none; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
     button { background: var(--accent); color: #04140c; border: 0; border-radius: 8px;
       padding: 8px 14px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; }
@@ -90,6 +102,43 @@
     button:disabled { opacity: .5; cursor: default; }
     .row { display:flex; gap: 10px; flex-wrap: wrap; align-items: end; }
     .row > div { flex: 1; min-width: 140px; }
+    .user-create-tabs {
+      display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px;
+    }
+    .user-create-tabs button {
+      min-height:38px; background:rgba(148,163,184,0.10); color:var(--fg);
+      border:1px solid var(--line);
+    }
+    .user-create-tabs button.active {
+      background:var(--accent); color:#04140c; border-color:transparent;
+    }
+    .user-create-mode.hidden { display:none; }
+    .repo-multi {
+      position:relative; margin-top:4px;
+    }
+    .repo-multi summary {
+      min-height:39px; padding:9px 11px; border:1px solid var(--line);
+      border-radius:8px; background:var(--input-bg); color:var(--fg);
+      cursor:pointer; list-style:none; font-size:14px;
+    }
+    .repo-multi summary::-webkit-details-marker { display:none; }
+    .repo-multi[open] summary {
+      border-color:var(--accent);
+      border-bottom-left-radius:0; border-bottom-right-radius:0;
+    }
+    .repo-checklist {
+      max-height:190px; overflow:auto; border:1px solid var(--line);
+      border-top:0; border-radius:0 0 8px 8px; background:var(--panel);
+      padding:6px;
+    }
+    .repo-check {
+      display:flex; align-items:center; gap:8px; margin:0; padding:7px 5px;
+      color:var(--fg); border-radius:6px; font-size:13px;
+    }
+    .repo-check:hover { background:rgba(148,163,184,0.10); }
+    .repo-check input { width:auto; }
+    .repo-check span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .mode-note { margin:8px 0 0; font-size:12px; color:var(--muted); }
     .test-handoff-copy {
       min-height:40px; display:flex; align-items:center;
       font-size:12px; margin:0;
@@ -208,6 +257,7 @@
       if(s === 'light') document.documentElement.setAttribute('data-theme','light');
     } catch(e){} })();
   </script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="wrap">
@@ -374,17 +424,23 @@
   <form id="authPanel" class="panel hidden" style="max-width:420px;margin:40px auto;">
     <h2 id="authTitle">Sign in</h2>
     <p id="authHint" class="muted"></p>
-    <label for="authUser">Username</label>
-    <input id="authUser" autocomplete="username" />
-    <label for="authPass">Password</label>
-    <div class="password-field">
-      <input id="authPass" type="password" autocomplete="current-password" />
-      <button id="authPasswordToggle" class="password-toggle" type="button"
-        aria-controls="authPass" aria-pressed="false"
-        aria-label="Show password" onclick="toggleAuthPasswordVisibility()">Show</button>
+    <div id="adminGoogleLogin" class="google-login-wrap hidden">
+      <div id="adminGoogleButton" class="google-login-button"></div>
+      <div id="adminAuthDivider" class="auth-divider">or</div>
     </div>
-    <div style="margin-top:14px;">
-      <button id="authBtn" type="submit">Sign in</button>
+    <div id="adminCredentialLogin" class="credential-auth">
+      <label for="authUser">Username</label>
+      <input id="authUser" autocomplete="username" />
+      <label for="authPass">Password</label>
+      <div class="password-field">
+        <input id="authPass" type="password" autocomplete="current-password" />
+        <button id="authPasswordToggle" class="password-toggle" type="button"
+          aria-controls="authPass" aria-pressed="false"
+          aria-label="Show password" onclick="toggleAuthPasswordVisibility()">Show</button>
+      </div>
+      <div style="margin-top:14px;">
+        <button id="authBtn" type="submit">Sign in</button>
+      </div>
     </div>
   </form>
 
@@ -458,24 +514,82 @@
 
       <div class="panel">
         <h2 style="margin-top:0">Create user</h2>
-        <div class="row">
-          <div><label>Username</label><input id="uName"/></div>
-          <div><label>Password</label><input id="uPass" type="password"/></div>
+        <div class="user-create-tabs" role="tablist" aria-label="Create user method">
+          <button id="userModeGoogle" type="button" class="active"
+            aria-selected="true" aria-controls="googleUserMode">Grant Access for Gmail Login</button>
+          <button id="userModeCredentials" type="button"
+            aria-selected="false" aria-controls="credentialsUserMode">Create User Using Credentials</button>
         </div>
-        <div class="row">
-          <div>
-            <label>Role</label>
-            <select id="uRole"><option value="user">user</option><option value="admin">admin</option></select>
+        <div id="googleUserMode" class="user-create-mode">
+          <div class="row">
+            <div><label>Email Address</label><input id="googleEmail" autocomplete="email"/></div>
+            <div><label>Confirm Email Address</label><input id="googleEmailConfirm" autocomplete="email"/></div>
           </div>
-          <div>
-            <label>User type</label>
-            <select id="uUserType">
-              <option value="dev_team">Dev team</option>
-              <option value="product_team">Product team</option>
-            </select>
+          <div class="row">
+            <div>
+              <label>Role</label>
+              <select id="googleRole">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+            </div>
+            <div>
+              <label>User type</label>
+              <select id="googleUserType">
+                <option value="dev_team">Dev team</option>
+                <option value="product_team">Product team</option>
+              </select>
+            </div>
           </div>
+          <label>Repository</label>
+          <details id="googleRepoDropdown" class="repo-multi">
+            <summary id="googleRepoSummary">Select repositories</summary>
+            <div id="googleRepoChecklist" class="repo-checklist"></div>
+          </details>
+          <p id="googleRepoEmpty" class="mode-note"></p>
+          <div style="margin-top:12px;"><button id="grantGoogleAccessBtn">Add User</button></div>
         </div>
-        <div style="margin-top:12px;"><button id="addUserBtn">Create user</button></div>
+        <div id="credentialsUserMode" class="user-create-mode hidden">
+          <div class="row">
+            <div><label>Username</label><input id="uName"/></div>
+            <div>
+              <label>Password</label>
+              <div class="password-field">
+                <input id="uPass" type="password" autocomplete="new-password"/>
+                <button id="uPassToggle" class="password-toggle" type="button"
+                  aria-controls="uPass" aria-pressed="false"
+                  aria-label="Show password"
+                  onclick="toggleCreateUserPasswordVisibility('uPass', 'uPassToggle')">Show</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Re-enter password</label>
+              <div class="password-field">
+                <input id="uPassConfirm" type="password" autocomplete="new-password"/>
+                <button id="uPassConfirmToggle" class="password-toggle" type="button"
+                  aria-controls="uPassConfirm" aria-pressed="false"
+                  aria-label="Show re-entered password"
+                  onclick="toggleCreateUserPasswordVisibility('uPassConfirm', 'uPassConfirmToggle')">Show</button>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Role</label>
+              <select id="uRole"><option value="user">user</option><option value="admin">admin</option></select>
+            </div>
+            <div>
+              <label>User type</label>
+              <select id="uUserType">
+                <option value="dev_team">Dev team</option>
+                <option value="product_team">Product team</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-top:12px;"><button id="addUserBtn">Create user</button></div>
+        </div>
         <div id="userList" class="muted" style="font-size:12px;margin-top:10px;"></div>
       </div>
     </div>
@@ -531,6 +645,7 @@
 const $ = (id) => document.getElementById(id);
 let REPOS = [];
 let CURRENT_USER = null;
+let AUTH_CONFIG = {};
 
 function formatLocalTimestamp(value, fallback = "") {
   if (!value) return fallback;
@@ -573,6 +688,66 @@ function flash(msg, ok = false) {
   flashTimer = setTimeout(() => { el.className = "msg"; }, 4000);
 }
 
+function authStatusLabel(user) {
+  const labels = {
+    password_only: "Password only",
+    google_pending: "Google pending",
+    google_linked: "Google linked",
+    password_google_pending: "Password + Google pending",
+    password_google: "Password + Google",
+  };
+  return labels[user.auth_status] || "Password only";
+}
+
+function setUserCreateMode(mode) {
+  const google = mode !== "credentials";
+  $("googleUserMode").classList.toggle("hidden", !google);
+  $("credentialsUserMode").classList.toggle("hidden", google);
+  $("userModeGoogle").classList.toggle("active", google);
+  $("userModeCredentials").classList.toggle("active", !google);
+  $("userModeGoogle").setAttribute("aria-selected", String(google));
+  $("userModeCredentials").setAttribute("aria-selected", String(!google));
+  setTimeout(() => (google ? $("googleEmail") : $("uName")).focus(), 30);
+}
+
+function selectedGoogleRepoSlugs() {
+  return Array.from(
+    $("googleRepoChecklist").querySelectorAll("input[type='checkbox']:checked")
+  ).map(input => input.value);
+}
+
+function updateGoogleRepoSummary() {
+  const selected = selectedGoogleRepoSlugs();
+  $("googleRepoSummary").textContent = selected.length
+    ? `${selected.length} repos selected`
+    : "Select repositories";
+}
+
+function renderGoogleRepoChecklist() {
+  const checklist = $("googleRepoChecklist");
+  if (!checklist) return;
+  const previous = new Set(selectedGoogleRepoSlugs());
+  checklist.innerHTML = "";
+  const repos = REPOS.filter(repo => repo.status !== "new");
+  $("googleRepoEmpty").textContent = repos.length
+    ? ""
+    : "Clone a repository before provisioning Google login access.";
+  for (const repo of repos) {
+    const label = document.createElement("label");
+    label.className = "repo-check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = repo.slug;
+    input.checked = previous.has(repo.slug);
+    input.onchange = updateGoogleRepoSummary;
+    const text = document.createElement("span");
+    text.textContent = `${repo.name} (${repo.status})`;
+    label.append(input, text);
+    checklist.appendChild(label);
+  }
+  updateGoogleRepoSummary();
+}
+
 // ---- in-page modal (works in embedded browsers, unlike window.prompt/confirm) ----
 let _modalResolve = null;
 function openModal({ title, message, input, value }) {
@@ -609,7 +784,44 @@ $("modalInput").addEventListener("keydown", (e) => {
 const modalPrompt = (title, label, value) => openModal({ title, input: label, value });
 const modalConfirm = (title, message) => openModal({ title, message });
 
+function renderAdminGoogleButton() {
+  if (!AUTH_CONFIG.google_login_enabled || !AUTH_CONFIG.google_client_id) {
+    $("adminGoogleLogin").classList.add("hidden");
+    return;
+  }
+  $("adminGoogleLogin").classList.remove("hidden");
+  if (!window.google || !google.accounts || !google.accounts.id) {
+    setTimeout(renderAdminGoogleButton, 150);
+    return;
+  }
+  $("adminGoogleButton").innerHTML = "";
+  google.accounts.id.initialize({
+    client_id: AUTH_CONFIG.google_client_id,
+    callback: onAdminGoogleCredential,
+  });
+  google.accounts.id.renderButton($("adminGoogleButton"), {
+    type: "standard",
+    theme: "outline",
+    size: "large",
+    width: 320,
+    text: "signin_with",
+  });
+}
+
+async function onAdminGoogleCredential(response) {
+  try {
+    await api("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ credential: response.credential }),
+    });
+    boot();
+  } catch (e) {
+    flash(e.message);
+  }
+}
+
 async function boot() {
+  try { AUTH_CONFIG = await api("/auth/config"); } catch (e) { AUTH_CONFIG = {}; }
   const status = await api("/auth/status");
   const me = await api("/auth/me");
   if (me.user && me.user.role === "admin") return showConsole(me);
@@ -630,17 +842,49 @@ function toggleAuthPasswordVisibility() {
   setAuthPasswordVisibility($("authPass").type === "password");
 }
 
+function setCreateUserPasswordVisibility(inputId, toggleId, visible) {
+  const input = $(inputId);
+  const toggle = $(toggleId);
+  input.type = visible ? "text" : "password";
+  toggle.textContent = visible ? "Hide" : "Show";
+  toggle.setAttribute("aria-pressed", String(visible));
+  toggle.setAttribute(
+    "aria-label",
+    visible
+      ? `Hide ${inputId === "uPassConfirm" ? "re-entered " : ""}password`
+      : `Show ${inputId === "uPassConfirm" ? "re-entered " : ""}password`,
+  );
+}
+
+function toggleCreateUserPasswordVisibility(inputId, toggleId) {
+  setCreateUserPasswordVisibility(inputId, toggleId, $(inputId).type === "password");
+}
+
+function resetCreateUserPasswordVisibility() {
+  setCreateUserPasswordVisibility("uPass", "uPassToggle", false);
+  setCreateUserPasswordVisibility("uPassConfirm", "uPassConfirmToggle", false);
+}
+
 function showAuth(bootstrapped) {
   $("console").classList.add("hidden");
   $("authPanel").classList.remove("hidden");
   setAuthPasswordVisibility(false);
+  const showCredentialLogin = !bootstrapped || AUTH_CONFIG.password_login_enabled !== false;
+  $("adminCredentialLogin").classList.toggle("hidden", !showCredentialLogin);
+  $("adminAuthDivider").style.display =
+    bootstrapped && showCredentialLogin && AUTH_CONFIG.google_login_enabled
+      ? "flex"
+      : "none";
   $("authTitle").textContent = bootstrapped ? "Admin sign in" : "First-run setup — create admin";
   $("authHint").textContent = bootstrapped
     ? "Sign in with an admin account."
     : "No users exist yet. Create the first administrator.";
   $("authBtn").textContent = bootstrapped ? "Sign in" : "Create admin";
+  if (bootstrapped) renderAdminGoogleButton();
+  else $("adminGoogleLogin").classList.add("hidden");
   $("authPanel").onsubmit = async event => {
     event.preventDefault();
+    if (!showCredentialLogin) return;
     try {
       const body = JSON.stringify({ username: $("authUser").value, password: $("authPass").value });
       await api(bootstrapped ? "/auth/login" : "/auth/bootstrap", { method: "POST", body });
@@ -707,6 +951,7 @@ async function refreshRepos() {
     if (r.slug !== "default") act.appendChild(btn("Delete", () => doDelete(r.slug), "danger"));
     tbody.appendChild(tr);
   }
+  renderGoogleRepoChecklist();
   for (const sel of [$("testRepo"), $("cfgRepo")]) {
     const previous = sel.value;
     sel.innerHTML = "";
@@ -736,7 +981,8 @@ async function refreshUsers() {
       const row = document.createElement("div");
       row.style.cssText = "display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line);";
       const userTypeLabel = u.user_type === "product_team" ? "Product team" : "Dev team";
-      row.innerHTML = `<span style="flex:1">${esc(u.username)} <span class="muted">· ${u.role} · ${userTypeLabel}</span></span>`;
+      const emailLabel = u.email ? ` · ${esc(u.email)}` : "";
+      row.innerHTML = `<span style="flex:1">${esc(u.username)} <span class="muted">· ${u.role} · ${userTypeLabel} · ${authStatusLabel(u)}${emailLabel}</span></span>`;
       row.appendChild(btn("Edit", () => openUserEdit(u), true));
       row.appendChild(btn("Delete", () => doDeleteUser(u.username), true));
       el.appendChild(row);
@@ -952,7 +1198,7 @@ async function doPublish(slug) {
   catch (e) { flash(e.message); }
 }
 async function doGrant(slug) {
-  const username = await modalPrompt(`Grant access to ${slug}`, "Username", "");
+  const username = await modalPrompt(`Grant access to ${slug}`, "Username or Google email", "");
   if (!username || !username.trim()) return;
   try { await api(`/admin/repos/${slug}/grant`, { method: "POST", body: JSON.stringify({ username }) }); flash(`Granted ${username} → ${slug}`, true); refreshAudit(); if (curMembersSlug === slug) showMembers(slug); }
   catch (e) { flash(e.message); }
@@ -970,7 +1216,8 @@ async function showMembers(slug) {
     $("memberEmpty").textContent = members.length ? "" : "No users granted yet (admins always have access).";
     for (const m of members) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${esc(m.username)}</td><td class="muted">${m.role}</td><td class="muted">${esc(formatLocalTimestamp(m.granted_at))}</td><td></td>`;
+      const memberEmail = m.email ? `<div class="muted">${esc(m.email)} · ${authStatusLabel(m)}</div>` : `<div class="muted">${authStatusLabel(m)}</div>`;
+      tr.innerHTML = `<td>${esc(m.username)}${memberEmail}</td><td class="muted">${m.role}</td><td class="muted">${esc(formatLocalTimestamp(m.granted_at))}</td><td></td>`;
       tr.querySelector("td:last-child").appendChild(btn("Revoke", () => doRevoke(slug, m.username), true));
       tbody.appendChild(tr);
     }
@@ -1257,6 +1504,11 @@ $("addRepoBtn").onclick = async () => {
 };
 
 $("addUserBtn").onclick = async () => {
+  if ($("uPass").value !== $("uPassConfirm").value) {
+    flash("Password and re-entered password do not match.");
+    $("uPassConfirm").focus();
+    return;
+  }
   const body = JSON.stringify({
     username: $("uName").value,
     password: $("uPass").value,
@@ -1264,8 +1516,50 @@ $("addUserBtn").onclick = async () => {
     user_type: $("uUserType").value,
   });
   try { await api("/auth/admin/users", { method: "POST", body }); flash("User created", true);
-        $("uName").value = $("uPass").value = ""; refreshUsers(); refreshAudit(); }
+        $("uName").value = $("uPass").value = $("uPassConfirm").value = "";
+        resetCreateUserPasswordVisibility(); refreshUsers(); refreshAudit(); }
   catch (e) { flash(e.message); }
+};
+
+$("grantGoogleAccessBtn").onclick = async () => {
+  const grantSlugs = selectedGoogleRepoSlugs();
+  const email = $("googleEmail").value.trim();
+  const confirmEmail = $("googleEmailConfirm").value.trim();
+  if (!email || !confirmEmail) return flash("Enter and confirm the email address.");
+  if (email.toLowerCase() !== confirmEmail.toLowerCase()) {
+    return flash("Email addresses do not match.");
+  }
+  if (!grantSlugs.length) return flash("Select at least one repository.");
+  $("grantGoogleAccessBtn").disabled = true;
+  try {
+    await api("/auth/admin/google-access", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        confirm_email: confirmEmail,
+        grant_slugs: grantSlugs,
+        role: $("googleRole").value,
+        user_type: $("googleUserType").value,
+      }),
+    });
+    flash("Gmail login access granted", true);
+    $("googleEmail").value = "";
+    $("googleEmailConfirm").value = "";
+    $("googleRole").value = "user";
+    $("googleUserType").value = "dev_team";
+    $("googleRepoChecklist").querySelectorAll("input[type='checkbox']").forEach(input => {
+      input.checked = false;
+    });
+    $("googleRepoDropdown").open = false;
+    updateGoogleRepoSummary();
+    refreshUsers();
+    refreshAudit();
+    if (curMembersSlug) showMembers(curMembersSlug);
+  } catch (e) {
+    flash(e.message);
+  } finally {
+    $("grantGoogleAccessBtn").disabled = false;
+  }
 };
 
 $("testScreenBtn").onclick = () => {
@@ -1358,6 +1652,8 @@ $("cfgRepo").onchange = () => {
   $("cfgText").value = "";
   updateRepoToolActions();
 };
+$("userModeGoogle").onclick = () => setUserCreateMode("google");
+$("userModeCredentials").onclick = () => setUserCreateMode("credentials");
 
 boot().catch(e => flash(e.message));
 </script>

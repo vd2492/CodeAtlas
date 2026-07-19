@@ -207,6 +207,157 @@ class SecurityGuardTests(unittest.TestCase):
             auth_routes.enforce_login_rate_limit("admin")
         auth_routes._login_failures.clear()
 
+    def test_admin_credential_create_form_confirms_password_with_visibility_toggles(self):
+        html = (Path(__file__).resolve().parents[1] / "app/static/admin.html").read_text()
+        self.assertIn('id="uPass"', html)
+        self.assertIn('id="uPassConfirm"', html)
+        self.assertIn('id="uPassToggle"', html)
+        self.assertIn('id="uPassConfirmToggle"', html)
+        self.assertIn("toggleCreateUserPasswordVisibility", html)
+        self.assertIn("Password and re-entered password do not match.", html)
+
+    def test_admin_can_provision_google_login_access(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ), patch.object(auth_routes, "GOOGLE_ALLOWED_DOMAINS", set()):
+            db.init_db()
+            admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
+            admin = db.update_user_google_identity(
+                admin["id"],
+                email="admin@example.test",
+            )
+            repo = db.create_repo(
+                "sample",
+                "Sample",
+                "https://example.test/sample.git",
+                "https",
+                "sample",
+                status="cloned",
+            )
+
+            result = auth_routes.grant_google_access(
+                auth_routes.GrantGoogleAccessRequest(
+                    email="Reader@Gmail.com",
+                    confirm_email="reader@gmail.com",
+                    grant_slugs=["sample"],
+                    role="admin",
+                    user_type="product_team",
+                ),
+                admin,
+            )
+
+            self.assertEqual(result["user"]["username"], "reader@gmail.com")
+            self.assertEqual(result["user"]["email"], "reader@gmail.com")
+            self.assertEqual(result["user"]["role"], "admin")
+            self.assertEqual(result["user"]["user_type"], "product_team")
+            self.assertEqual(result["user"]["auth_status"], "google_pending")
+            user = db.get_user_by_email("reader@gmail.com")
+            self.assertEqual(user["role"], "admin")
+            self.assertEqual(user["user_type"], "product_team")
+            self.assertFalse(verify_password("anything", user["password_hash"]))
+            self.assertEqual(
+                [granted["slug"] for granted in db.list_repos_for_user(user["id"])],
+                [repo["slug"]],
+            )
+
+            updated = auth_routes.grant_google_access(
+                auth_routes.GrantGoogleAccessRequest(
+                    email="reader@gmail.com",
+                    confirm_email="reader@gmail.com",
+                    grant_slugs=["sample"],
+                    role="user",
+                    user_type="dev_team",
+                ),
+                admin,
+            )
+            self.assertEqual(updated["user"]["id"], user["id"])
+            self.assertEqual(updated["user"]["role"], "user")
+            self.assertEqual(updated["user"]["user_type"], "dev_team")
+
+            with self.assertRaises(HTTPException) as raised:
+                auth_routes.grant_google_access(
+                    auth_routes.GrantGoogleAccessRequest(
+                        email="admin@example.test",
+                        confirm_email="admin@example.test",
+                        grant_slugs=["sample"],
+                        role="user",
+                        user_type="dev_team",
+                    ),
+                    admin,
+                )
+            self.assertEqual(raised.exception.status_code, 400)
+
+    def test_google_login_links_pending_user_and_preserves_grants(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ), patch.object(auth_routes, "AUTH_MODE", "mixed"), patch.object(
+            auth_routes, "GOOGLE_ALLOWED_DOMAINS", set()
+        ), patch.object(
+            auth_routes,
+            "verify_google_credential",
+            return_value={
+                "sub": "google-sub-1",
+                "email": "reader@gmail.com",
+                "email_verified": True,
+                "name": "Reader Person",
+            },
+        ):
+            db.init_db()
+            user = db.create_google_user("reader@gmail.com")
+            repo = db.create_repo(
+                "sample",
+                "Sample",
+                "https://example.test/sample.git",
+                "https",
+                "sample",
+                status="published",
+            )
+            db.grant_access(user["id"], repo["id"])
+
+            response = Response()
+            result = auth_routes.google_login(
+                auth_routes.GoogleCredentialRequest(credential="token"),
+                response,
+            )
+
+            self.assertEqual(result["user"]["id"], user["id"])
+            self.assertEqual(result["user"]["auth_status"], "google_linked")
+            self.assertIn("ca_session=", response.headers["set-cookie"])
+            linked = db.get_user_by_google_sub("google-sub-1")
+            self.assertEqual(linked["id"], user["id"])
+            self.assertEqual(linked["display_name"], "Reader Person")
+            self.assertEqual(
+                [granted["slug"] for granted in db.list_repos_for_user(user["id"])],
+                ["sample"],
+            )
+
+    def test_google_login_rejects_unprovisioned_user_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ), patch.object(auth_routes, "AUTH_MODE", "mixed"), patch.object(
+            auth_routes, "GOOGLE_AUTO_CREATE", False
+        ), patch.object(
+            auth_routes, "GOOGLE_ALLOWED_DOMAINS", set()
+        ), patch.object(
+            auth_routes,
+            "verify_google_credential",
+            return_value={
+                "sub": "google-sub-2",
+                "email": "unknown@gmail.com",
+                "email_verified": True,
+            },
+        ):
+            db.init_db()
+
+            with self.assertRaises(HTTPException) as raised:
+                auth_routes.google_login(
+                    auth_routes.GoogleCredentialRequest(credential="token"),
+                    Response(),
+                )
+
+            self.assertEqual(raised.exception.status_code, 403)
+            self.assertIsNone(db.get_user_by_email("unknown@gmail.com"))
+
     def test_admin_can_update_username_and_password(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
             db, "DB_PATH", Path(temp_dir) / "codeatlas.db"

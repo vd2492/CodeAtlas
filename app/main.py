@@ -672,17 +672,23 @@ def healthz():
 @app.get("/app")
 def ask_ui():
     """The user Ask UI (current login flow): login → repo picker → ask."""
-    return FileResponse(STATIC_DIR / "index.html")
+    response = FileResponse(STATIC_DIR / "index.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/admin.html")
 def admin_console():
-    return FileResponse(STATIC_DIR / "admin.html")
+    response = FileResponse(STATIC_DIR / "admin.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/admin", include_in_schema=False)
 def admin_console_alias():
-    return FileResponse(STATIC_DIR / "admin.html")
+    response = FileResponse(STATIC_DIR / "admin.html")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # Map source-file extensions to a display language for the public catalog.

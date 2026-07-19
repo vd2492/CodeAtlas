@@ -1051,6 +1051,18 @@
     }
     .login-card .btn-primary { width: 100%; margin-top: 18px; justify-content: center; }
     .login-err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 16px; }
+    .google-login-wrap { display: grid; gap: 10px; margin-top: 14px; }
+    .google-login-button { min-height: 40px; display: flex; justify-content: center; }
+    .auth-divider {
+      display: flex; align-items: center; gap: 10px;
+      color: var(--muted); font-size: 12px; margin: 12px 0 4px;
+    }
+    .auth-divider::before,
+    .auth-divider::after {
+      content: ""; height: 1px; flex: 1; background: var(--border-strong);
+    }
+    .credential-auth.hidden,
+    .google-login-wrap.hidden { display: none; }
     .repo-picker {
       flex: none;
       padding: 9px 12px; border-radius: 11px;
@@ -1098,6 +1110,7 @@
       } catch (e) {}
     })();
   </script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <!-- Login gate -->
@@ -1112,17 +1125,23 @@
       </button>
       <h2>Sign in to CodeAtlas</h2>
       <p>Ask grounded questions about repositories you've been granted.</p>
-      <label for="loginUser">Username</label>
-      <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()" />
-      <label for="loginPass">Password</label>
-      <div class="login-password">
-        <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
-        <button id="loginPasswordToggle" class="login-password-toggle" type="button"
-          aria-controls="loginPass" aria-pressed="false" aria-label="Show password"
-          onclick="toggleLoginPassword()">Show</button>
+      <div id="loginGoogleSection" class="google-login-wrap hidden">
+        <div id="loginGoogleButton" class="google-login-button"></div>
+        <div id="loginAuthDivider" class="auth-divider">or</div>
+      </div>
+      <div id="credentialLoginSection" class="credential-auth">
+        <label for="loginUser">Username</label>
+        <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()" />
+        <label for="loginPass">Password</label>
+        <div class="login-password">
+          <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+          <button id="loginPasswordToggle" class="login-password-toggle" type="button"
+            aria-controls="loginPass" aria-pressed="false" aria-label="Show password"
+            onclick="toggleLoginPassword()">Show</button>
+        </div>
+        <button class="btn-primary" onclick="doLogin()">Sign in</button>
       </div>
       <div id="loginErr" class="login-err" role="alert" aria-live="polite"></div>
-      <button class="btn-primary" onclick="doLogin()">Sign in</button>
     </div>
   </div>
 
@@ -1373,6 +1392,7 @@
     let LAST_FOLLOW_UP_QUESTION = '';
     let ASK_MODE = 'single';
     let ACTIVE_REQUEST_CONTROLLER = null;
+    let AUTH_CONFIG = {};
     const ADMIN_TEST_MODE = new URLSearchParams(window.location.search).get('from') === 'admin';
 
     function resultEmptyState(mode = ASK_MODE) {
@@ -1452,8 +1472,55 @@
       return false;
     }
 
+    function renderLoginGoogleButton() {
+      const section = document.getElementById('loginGoogleSection');
+      if (!AUTH_CONFIG.google_login_enabled || !AUTH_CONFIG.google_client_id) {
+        section.classList.add('hidden');
+        return;
+      }
+      section.classList.remove('hidden');
+      if (!window.google || !google.accounts || !google.accounts.id) {
+        setTimeout(renderLoginGoogleButton, 150);
+        return;
+      }
+      const button = document.getElementById('loginGoogleButton');
+      button.innerHTML = '';
+      google.accounts.id.initialize({
+        client_id: AUTH_CONFIG.google_client_id,
+        callback: onLoginGoogleCredential,
+      });
+      google.accounts.id.renderButton(button, {
+        type: 'standard',
+        theme: 'outline',
+        size: 'large',
+        width: 312,
+        text: 'signin_with',
+      });
+    }
+
+    async function onLoginGoogleCredential(response) {
+      const errEl = document.getElementById('loginErr');
+      errEl.textContent = '';
+      try {
+        const res = await fetch('/auth/google', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: response.credential }),
+        });
+        const data = await res.json();
+        if (!res.ok) { errEl.textContent = data.detail || 'Google login failed'; return; }
+        await initAuth();
+      } catch (e) { errEl.textContent = String(e); }
+    }
+
     function showLogin(show) {
       if (show) setLoginPasswordVisibility(false);
+      const credentialSection = document.getElementById('credentialLoginSection');
+      const showCredentials = AUTH_CONFIG.password_login_enabled !== false;
+      credentialSection.classList.toggle('hidden', !showCredentials);
+      document.getElementById('loginAuthDivider').style.display =
+        showCredentials && AUTH_CONFIG.google_login_enabled ? 'flex' : 'none';
+      if (show) renderLoginGoogleButton();
       document.getElementById('loginOverlay').style.display = show ? 'grid' : 'none';
     }
 
@@ -1963,6 +2030,11 @@
     }
 
     async function initAuth() {
+      try {
+        AUTH_CONFIG = await (await fetch('/auth/config', { cache: 'no-store' })).json();
+      } catch (e) {
+        AUTH_CONFIG = {};
+      }
       const res = await fetch('/auth/me');
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
