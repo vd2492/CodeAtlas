@@ -215,6 +215,8 @@ class SecurityGuardTests(unittest.TestCase):
         self.assertIn('id="uPassConfirmToggle"', html)
         self.assertIn("toggleCreateUserPasswordVisibility", html)
         self.assertIn("Password and re-entered password do not match.", html)
+        self.assertIn('id="editEmail"', html)
+        self.assertIn("Associated Gmail ID", html)
 
     def test_admin_can_provision_google_login_access(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
@@ -361,7 +363,7 @@ class SecurityGuardTests(unittest.TestCase):
     def test_admin_can_update_username_and_password(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
             db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
-        ):
+        ), patch.object(auth_routes, "GOOGLE_ALLOWED_DOMAINS", set()):
             db.init_db()
             admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
             target = db.create_user("reader", hash_password("old-pass"), role="user")
@@ -380,15 +382,18 @@ class SecurityGuardTests(unittest.TestCase):
                 auth_routes.UpdateUserRequest(
                     username="renamed-reader",
                     password="new-pass",
+                    email="Reader@Gmail.com",
                 ),
                 admin,
             )
 
             self.assertEqual(result["user"]["username"], "renamed-reader")
+            self.assertEqual(result["user"]["email"], "reader@gmail.com")
             self.assertEqual(result["user"]["role"], "user")
             self.assertEqual(result["user"]["user_type"], "dev_team")
             self.assertIsNone(db.get_user_by_username("reader"))
             updated = db.get_user_by_username("renamed-reader")
+            self.assertEqual(updated["email"], "reader@gmail.com")
             self.assertTrue(verify_password("new-pass", updated["password_hash"]))
             self.assertFalse(verify_password("old-pass", updated["password_hash"]))
             self.assertEqual(
@@ -414,6 +419,33 @@ class SecurityGuardTests(unittest.TestCase):
                 )
             self.assertEqual(raised.exception.status_code, 401)
             auth_routes._login_failures.clear()
+
+            with patch.object(auth_routes, "AUTH_MODE", "mixed"), patch.object(
+                auth_routes,
+                "verify_google_credential",
+                return_value={
+                    "sub": "credential-user-google-sub",
+                    "email": "reader@gmail.com",
+                    "email_verified": True,
+                },
+            ):
+                google_result = auth_routes.google_login(
+                    auth_routes.GoogleCredentialRequest(credential="token"),
+                    Response(),
+                )
+            self.assertEqual(google_result["user"]["id"], target["id"])
+            self.assertEqual(
+                db.get_user_by_google_sub("credential-user-google-sub")["id"],
+                target["id"],
+            )
+
+            relinked = auth_routes.update_user_credentials(
+                target["id"],
+                auth_routes.UpdateUserRequest(email="reader2@gmail.com"),
+                admin,
+            )
+            self.assertEqual(relinked["user"]["email"], "reader2@gmail.com")
+            self.assertIsNone(db.get_user_by_google_sub("credential-user-google-sub"))
 
     def test_admin_can_create_and_edit_product_team_user(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(

@@ -215,6 +215,7 @@ class GrantGoogleAccessRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
+    email: Optional[str] = None
     user_type: Optional[str] = None
 
 
@@ -516,7 +517,12 @@ def update_user_credentials(
     target = db.get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
-    if req.username is None and req.password is None and req.user_type is None:
+    if (
+        req.username is None
+        and req.password is None
+        and req.email is None
+        and req.user_type is None
+    ):
         raise HTTPException(status_code=400, detail="No user changes provided.")
 
     username = req.username.strip() if req.username is not None else target["username"]
@@ -524,6 +530,11 @@ def update_user_credentials(
         raise HTTPException(status_code=400, detail="username is required.")
     if req.password == "":
         raise HTTPException(status_code=400, detail="password cannot be empty.")
+    email = target.get("email")
+    if req.email is not None:
+        email = validate_email(req.email) if req.email.strip() else None
+        if email:
+            enforce_allowed_google_domain(email)
     user_type = req.user_type or target.get("user_type") or "dev_team"
     if user_type not in ("product_team", "dev_team"):
         raise HTTPException(
@@ -533,6 +544,7 @@ def update_user_credentials(
     if (
         username == target["username"]
         and req.password is None
+        and email == target.get("email")
         and user_type == (target.get("user_type") or "dev_team")
     ):
         raise HTTPException(status_code=400, detail="No user changes provided.")
@@ -540,6 +552,16 @@ def update_user_credentials(
     existing = db.get_user_by_username(username)
     if existing and existing["id"] != user_id:
         raise HTTPException(status_code=409, detail="username already exists.")
+    if email:
+        existing_email = db.get_user_by_email(email)
+        if existing_email and existing_email["id"] != user_id:
+            raise HTTPException(status_code=409, detail="email already exists.")
+        existing_email_username = db.get_user_by_username(email)
+        if existing_email_username and existing_email_username["id"] != user_id:
+            raise HTTPException(
+                status_code=409,
+                detail="email matches another user's username.",
+            )
 
     password_hash = hash_password(req.password) if req.password is not None else None
     updated = db.update_user_credentials(
@@ -550,12 +572,26 @@ def update_user_credentials(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="User not found.")
+    email_changed = email != target.get("email")
+    if email_changed:
+        updated = db.update_user_google_identity(
+            user_id,
+            email=email,
+            clear_email=email is None,
+            clear_google_sub=True,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="User not found.")
 
     changes = []
     if username != target["username"]:
         changes.append(f"username={username}")
     if req.password is not None:
         changes.append("password=updated")
+    if email_changed:
+        changes.append(f"email={email or 'cleared'}")
+        if target.get("google_sub"):
+            changes.append("google_link=reset")
     if user_type != (target.get("user_type") or "dev_team"):
         changes.append(f"user_type={user_type}")
     db.record_audit(

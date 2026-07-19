@@ -294,12 +294,18 @@ def update_user_google_identity(
     email: str = None,
     google_sub: str = None,
     display_name: str = None,
+    clear_email: bool = False,
+    clear_google_sub: bool = False,
 ) -> Optional[dict]:
     """Attach or refresh Google identity fields without changing grants/role."""
     sets, values = [], []
-    if email is not None:
+    if clear_email:
+        sets.append("email = NULL")
+    elif email is not None:
         sets.append("email = ?"); values.append(email)
-    if google_sub is not None:
+    if clear_google_sub:
+        sets.append("google_sub = NULL")
+    elif google_sub is not None:
         sets.append("google_sub = ?"); values.append(google_sub)
     if display_name is not None:
         sets.append("display_name = ?"); values.append(display_name)

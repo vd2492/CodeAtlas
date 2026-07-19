@@ -295,9 +295,11 @@
   <div id="userEditModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
     <form id="userEditForm" class="panel" style="width:400px;max-width:92vw;margin:0;">
       <h2 style="margin:0 0 8px;color:var(--fg);">Edit user</h2>
-      <p class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, password, or user type.</p>
+      <p class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, associated Gmail ID, password, or user type.</p>
       <label for="editUsername">Username</label>
       <input id="editUsername" autocomplete="off" />
+      <label for="editEmail">Associated Gmail ID</label>
+      <input id="editEmail" autocomplete="email" placeholder="name@gmail.com or name@company.com" />
       <label for="editPassword">New password</label>
       <div class="password-field">
         <input id="editPassword" type="password" autocomplete="new-password"
@@ -1020,6 +1022,7 @@ function resetEditPasswordVisibility() {
 function openUserEdit(user) {
   editingUser = user;
   $("editUsername").value = user.username;
+  $("editEmail").value = user.email || "";
   $("editPassword").value = "";
   $("editPasswordConfirm").value = "";
   resetEditPasswordVisibility();
@@ -1051,6 +1054,7 @@ $("userEditForm").onsubmit = async event => {
     error.textContent = "Username is required.";
     return;
   }
+  const email = $("editEmail").value.trim();
   if (password !== passwordConfirm) {
     error.textContent = "New password and confirmation do not match.";
     $("editPasswordConfirm").focus();
@@ -1059,10 +1063,11 @@ $("userEditForm").onsubmit = async event => {
 
   const body = {};
   if (username !== editingUser.username) body.username = username;
+  if (email !== (editingUser.email || "")) body.email = email;
   if (password) body.password = password;
   if (userType !== (editingUser.user_type || "dev_team")) body.user_type = userType;
   if (!Object.keys(body).length) {
-    error.textContent = "Change the username, user type, or enter a new password.";
+    error.textContent = "Change the username, Gmail ID, user type, or enter a new password.";
     return;
   }
 
