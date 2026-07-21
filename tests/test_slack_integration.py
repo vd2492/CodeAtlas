@@ -64,7 +64,7 @@ class SlackIntegrationTests(unittest.TestCase):
             slack_routes.verify_slack_request(signed_headers(self.secret, body, stale), body)
         self.assertEqual(raised.exception.status_code, 401)
 
-    def test_slash_command_opens_codeatlas_modal(self):
+    def test_slash_command_dispatches_codeatlas_modal_open(self):
         body = urlencode({
             "team_id": "T123",
             "enterprise_id": "",
@@ -80,7 +80,7 @@ class SlackIntegrationTests(unittest.TestCase):
             "status": "published",
         }]
         with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
-                patch.object(slack_routes, "_slack_api", return_value={"ok": True}) as api:
+                patch.object(slack_routes, "_start_modal_open_job") as start:
             response = asyncio.run(
                 slack_routes.slash_command(
                     FakeRequest(body, signed_headers(self.secret, body))
@@ -88,16 +88,40 @@ class SlackIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response["response_type"], "ephemeral")
+        start.assert_called_once()
+        metadata, trigger_id = start.call_args.args
+        self.assertEqual(trigger_id, "trigger-1")
+        self.assertEqual(metadata["question"], "explain auth")
+        self.assertEqual(metadata["team_id"], "T123")
+
+    def test_open_ask_modal_posts_expected_view(self):
+        metadata = {
+            "team_id": "T123",
+            "channel_id": "C123",
+            "slack_user_id": "U123",
+            "repo_slug": "payments",
+            "question": "explain auth",
+        }
+        repo = {
+            "name": "Payments",
+            "slug": "payments",
+            "status": "published",
+        }
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repo]), \
+                patch.object(slack_routes, "_slack_api", return_value={"ok": True}) as api:
+            slack_routes._open_ask_modal(metadata, "trigger-1")
+
         api.assert_called_once()
         method, payload = api.call_args.args
         self.assertEqual(method, "views.open")
+        self.assertEqual(payload["trigger_id"], "trigger-1")
         view = payload["view"]
         self.assertEqual(view["callback_id"], slack_routes.CALLBACK_ASK)
         labels = [block.get("label", {}).get("text") for block in view["blocks"] if block.get("label")]
         self.assertEqual(labels[:3], ["Repository", "Ask type", "Branch"])
-        metadata = json.loads(view["private_metadata"])
-        self.assertEqual(metadata["question"], "explain auth")
-        self.assertEqual(metadata["team_id"], "T123")
+        stored_metadata = json.loads(view["private_metadata"])
+        self.assertEqual(stored_metadata["question"], "explain auth")
+        self.assertEqual(stored_metadata["team_id"], "T123")
 
     def test_branch_selection_starts_background_prepare_and_updates_modal(self):
         payload = {

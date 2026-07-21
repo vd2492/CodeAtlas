@@ -750,6 +750,30 @@ def _start_answer_job(values: dict, *, follow_up: bool = False, deep: bool = Fal
     _executor.submit(_run_answer_job, values, follow_up=follow_up, deep=deep)
 
 
+def _open_ask_modal(metadata: dict, trigger_id: str) -> None:
+    try:
+        _slack_api("views.open", {
+            "trigger_id": trigger_id,
+            "view": build_ask_view(metadata),
+        })
+    except Exception as exc:
+        try:
+            _send_user_message(
+                metadata,
+                "CodeAtlas could not open",
+                [{
+                    "type": "section",
+                    "text": _mrkdwn(f"I couldn't open the CodeAtlas modal.\n\nReason: {_http_detail(exc)}"),
+                }],
+            )
+        except Exception:
+            pass
+
+
+def _start_modal_open_job(metadata: dict, trigger_id: str) -> None:
+    _executor.submit(_open_ask_modal, metadata, trigger_id)
+
+
 def _prepare_selected_branch(metadata: dict, action_id: str, branch_name: str) -> None:
     repo = _repo_by_slug(metadata.get("repo_slug"))
     if not repo or not branch_name or branch_name.startswith("__"):
@@ -900,10 +924,7 @@ async def slash_command(request: Request):
         "ask_type": ASK_SINGLE,
         "user_type": USER_DEV,
     }
-    _slack_api("views.open", {
-        "trigger_id": _form_value(form, "trigger_id"),
-        "view": build_ask_view(metadata),
-    })
+    _start_modal_open_job(metadata, _form_value(form, "trigger_id"))
     return {"response_type": "ephemeral", "text": ""}
 
 
