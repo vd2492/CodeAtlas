@@ -531,6 +531,64 @@ class SecurityGuardTests(unittest.TestCase):
         self.assertEqual(result["answer_user_type"], "product_team")
         self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
 
+    def test_image_attachment_is_normalized_for_web_question(self):
+        image_data = "iVBORw0KGgo="
+        request = main.AskRequest(
+            question="What is visible in this screenshot?",
+            image_attachments=[{
+                "name": "screen.png",
+                "mime_type": "image/png",
+                "data": image_data,
+            }],
+        )
+        user = {"id": 7, "user_type": "dev_team", "_session_key": "session"}
+        response = {
+            "answer": "The screenshot shows a login screen.",
+            "provider_used": "shared:model",
+            "retrieval_mode": "agentic",
+            "context": {"llm_context_preview": {"question": request.question}},
+        }
+        with patch.object(main, "enforce_rate_limit"), patch.object(
+            main, "enforce_strict_branch_freshness"
+        ), patch.object(
+            main.db,
+            "get_repo_by_workspace",
+            return_value={"allow_shared_fallback": 1},
+        ), patch.object(
+            main, "load_user_llm", return_value=None
+        ), patch.object(
+            main, "repository_revision", return_value="rev"
+        ), patch.object(
+            main.conversation_store, "get_cached_answer"
+        ) as session_cache, patch.object(
+            main.conversation_store, "get_repo_cached_answer"
+        ) as repo_cache, patch.object(
+            main, "_remember_session_answer"
+        ) as remember_session, patch.object(
+            main, "answer_question", return_value=response
+        ) as answer:
+            result = main.ask_llm_endpoint(request, "sample", user)
+
+        self.assertEqual(result["answer"], response["answer"])
+        image_attachments = answer.call_args.kwargs["image_attachments"]
+        self.assertEqual(image_attachments[0]["name"], "screen.png")
+        self.assertEqual(image_attachments[0]["mime_type"], "image/png")
+        self.assertEqual(image_attachments[0]["data"], image_data)
+        session_cache.assert_not_called()
+        repo_cache.assert_not_called()
+        remember_session.assert_not_called()
+
+    def test_invalid_image_attachment_type_is_rejected(self):
+        with self.assertRaises(HTTPException) as raised:
+            main.normalize_image_attachments([{
+                "name": "notes.txt",
+                "mime_type": "text/plain",
+                "data": "aGVsbG8=",
+            }])
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("PNG", raised.exception.detail)
+
     def test_product_team_cannot_request_dev_style_answer(self):
         request = main.AskRequest(
             question="What happens during checkout?",

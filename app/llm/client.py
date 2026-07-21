@@ -305,6 +305,16 @@ class FollowUpNeedsEvidence(RuntimeError):
     """Compact evidence is insufficient; run the normal grounded pipeline."""
 
 
+class ImageInputUnsupported(RuntimeError):
+    """The selected model or provider does not accept image input."""
+
+
+IMAGE_INPUT_UNSUPPORTED_MESSAGE = (
+    "Image questions require a vision-capable OpenAI/Anthropic-compatible model. "
+    "Remove the image or select a supported model."
+)
+
+
 def _empty_token_usage() -> dict:
     return {
         "input_tokens": 0,
@@ -622,6 +632,85 @@ def _anthropic_tools(tool_definitions: list[dict]) -> list[dict]:
     ]
 
 
+def _image_attachments(image_attachments: list[dict] = None) -> list[dict]:
+    return [
+        item for item in (image_attachments or [])
+        if item.get("mime_type") and item.get("data")
+    ]
+
+
+def _image_context_text(count: int) -> str:
+    if count <= 0:
+        return ""
+    plural = "s" if count != 1 else ""
+    return (
+        f"\n\nThe user attached {count} image{plural}. Use the image{plural} as "
+        "visual context for the question. Keep repository source and graph "
+        "evidence as the authority for code behavior, and say when the image "
+        "does not provide enough information."
+    )
+
+
+def _openai_user_content(text: str, image_attachments: list[dict] = None):
+    images = _image_attachments(image_attachments)
+    if not images:
+        return text
+    content = [{"type": "text", "text": text + _image_context_text(len(images))}]
+    for image in images:
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{image['mime_type']};base64,{image['data']}",
+            },
+        })
+    return content
+
+
+def _anthropic_user_content(text: str, image_attachments: list[dict] = None):
+    images = _image_attachments(image_attachments)
+    if not images:
+        return text
+    content = [{"type": "text", "text": text + _image_context_text(len(images))}]
+    for image in images:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image["mime_type"],
+                "data": image["data"],
+            },
+        })
+    return content
+
+
+def _is_image_request_rejection(response) -> bool:
+    if getattr(response, "status_code", 500) not in {400, 404, 415, 422}:
+        return False
+    detail = str(getattr(response, "text", "") or "").lower()
+    return any(
+        token in detail
+        for token in (
+            "image",
+            "vision",
+            "multimodal",
+            "multi-modal",
+            "image_url",
+            "media type",
+            "content type",
+            "unsupported content",
+            "unsupported modality",
+        )
+    )
+
+
+def _raise_provider_error(response, provider: str, image_attachments: list[dict] = None) -> None:
+    if getattr(response, "status_code", 200) < 400:
+        return
+    if _image_attachments(image_attachments) and _is_image_request_rejection(response):
+        raise ImageInputUnsupported(IMAGE_INPUT_UNSUPPORTED_MESSAGE)
+    raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+
+
 def _tool_arguments(raw) -> dict:
     if isinstance(raw, dict):
         return raw
@@ -642,10 +731,12 @@ def _ask_user_trace_entry(question: str) -> dict:
     }
 
 
-def _tool_request_error(response, provider: str):
+def _tool_request_error(response, provider: str, image_attachments: list[dict] = None):
     """Raise an unsupported marker for schema/tool rejections, otherwise fail."""
     if response.status_code < 400:
         return
+    if _image_attachments(image_attachments) and _is_image_request_rejection(response):
+        raise ImageInputUnsupported(IMAGE_INPUT_UNSUPPORTED_MESSAGE)
     detail = response.text[:500]
     lower = detail.lower()
     if response.status_code in {400, 404, 422} and any(
@@ -765,6 +856,7 @@ def _openai_agent(
     tool_definitions: list[dict],
     agent_context: str = "",
     require_tool: bool = True,
+    image_attachments: list[dict] = None,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
     product_answer = _product_toolbox_answer(toolbox)
@@ -772,10 +864,13 @@ def _openai_agent(
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
-            "content": _agent_question(
-                question,
-                agent_context,
-                product_answer=product_answer,
+            "content": _openai_user_content(
+                _agent_question(
+                    question,
+                    agent_context,
+                    product_answer=product_answer,
+                ),
+                image_attachments,
             ),
         },
     ]
@@ -798,7 +893,7 @@ def _openai_agent(
         )
         if 300 <= response.status_code < 400:
             raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-        _tool_request_error(response, model)
+        _tool_request_error(response, model, image_attachments)
         message = response.json()["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
         ask_call = next(
@@ -874,15 +969,19 @@ def _anthropic_agent(
     tool_definitions: list[dict],
     agent_context: str = "",
     require_tool: bool = True,
+    image_attachments: list[dict] = None,
 ) -> dict:
     system_prompt = _agent_system_prompt(toolbox)
     product_answer = _product_toolbox_answer(toolbox)
     messages = [{
         "role": "user",
-        "content": _agent_question(
-            question,
-            agent_context,
-            product_answer=product_answer,
+        "content": _anthropic_user_content(
+            _agent_question(
+                question,
+                agent_context,
+                product_answer=product_answer,
+            ),
+            image_attachments,
         ),
     }]
     tools = _anthropic_tools(tool_definitions)
@@ -912,7 +1011,7 @@ def _anthropic_agent(
         )
         if 300 <= response.status_code < 400:
             raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-        _tool_request_error(response, model)
+        _tool_request_error(response, model, image_attachments)
         data = response.json()
         blocks = data.get("content") or []
         tool_uses = [block for block in blocks if block.get("type") == "tool_use"]
@@ -1121,7 +1220,13 @@ def sniff_provider(api_key: str) -> dict:
 
 # --- Provider implementations -------------------------------------------------
 
-def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
+def _openai_chat(
+    base_url: str,
+    api_key: str,
+    model: str,
+    context: dict,
+    image_attachments: list[dict] = None,
+) -> str:
     resp = _post_with_retries(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -1129,7 +1234,13 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
             "model": model,
             "messages": [
                 {"role": "system", "content": _system_prompt(context)},
-                {"role": "user", "content": build_prompt(context)},
+                {
+                    "role": "user",
+                    "content": _openai_user_content(
+                        build_prompt(context),
+                        image_attachments,
+                    ),
+                },
             ],
             "temperature": 0.2,
             "max_tokens": 1400,
@@ -1139,13 +1250,18 @@ def _openai_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
     )
     if 300 <= resp.status_code < 400:
         raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-    if resp.status_code >= 400:
-        raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
+    _raise_provider_error(resp, model, image_attachments)
     answer = resp.json()["choices"][0]["message"].get("content", "")
     return _final_answer(answer, model, context)
 
 
-def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> str:
+def _anthropic_chat(
+    base_url: str,
+    api_key: str,
+    model: str,
+    context: dict,
+    image_attachments: list[dict] = None,
+) -> str:
     resp = _post_with_retries(
         f"{base_url.rstrip('/')}/v1/messages",
         headers={
@@ -1158,21 +1274,33 @@ def _anthropic_chat(base_url: str, api_key: str, model: str, context: dict) -> s
             "max_tokens": 1400,
             "temperature": 0.2,
             "system": _system_prompt(context),
-            "messages": [{"role": "user", "content": build_prompt(context)}],
+            "messages": [{
+                "role": "user",
+                "content": _anthropic_user_content(
+                    build_prompt(context),
+                    image_attachments,
+                ),
+            }],
         },
         timeout=REQUEST_TIMEOUT,
         allow_redirects=False,
     )
     if 300 <= resp.status_code < 400:
         raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-    if resp.status_code >= 400:
-        raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
+    _raise_provider_error(resp, model, image_attachments)
     data = resp.json()
     answer = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return _final_answer(answer, model, context)
 
 
-def _ollama_chat(base_url: str, model: str, context: dict) -> str:
+def _ollama_chat(
+    base_url: str,
+    model: str,
+    context: dict,
+    image_attachments: list[dict] = None,
+) -> str:
+    if _image_attachments(image_attachments):
+        raise ImageInputUnsupported(IMAGE_INPUT_UNSUPPORTED_MESSAGE)
     resp = _post_with_retries(
         f"{base_url.rstrip('/')}/api/chat",
         json={
@@ -1352,7 +1480,11 @@ def _configured_shared_creds(model: str = None) -> dict:
     }
 
 
-def _call_with_creds(creds: dict, context: dict) -> str:
+def _call_with_creds(
+    creds: dict,
+    context: dict,
+    image_attachments: list[dict] = None,
+) -> str:
     """Dispatch to the right provider for a {provider, base_url, api_key, model}."""
     provider = (creds.get("provider") or "openai_compatible").lower()
     base_url = creds.get("base_url") or ""
@@ -1366,8 +1498,20 @@ def _call_with_creds(creds: dict, context: dict) -> str:
     _validate_outbound_base_url(base_url)
 
     if provider in {"anthropic", "anthropic_compatible", "claude"}:
-        return _anthropic_chat(base_url, api_key, model or "claude-sonnet-4-5", context)
-    return _openai_chat(base_url, api_key, model or "gpt-4o-mini", context)
+        return _anthropic_chat(
+            base_url,
+            api_key,
+            model or "claude-sonnet-4-5",
+            context,
+            image_attachments,
+        )
+    return _openai_chat(
+        base_url,
+        api_key,
+        model or "gpt-4o-mini",
+        context,
+        image_attachments,
+    )
 
 
 def _call_fast_follow_up_with_creds(
@@ -1411,6 +1555,7 @@ def _call_agent_with_creds(
     toolbox,
     agent_context: str = "",
     require_tool: bool = True,
+    image_attachments: list[dict] = None,
 ) -> dict:
     provider = (creds.get("provider") or "openai_compatible").lower()
     base_url = creds.get("base_url") or ""
@@ -1433,6 +1578,7 @@ def _call_agent_with_creds(
             tool_definitions,
             agent_context,
             require_tool,
+            image_attachments,
         )
     return _openai_agent(
         base_url,
@@ -1443,6 +1589,7 @@ def _call_agent_with_creds(
         tool_definitions,
         agent_context,
         require_tool,
+        image_attachments,
     )
 
 
@@ -1453,6 +1600,7 @@ def _attempt_with_creds(
     toolbox=None,
     agent_context: str = "",
     require_tool: bool = True,
+    image_attachments: list[dict] = None,
 ) -> dict:
     fallback_reason = None
     if AGENT_ENABLED and question and toolbox is not None:
@@ -1464,6 +1612,7 @@ def _attempt_with_creds(
                 toolbox,
                 agent_context=agent_context,
                 require_tool=require_tool,
+                image_attachments=image_attachments,
             )
             result["answer"] = _final_answer(
                 result.get("answer", ""),
@@ -1479,7 +1628,7 @@ def _attempt_with_creds(
             fallback_reason = str(exc)
 
     return {
-        "answer": _call_with_creds(creds, context),
+        "answer": _call_with_creds(creds, context, image_attachments),
         "retrieval_mode": "one_shot",
         "agent_trace": list(toolbox.trace) if toolbox is not None else [],
         "agent_fallback_reason": fallback_reason,
@@ -1494,7 +1643,10 @@ def _attempt_ollama(
     toolbox=None,
     agent_context: str = "",
     require_tool: bool = True,
+    image_attachments: list[dict] = None,
 ) -> dict:
+    if _image_attachments(image_attachments):
+        raise ImageInputUnsupported(IMAGE_INPUT_UNSUPPORTED_MESSAGE)
     fallback_reason = None
     if AGENT_ENABLED and question and toolbox is not None:
         toolbox.trace.clear()
@@ -1519,7 +1671,7 @@ def _attempt_ollama(
             fallback_reason = str(exc)
 
     return {
-        "answer": _ollama_chat(base_url, model, context),
+        "answer": _ollama_chat(base_url, model, context, image_attachments),
         "retrieval_mode": "one_shot",
         "agent_trace": list(toolbox.trace) if toolbox is not None else [],
         "agent_fallback_reason": fallback_reason,
@@ -1640,6 +1792,7 @@ def generate(
     toolbox=None,
     agent_context: str = "",
     require_tool: bool = True,
+    image_attachments: list[dict] = None,
 ) -> dict:
     """Generate an answer with the first working provider tier.
 
@@ -1664,6 +1817,7 @@ def generate(
             toolbox,
             agent_context,
             require_tool,
+            image_attachments=image_attachments,
         )
         return {
             **result,
@@ -1686,6 +1840,7 @@ def generate(
             toolbox,
             agent_context,
             require_tool,
+            image_attachments=image_attachments,
         )
         return {**result, "provider_used": f"ollama:{ollama_model}"}
 
@@ -1703,6 +1858,7 @@ def generate(
             toolbox,
             agent_context,
             require_tool,
+            image_attachments=image_attachments,
         )
         return {**result, "provider_used": f"shared:{shared['model']}"}
 
@@ -1716,6 +1872,7 @@ def generate(
                 toolbox,
                 agent_context,
                 require_tool,
+                image_attachments=image_attachments,
             )
             return {
                 **result,
@@ -1738,6 +1895,7 @@ def generate(
                     toolbox,
                     agent_context,
                     require_tool,
+                    image_attachments=image_attachments,
                 )
                 return {**result, "provider_used": f"ollama:{ollama_model}"}
             except Exception as exc:
@@ -1757,6 +1915,7 @@ def generate(
                     toolbox,
                     agent_context,
                     require_tool,
+                    image_attachments=image_attachments,
                 )
                 return {**result, "provider_used": f"shared:{shared['model']}"}
             except Exception as exc:

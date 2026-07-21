@@ -78,6 +78,89 @@ class AgentLoopTests(unittest.TestCase):
 
         self.assertEqual(client.token_usage_payload(usage)["available"], False)
 
+    def test_openai_chat_sends_image_content_parts(self):
+        response = FakeResponse({
+            "choices": [{
+                "message": {"content": "The screenshot shows login."}
+            }]
+        })
+        context = {"llm_context_preview": {"question": "What is visible?"}}
+        image = {
+            "name": "screen.png",
+            "mime_type": "image/png",
+            "data": "iVBORw0KGgo=",
+        }
+        with patch("app.llm.client.requests.post", return_value=response) as post:
+            answer = client._openai_chat(
+                "https://example.test/v1",
+                "key",
+                "gpt-vision",
+                context,
+                [image],
+            )
+
+        self.assertEqual(answer, "The screenshot shows login.")
+        payload = post.call_args.kwargs["json"]
+        user_content = payload["messages"][1]["content"]
+        self.assertEqual(user_content[0]["type"], "text")
+        self.assertIn("attached 1 image", user_content[0]["text"])
+        self.assertEqual(user_content[1]["type"], "image_url")
+        self.assertEqual(
+            user_content[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw0KGgo=",
+        )
+
+    def test_anthropic_chat_sends_image_blocks(self):
+        response = FakeResponse({
+            "content": [{"type": "text", "text": "The screenshot shows login."}]
+        })
+        context = {"llm_context_preview": {"question": "What is visible?"}}
+        image = {
+            "name": "screen.webp",
+            "mime_type": "image/webp",
+            "data": "UklGRg==",
+        }
+        with patch("app.llm.client.requests.post", return_value=response) as post:
+            answer = client._anthropic_chat(
+                "https://anthropic.example.test",
+                "key",
+                "claude-vision",
+                context,
+                [image],
+            )
+
+        self.assertEqual(answer, "The screenshot shows login.")
+        payload = post.call_args.kwargs["json"]
+        user_content = payload["messages"][0]["content"]
+        self.assertEqual(user_content[0]["type"], "text")
+        self.assertIn("attached 1 image", user_content[0]["text"])
+        self.assertEqual(user_content[1]["type"], "image")
+        self.assertEqual(user_content[1]["source"]["media_type"], "image/webp")
+        self.assertEqual(user_content[1]["source"]["data"], "UklGRg==")
+
+    def test_image_rejection_uses_clear_error_message(self):
+        response = FakeResponse(
+            {"error": "unsupported"},
+            status_code=400,
+            text="This model does not support image input.",
+        )
+        context = {"llm_context_preview": {"question": "What is visible?"}}
+        with patch("app.llm.client.requests.post", return_value=response):
+            with self.assertRaises(client.ImageInputUnsupported) as raised:
+                client._openai_chat(
+                    "https://example.test/v1",
+                    "key",
+                    "text-only-model",
+                    context,
+                    [{
+                        "name": "screen.png",
+                        "mime_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    }],
+                )
+
+        self.assertEqual(str(raised.exception), client.IMAGE_INPUT_UNSUPPORTED_MESSAGE)
+
     def test_provider_post_retries_temporary_failure_then_succeeds(self):
         unavailable = FakeResponse(
             {"error": "busy"},

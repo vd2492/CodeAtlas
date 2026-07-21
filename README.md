@@ -60,8 +60,11 @@ Everything runs on your own box. Private code never has to leave it.
   active graph aligned with the remote branch.
 - **Bring your own LLM key.** Each user can store their own LLM key, encrypted
   at rest, to be used as their first-choice model.
+- **Web image questions.** In the web Ask UI, users can attach or paste PNG,
+  JPEG, or WebP screenshots/images to a new single-branch question. Images are
+  transient request context only; they are not indexed or stored.
 - **Slack ask surface.** A Slack workspace can use `/codeatlas` to ask the same
-  grounded questions from Slack against published repositories and approved
+  grounded text questions from Slack against published repositories and approved
   branches.
 
 ### Authentication and Access Model
@@ -347,6 +350,8 @@ Main configuration groups:
   settings, session lifetime, and login rate limits.
 - **Branch synchronization:** worker count, freshness polling, user-triggered
   sync cooldown, and old-version retention.
+- **Web image attachments:** optional count and size limits for transient image
+  context on new single-branch web questions.
 - **Slack org ask surface:** optional `/codeatlas` slash command integration.
 
 See `.env.example` for the full list of keys and inline notes.
@@ -483,7 +488,8 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
    provisioned and what `CODEATLAS_AUTH_MODE` allows.
 3. Select an authorized repository.
 4. Select an indexed branch and review commit/freshness metadata.
-5. Ask a question.
+5. Ask a question, optionally attaching or pasting PNG, JPEG, or WebP images in
+   the main web query field.
 6. Ask follow-up questions in the same topic when needed.
 7. Use **Investigate deeply** when the cached or fast follow-up answer needs a
    full repository investigation.

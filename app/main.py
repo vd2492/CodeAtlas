@@ -1,3 +1,5 @@
+import base64
+import binascii
 import copy
 import json
 import os
@@ -127,6 +129,12 @@ MAX_SOURCE_SNIPPET_CHARS = int(os.environ.get("CODEATLAS_SOURCE_SNIPPET_CHARS", 
 LLM_PREVIEW_NODE_LIMIT = int(os.environ.get("CODEATLAS_LLM_PREVIEW_NODE_LIMIT", "8"))
 LLM_PREVIEW_SOURCE_HITS = int(os.environ.get("CODEATLAS_LLM_PREVIEW_SOURCE_HITS", "8"))
 LLM_PREVIEW_SNIPPET_CHARS = int(os.environ.get("CODEATLAS_LLM_PREVIEW_SNIPPET_CHARS", "1100"))
+QUERY_IMAGE_MAX_COUNT = max(1, int(os.environ.get("CODEATLAS_QUERY_IMAGE_MAX_COUNT", "3")))
+QUERY_IMAGE_MAX_BYTES = max(
+    1024,
+    int(os.environ.get("CODEATLAS_QUERY_IMAGE_MAX_BYTES", str(5 * 1024 * 1024))),
+)
+QUERY_IMAGE_ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 SOURCE_QUERY_STOPWORDS = {
     "app", "application", "codebase", "project", "repo", "repository",
     "user", "users", "happen", "happens", "thing", "things",
@@ -763,8 +771,68 @@ class AskRequest(BaseModel):
     follow_up: bool = False
     deep_investigation: bool = False
     answer_user_type: Optional[str] = None
+    image_attachments: Optional[list[dict]] = None
     # Optional bring-your-own-key creds {provider, base_url, api_key, model}.
     user_llm: Optional[dict] = None
+
+
+def normalize_image_attachments(raw_attachments) -> list[dict]:
+    """Validate transient web query images and return provider-ready base64."""
+    if not raw_attachments:
+        return []
+    if not isinstance(raw_attachments, list):
+        raise HTTPException(status_code=400, detail="image_attachments must be a list.")
+    if len(raw_attachments) > QUERY_IMAGE_MAX_COUNT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload at most {QUERY_IMAGE_MAX_COUNT} images.",
+        )
+
+    normalized = []
+    for index, item in enumerate(raw_attachments, start=1):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Each image attachment must be an object.")
+        mime_type = str(
+            item.get("mime_type") or item.get("content_type") or ""
+        ).strip().lower()
+        data = str(item.get("data") or "").strip()
+        data_url = str(item.get("data_url") or "").strip()
+        if data_url:
+            header, separator, encoded = data_url.partition(",")
+            if not separator or not header.lower().startswith("data:"):
+                raise HTTPException(status_code=400, detail="Invalid image data URL.")
+            media = header[5:].split(";", 1)[0].strip().lower()
+            if mime_type and media and mime_type != media:
+                raise HTTPException(status_code=400, detail="Image content type mismatch.")
+            mime_type = mime_type or media
+            data = encoded.strip()
+        if mime_type not in QUERY_IMAGE_ALLOWED_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Only PNG, JPEG, and WebP images are supported.",
+            )
+        if not data:
+            raise HTTPException(status_code=400, detail="Image data is required.")
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            raise HTTPException(status_code=400, detail="Image data must be valid base64.")
+        if not decoded:
+            raise HTTPException(status_code=400, detail="Image data is empty.")
+        if len(decoded) > QUERY_IMAGE_MAX_BYTES:
+            max_mb = QUERY_IMAGE_MAX_BYTES / (1024 * 1024)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Each image must be {max_mb:.0f} MB or smaller.",
+            )
+        name = str(item.get("name") or f"image-{index}").strip()[:120]
+        normalized.append({
+            "name": name,
+            "mime_type": mime_type,
+            "data": data,
+            "size": len(decoded),
+        })
+    return normalized
 
 
 class FlowSummaryRequest(BaseModel):
@@ -1905,7 +1973,8 @@ def answer_compare_follow_up(
 def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
                     llm_mode: str = None, user_type: str = "dev_team",
-                    answer_mode: str = None) -> dict:
+                    answer_mode: str = None,
+                    image_attachments: list[dict] = None) -> dict:
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     started_at = time.perf_counter()
@@ -1940,6 +2009,7 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         llm_mode=llm_mode,
         question=llm_question,
         toolbox=toolbox,
+        image_attachments=image_attachments,
     )
     generation_ms = round((time.perf_counter() - generation_started_at) * 1000, 1)
     response = _answer_response(question, result, context, workspace)

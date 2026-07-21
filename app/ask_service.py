@@ -67,11 +67,20 @@ def answer_single_request(
     user_llm = request.user_llm or main.load_user_llm(user["id"])
     llm_mode = (request.llm_mode or "auto").lower()
     user_type = main._effective_answer_user_type(user, request.answer_user_type)
+    image_attachments = main.normalize_image_attachments(
+        getattr(request, "image_attachments", None)
+    )
+    if image_attachments and request.follow_up:
+        raise HTTPException(
+            status_code=400,
+            detail="Image attachments are only supported on new web questions.",
+        )
     revision = main.repository_revision(workspace)
     session_key = str(user.get("_session_key") or "")
     use_session_cache = not (
         request.deep_investigation
         or (llm_mode == "mimo" and not allow_shared)
+        or image_attachments
     )
     if use_session_cache:
         cached_response = main.conversation_store.get_cached_answer(
@@ -106,6 +115,7 @@ def answer_single_request(
         allow_shared
         and not request.follow_up
         and not request.deep_investigation
+        and not image_attachments
         and main._request_uses_shared_tier_only(llm_mode, user_llm)
     )
     if use_repo_cache:
@@ -188,6 +198,7 @@ def answer_single_request(
                 allow_shared_fallback=allow_shared,
                 llm_mode=llm_mode,
                 user_type=user_type,
+                image_attachments=image_attachments,
             )
             state = main._create_conversation_from_response(
                 user=user,
@@ -203,15 +214,16 @@ def answer_single_request(
             response["follow_up_fallback"] = bool(request.follow_up)
             response["token_usage"] = token_usage_payload(token_usage)
             response["answer_user_type"] = user_type
-            main._remember_session_answer(
-                user=user,
-                workspace=workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=revision,
-                question=request.question,
-                response=response,
-            )
+            if not image_attachments:
+                main._remember_session_answer(
+                    user=user,
+                    workspace=workspace,
+                    llm_mode=llm_mode,
+                    user_type=user_type,
+                    repository_revision=revision,
+                    question=request.question,
+                    response=response,
+                )
             if use_repo_cache:
                 main._remember_repo_answer(
                     workspace=workspace,
