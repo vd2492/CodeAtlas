@@ -133,8 +133,65 @@ to boot; the relevant groups are:
   tree used to pull code excerpts into answers.
 - **Branch synchronization** — worker count, freshness polling, user-triggered
   sync cooldown, and old-version retention.
+- **Slack org ask surface** — optional `/codeatlas` slash command integration
+  for asking from Slack against published repos and approved branches.
 
 See `.env.example` for the full list of keys and inline notes.
+
+### Slack integration
+
+CodeAtlas can expose the same ask engine used by the browser UI through a Slack
+slash command. In Slack, `/codeatlas` opens a modal with:
+
+- Repository
+- Ask type: single branch answer, or compare 2 branch answer
+- Branch, or base branch and compare branch
+- User type
+- Question
+
+Only published repositories are listed. Branch dropdowns list approved branches;
+when a user selects a branch, CodeAtlas starts sync/index in the background and
+the submitted answer waits for the selected branch to become ready before using
+the same retrieval, cache, follow-up, and **Investigate deeply** logic as the web
+Ask UI.
+
+Create a Slack app for the target workspace, add the `/codeatlas` slash command,
+enable interactivity, and install the app with these bot scopes:
+
+```text
+commands
+chat:write
+```
+
+For staging, configure Slack with:
+
+```text
+Slash command Request URL: https://codeatlas.staging.shadowfax.in/slack/commands
+Interactivity Request URL: https://codeatlas.staging.shadowfax.in/slack/interactions
+```
+
+For local testing through ngrok, use the ngrok HTTPS host with the same paths.
+
+Set these on the VM/container environment:
+
+```bash
+CODEATLAS_SLACK_ENABLED=true
+CODEATLAS_SLACK_SIGNING_SECRET=<Slack app signing secret>
+CODEATLAS_SLACK_BOT_TOKEN=<Bot User OAuth Token, xoxb-...>
+CODEATLAS_SLACK_ALLOWED_TEAM_IDS=<Slack workspace ID, T...>
+CODEATLAS_SLACK_LLM_MODE=auto
+CODEATLAS_SLACK_BRANCH_WAIT_SECONDS=900
+```
+
+`CODEATLAS_SLACK_ALLOWED_TEAM_IDS` is a workspace allowlist, not a person or
+channel allowlist. Keeping it set still lets anyone in that Slack workspace use
+the command in DMs, groups, or channels where Slack allows the command, while
+blocking requests from external workspaces. Leave it blank only for deliberately
+open internal testing.
+
+Slack does not use per-user BYOK keys. It sends questions through the shared LLM
+tier configured for the server, so keep the shared fallback and repo privacy
+settings aligned with your production policy.
 
 ### LLM fallback chain
 
@@ -239,6 +296,7 @@ ask away.
 
 ```
 app/
+  ask_service.py     shared ask orchestration for web and Slack surfaces
   agent/tools.py     workspace-scoped source + graph tools for the LLM
   main.py            FastAPI app + query/answer endpoints, startup wiring
   config.py          paths & per-workspace layout
@@ -247,6 +305,7 @@ app/
   repos/             clone, branch worktrees, freshness jobs, indexing, lifecycle routes
   retrieval/         ranker, context builder, per-repo RetrievalConfig
   llm/client.py      agent loops + BYOK → shared fallback; dormant Ollama hook
+  slack/             /codeatlas slash command, modal, and Slack answer delivery
   static/            landing page, user Ask UI, admin console
 data/                gitignored: sqlite db, cloned repos, per-workspace graphs/config, secret key
 docs/PLAN.md         build plan / phase history

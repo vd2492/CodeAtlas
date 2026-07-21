@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import db
+from . import ask_service, db
 from .agent import ComparisonRepositoryToolbox, RepositoryToolbox
 from .config import (
     DEFAULT_WORKSPACE,
@@ -61,6 +61,7 @@ from .repos.branches import (
     stop_branch_services,
 )
 from .repos.routes import router as repos_router
+from .slack.routes import router as slack_router
 
 app = FastAPI(title="CodeAtlas", version="0.2.0")
 
@@ -70,6 +71,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(branch_router)
+app.include_router(slack_router)
 
 
 @app.on_event("startup")
@@ -2072,181 +2074,7 @@ def ask_llm_endpoint(
     workspace: str = Depends(authorized_workspace),
     user: dict = Depends(require_user),
 ):
-    enforce_rate_limit(user["id"])
-    enforce_strict_branch_freshness(workspace)
-    repo = db.get_repo_by_workspace(workspace)
-    allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
-    # Tier 1: an explicit per-request key wins; otherwise the user's stored BYOK key.
-    user_llm = request.user_llm or load_user_llm(user["id"])
-    llm_mode = (request.llm_mode or "auto").lower()
-    user_type = _effective_answer_user_type(user, request.answer_user_type)
-    revision = repository_revision(workspace)
-    session_key = str(user.get("_session_key") or "")
-    use_session_cache = not (
-        request.deep_investigation
-        or (llm_mode == "mimo" and not allow_shared)
-    )
-    if use_session_cache:
-        cached_response = conversation_store.get_cached_answer(
-            session_key=session_key,
-            user_id=user["id"],
-            workspace=workspace,
-            llm_mode=llm_mode,
-            user_type=user_type,
-            repository_revision=revision,
-            question=request.question,
-        )
-        if cached_response:
-            response = _session_cached_answer_response(
-                cached_response,
-                request.question,
-                workspace,
-            )
-            state = _create_conversation_from_response(
-                user=user,
-                workspace=workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=revision,
-                question=request.question,
-                response=response,
-            )
-            response["conversation_id"] = state.conversation_id
-            response["answer_user_type"] = user_type
-            return response
-
-    # Repo-scoped cache: a fresh (non-follow-up) question answered by the
-    # shared tier can be reused across every user asking the same thing
-    # against the same indexed revision, not just within one user's session.
-    use_repo_cache = (
-        allow_shared
-        and not request.follow_up
-        and not request.deep_investigation
-        and _request_uses_shared_tier_only(llm_mode, user_llm)
-    )
-    if use_repo_cache:
-        repo_cached_response = conversation_store.get_repo_cached_answer(
-            workspace=workspace,
-            user_type=user_type,
-            repository_revision=revision,
-            question=request.question,
-        )
-        if repo_cached_response:
-            response = _session_cached_answer_response(
-                repo_cached_response,
-                request.question,
-                workspace,
-            )
-            state = _create_conversation_from_response(
-                user=user,
-                workspace=workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=revision,
-                question=request.question,
-                response=response,
-            )
-            response["conversation_id"] = state.conversation_id
-            response["answer_user_type"] = user_type
-            return response
-
-    try:
-        with llm_admission.slot(), collect_token_usage() as token_usage:
-            state = None
-            if request.follow_up and request.conversation_id:
-                state = conversation_store.get(
-                    request.conversation_id,
-                    user_id=user["id"],
-                    session_key=session_key,
-                    workspace=workspace,
-                    llm_mode=llm_mode,
-                    user_type=user_type,
-                    repository_revision=revision,
-                )
-            if state and (
-                request.deep_investigation
-                or is_related_follow_up(state, request.question)
-            ):
-                response = answer_follow_up(
-                    request.question,
-                    state,
-                    workspace=workspace,
-                    user_llm=user_llm,
-                    allow_shared_fallback=allow_shared,
-                    llm_mode=llm_mode,
-                    user_type=user_type,
-                    deep_investigation=request.deep_investigation,
-                )
-                conversation_store.append(
-                    state.conversation_id,
-                    question=request.question,
-                    answer=response["answer"],
-                    context=response.get("context"),
-                )
-                response["conversation_id"] = state.conversation_id
-                response["token_usage"] = token_usage_payload(token_usage)
-                response["answer_user_type"] = user_type
-                _remember_session_answer(
-                    user=user,
-                    workspace=workspace,
-                    llm_mode=llm_mode,
-                    user_type=user_type,
-                    repository_revision=revision,
-                    question=request.question,
-                    response=response,
-                )
-                return response
-
-            response = answer_question(
-                request.question,
-                workspace=workspace,
-                user_llm=user_llm,
-                allow_shared_fallback=allow_shared,
-                llm_mode=llm_mode,
-                user_type=user_type,
-            )
-            state = _create_conversation_from_response(
-                user=user,
-                workspace=workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=revision,
-                question=request.question,
-                response=response,
-            )
-            response["conversation_id"] = state.conversation_id
-            response["follow_up_reused"] = False
-            response["follow_up_fallback"] = bool(request.follow_up)
-            response["token_usage"] = token_usage_payload(token_usage)
-            response["answer_user_type"] = user_type
-            _remember_session_answer(
-                user=user,
-                workspace=workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=revision,
-                question=request.question,
-                response=response,
-            )
-            if use_repo_cache:
-                _remember_repo_answer(
-                    workspace=workspace,
-                    user_type=user_type,
-                    repository_revision=revision,
-                    question=request.question,
-                    response=response,
-                )
-            return response
-    except LLMCapacityError as error:
-        raise HTTPException(
-            status_code=503,
-            detail=str(error),
-            headers={"Retry-After": "5"},
-        )
-    except RuntimeError as error:
-        raise HTTPException(status_code=400, detail=str(error))
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=f"LLM request failed: {str(error)}")
+    return ask_service.answer_single_request(request, workspace, user)
 
 
 @app.post("/repo/compare")
@@ -2255,149 +2083,7 @@ def compare_repos_endpoint(
     workspace: str = Query(DEFAULT_WORKSPACE),
     user: dict = Depends(require_user),
 ):
-    enforce_rate_limit(user["id"])
-    repo = _resolve_compare_base_repo(workspace, user)
-    left = _resolve_compare_branch(repo, request.left_branch, "Branch A")
-    right = _resolve_compare_branch(repo, request.right_branch, "Branch B")
-    if left["branch"]["id"] == right["branch"]["id"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Choose two different branches to compare.",
-        )
-    enforce_strict_branch_freshness(left["workspace"])
-    enforce_strict_branch_freshness(right["workspace"])
-    allow_shared = bool(repo["allow_shared_fallback"])
-    user_llm = request.user_llm or load_user_llm(user["id"])
-    llm_mode = (request.llm_mode or "auto").lower()
-    user_type = _effective_answer_user_type(user, request.answer_user_type)
-    comparison_workspace = _comparison_workspace_key(repo, left, right)
-    comparison_revision = _comparison_revision(left, right)
-    session_key = str(user.get("_session_key") or "")
-    use_session_cache = not (
-        request.deep_investigation
-        or (llm_mode == "mimo" and not allow_shared)
-    )
-    if use_session_cache:
-        cached_response = conversation_store.get_cached_answer(
-            session_key=session_key,
-            user_id=user["id"],
-            workspace=comparison_workspace,
-            llm_mode=llm_mode,
-            user_type=user_type,
-            repository_revision=comparison_revision,
-            question=request.question,
-        )
-        if cached_response:
-            response = _session_cached_answer_response(
-                cached_response,
-                request.question,
-                workspace=None,
-            )
-            state = _create_conversation_from_response(
-                user=user,
-                workspace=comparison_workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=comparison_revision,
-                question=request.question,
-                response=response,
-            )
-            response["conversation_id"] = state.conversation_id
-            response["answer_user_type"] = user_type
-            return response
-
-    try:
-        with llm_admission.slot(), collect_token_usage() as token_usage:
-            state = None
-            if request.follow_up and request.conversation_id:
-                state = conversation_store.get(
-                    request.conversation_id,
-                    user_id=user["id"],
-                    session_key=session_key,
-                    workspace=comparison_workspace,
-                    llm_mode=llm_mode,
-                    user_type=user_type,
-                    repository_revision=comparison_revision,
-                )
-            if state and (
-                request.deep_investigation
-                or is_related_follow_up(state, request.question)
-            ):
-                response = answer_compare_follow_up(
-                    request.question,
-                    state,
-                    left,
-                    right,
-                    user_llm=user_llm,
-                    allow_shared_fallback=allow_shared,
-                    llm_mode=llm_mode,
-                    user_type=user_type,
-                    deep_investigation=request.deep_investigation,
-                )
-                conversation_store.append(
-                    state.conversation_id,
-                    question=request.question,
-                    answer=response["answer"],
-                    context=response.get("context"),
-                )
-                response["conversation_id"] = state.conversation_id
-                response["token_usage"] = token_usage_payload(token_usage)
-                response["answer_user_type"] = user_type
-                _remember_session_answer(
-                    user=user,
-                    workspace=comparison_workspace,
-                    llm_mode=llm_mode,
-                    user_type=user_type,
-                    repository_revision=comparison_revision,
-                    question=request.question,
-                    response=response,
-                )
-                return response
-
-            response = answer_compare(
-                request.question,
-                left,
-                right,
-                user_llm=user_llm,
-                allow_shared_fallback=allow_shared,
-                llm_mode=llm_mode,
-                user_type=user_type,
-            )
-            state = _create_conversation_from_response(
-                user=user,
-                workspace=comparison_workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=comparison_revision,
-                question=request.question,
-                response=response,
-            )
-            response["conversation_id"] = state.conversation_id
-            response["follow_up_reused"] = False
-            response["follow_up_fallback"] = bool(request.follow_up)
-            response["investigate_deeply_available"] = True
-            response["token_usage"] = token_usage_payload(token_usage)
-            response["answer_user_type"] = user_type
-            _remember_session_answer(
-                user=user,
-                workspace=comparison_workspace,
-                llm_mode=llm_mode,
-                user_type=user_type,
-                repository_revision=comparison_revision,
-                question=request.question,
-                response=response,
-            )
-            return response
-    except LLMCapacityError as error:
-        raise HTTPException(
-            status_code=503,
-            detail=str(error),
-            headers={"Retry-After": "5"},
-        )
-    except RuntimeError as error:
-        raise HTTPException(status_code=400, detail=str(error))
-    except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(error)}")
+    return ask_service.answer_compare_request(request, workspace, user)
 
 
 @app.post("/repo/flows/{topic}/summary")
