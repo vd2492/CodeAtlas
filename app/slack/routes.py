@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,11 +13,12 @@ from typing import Optional
 from urllib.parse import parse_qs
 
 import requests
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 
 from .. import ask_service, db
 
 router = APIRouter(prefix="/slack", tags=["slack"])
+logger = logging.getLogger(__name__)
 
 ASK_SINGLE = "single_branch"
 ASK_COMPARE = "compare_branches"
@@ -757,6 +759,7 @@ def _open_ask_modal(metadata: dict, trigger_id: str) -> None:
             "view": build_ask_view(metadata),
         })
     except Exception as exc:
+        logger.exception("Failed to open Slack ask modal")
         try:
             _send_user_message(
                 metadata,
@@ -767,7 +770,7 @@ def _open_ask_modal(metadata: dict, trigger_id: str) -> None:
                 }],
             )
         except Exception:
-            pass
+            logger.exception("Failed to notify Slack user about modal-open failure")
 
 
 def _start_modal_open_job(metadata: dict, trigger_id: str) -> None:
@@ -899,7 +902,7 @@ def _handle_view_submission(payload: dict) -> dict:
 
 
 @router.post("/commands")
-async def slash_command(request: Request):
+async def slash_command(request: Request, background_tasks: BackgroundTasks):
     if not slack_enabled():
         raise HTTPException(status_code=404, detail="Slack integration is not enabled.")
     body = await request.body()
@@ -924,8 +927,9 @@ async def slash_command(request: Request):
         "ask_type": ASK_SINGLE,
         "user_type": USER_DEV,
     }
-    _start_modal_open_job(metadata, _form_value(form, "trigger_id"))
-    return {"response_type": "ephemeral", "text": ""}
+    logger.info("Accepted Slack slash command for team=%s channel=%s user=%s", team_id, channel_id, slack_user)
+    background_tasks.add_task(_open_ask_modal, metadata, _form_value(form, "trigger_id"))
+    return Response(status_code=200)
 
 
 @router.post("/interactions")

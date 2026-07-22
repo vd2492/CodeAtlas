@@ -8,7 +8,7 @@ from hashlib import sha256
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from app.slack import routes as slack_routes
 
@@ -80,16 +80,20 @@ class SlackIntegrationTests(unittest.TestCase):
             "status": "published",
         }]
         with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
-                patch.object(slack_routes, "_start_modal_open_job") as start:
+                patch.object(slack_routes, "_open_ask_modal") as modal:
+            background_tasks = BackgroundTasks()
             response = asyncio.run(
                 slack_routes.slash_command(
-                    FakeRequest(body, signed_headers(self.secret, body))
+                    FakeRequest(body, signed_headers(self.secret, body)),
+                    background_tasks,
                 )
             )
 
-        self.assertEqual(response["response_type"], "ephemeral")
-        start.assert_called_once()
-        metadata, trigger_id = start.call_args.args
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(background_tasks.tasks), 1)
+        task = background_tasks.tasks[0]
+        self.assertIs(task.func, modal)
+        metadata, trigger_id = task.args
         self.assertEqual(trigger_id, "trigger-1")
         self.assertEqual(metadata["question"], "explain auth")
         self.assertEqual(metadata["team_id"], "T123")
