@@ -69,15 +69,17 @@ Everything runs on your own box. Private code never has to leave it.
 
 ### Authentication and Access Model
 
-CodeAtlas supports a hybrid migration path:
+CodeAtlas supports a Google-first migration path:
 
 - **Password mode** keeps the existing username/password login only.
 - **Mixed mode** keeps username/password login and adds Google sign-in.
-- **Google mode** uses Google sign-in only.
+- **Google mode** uses Google sign-in only and disables credential user
+  creation, password bootstrap, and password updates.
 
 Admins can manage users in three practical ways:
 
-- Create a normal credential user with username, password, role, and user type.
+- Create a normal credential user with username, password, role, and user type
+  while running in password or mixed mode.
 - Grant access for Google/Gmail login by entering an email address, role, user
   type, and repository grants.
 - Edit an existing user to associate or update a Gmail ID so that user can sign
@@ -85,7 +87,9 @@ Admins can manage users in three practical ways:
 
 Google users are provisioned before login by default. A first Google sign-in
 links the Google identity to the provisioned email, then future logins use that
-Google identity.
+Google identity. For a fresh Google-only deployment, set
+`CODEATLAS_GOOGLE_BOOTSTRAP_ADMIN_EMAILS` to allow one or more Gmail IDs to
+create the first admin through Google sign-in.
 
 ### Repository Lifecycle
 
@@ -381,13 +385,18 @@ Set the server environment:
 CODEATLAS_AUTH_MODE=mixed
 CODEATLAS_GOOGLE_CLIENT_ID=<Google OAuth web client ID>
 CODEATLAS_GOOGLE_ALLOWED_DOMAINS=shadowfax.in
+CODEATLAS_GOOGLE_BOOTSTRAP_ADMIN_EMAILS=admin@shadowfax.in
 CODEATLAS_GOOGLE_AUTO_CREATE=false
 ```
 
 Use `mixed` during migration so existing username/password users continue to
-work while Google login is introduced. Use `google` only when password login
-should be disabled. Keep `CODEATLAS_GOOGLE_AUTO_CREATE=false` so admins must
-grant or associate Google emails before users can enter the application.
+work while Google login is introduced. Associate every existing user with a
+Gmail ID, verify at least one admin can sign in with Google, then switch to
+`CODEATLAS_AUTH_MODE=google`. In Google mode, admins can still map existing
+users to Gmail IDs and adjust roles, user type, and repository grants, but
+credential creation and password updates are disabled. Keep
+`CODEATLAS_GOOGLE_AUTO_CREATE=false` so admins must grant or associate Google
+emails before users can enter the application.
 
 After changing Google auth settings, restart the CodeAtlas service.
 
@@ -465,7 +474,7 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 ### Admin Workflow
 
 1. Log in to `/admin.html`.
-2. On first run, create the first admin account.
+2. On first run, create the first admin account with the enabled auth mode.
 3. Clone the required repository.
 4. Approve the remote branches that should be available.
 5. Run **Sync & index now** for the required branches.
@@ -475,10 +484,10 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 9. Create or grant users access:
    - Use **Grant Access for Gmail Login** to provision a Google email, choose
      role, choose user type, and grant one or more repositories.
-   - Use **Create User Using Credentials** to keep the existing username and
-     password flow, including confirm password and show/hide password controls.
-   - Use **Edit user** to update username, associated Gmail ID, password, and
-     user type for an existing user.
+   - Use **Create User Using Credentials** only while running password or mixed
+     mode.
+   - Use **Edit user** to update username, associated Gmail ID, and user type;
+     password updates are available only outside Google-only mode.
 10. Review repo access and audit logs as needed.
 
 ### User Workflow

@@ -295,13 +295,13 @@
   <div id="userEditModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
     <form id="userEditForm" class="panel" style="width:400px;max-width:92vw;margin:0;">
       <h2 style="margin:0 0 8px;color:var(--fg);">Edit user</h2>
-      <p class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, associated Gmail ID, password, or user type.</p>
+      <p id="userEditHint" class="muted" style="font-size:13px;margin:0 0 10px;">Update the username, associated Gmail ID, password, or user type.</p>
       <label for="editUsername">Username</label>
       <input id="editUsername" autocomplete="off" />
       <label for="editEmail">Associated Gmail ID</label>
       <input id="editEmail" autocomplete="email" placeholder="name@gmail.com or name@company.com" />
-      <label for="editPassword">New password</label>
-      <div class="password-field">
+      <label id="editPasswordLabel" for="editPassword">New password</label>
+      <div id="editPasswordField" class="password-field">
         <input id="editPassword" type="password" autocomplete="new-password"
           placeholder="Leave blank to keep the current password" />
         <button id="editPasswordToggle" class="password-toggle" type="button"
@@ -309,8 +309,8 @@
           aria-label="Show new password"
           onclick="toggleEditPasswordVisibility('editPassword', 'editPasswordToggle')">Show</button>
       </div>
-      <label for="editPasswordConfirm">Confirm new password</label>
-      <div class="password-field">
+      <label id="editPasswordConfirmLabel" for="editPasswordConfirm">Confirm new password</label>
+      <div id="editPasswordConfirmField" class="password-field">
         <input id="editPasswordConfirm" type="password" autocomplete="new-password"
           placeholder="Re-enter the new password" />
         <button id="editPasswordConfirmToggle" class="password-toggle" type="button"
@@ -701,8 +701,12 @@ function authStatusLabel(user) {
   return labels[user.auth_status] || "Password only";
 }
 
+function isGoogleOnlyMode() {
+  return AUTH_CONFIG.auth_mode === "google";
+}
+
 function setUserCreateMode(mode) {
-  const google = mode !== "credentials";
+  const google = isGoogleOnlyMode() || mode !== "credentials";
   $("googleUserMode").classList.toggle("hidden", !google);
   $("credentialsUserMode").classList.toggle("hidden", google);
   $("userModeGoogle").classList.toggle("active", google);
@@ -710,6 +714,13 @@ function setUserCreateMode(mode) {
   $("userModeGoogle").setAttribute("aria-selected", String(google));
   $("userModeCredentials").setAttribute("aria-selected", String(!google));
   setTimeout(() => (google ? $("googleEmail") : $("uName")).focus(), 30);
+}
+
+function applyAuthModeUi() {
+  const googleOnly = isGoogleOnlyMode();
+  $("userModeCredentials").classList.toggle("hidden", googleOnly);
+  $("userModeCredentials").disabled = googleOnly;
+  setUserCreateMode("google");
 }
 
 function selectedGoogleRepoSlugs() {
@@ -871,7 +882,10 @@ function showAuth(bootstrapped) {
   $("console").classList.add("hidden");
   $("authPanel").classList.remove("hidden");
   setAuthPasswordVisibility(false);
-  const showCredentialLogin = !bootstrapped || AUTH_CONFIG.password_login_enabled !== false;
+  const googleBootstrap = !bootstrapped && isGoogleOnlyMode();
+  const showCredentialLogin = !isGoogleOnlyMode()
+    && (!bootstrapped || AUTH_CONFIG.password_login_enabled !== false);
+  const showGoogleLogin = bootstrapped || googleBootstrap;
   $("adminCredentialLogin").classList.toggle("hidden", !showCredentialLogin);
   $("adminAuthDivider").style.display =
     bootstrapped && showCredentialLogin && AUTH_CONFIG.google_login_enabled
@@ -880,9 +894,11 @@ function showAuth(bootstrapped) {
   $("authTitle").textContent = bootstrapped ? "Admin sign in" : "First-run setup — create admin";
   $("authHint").textContent = bootstrapped
     ? "Sign in with an admin account."
-    : "No users exist yet. Create the first administrator.";
+    : googleBootstrap
+      ? "No users exist yet. Sign in with an allowed Google admin account."
+      : "No users exist yet. Create the first administrator.";
   $("authBtn").textContent = bootstrapped ? "Sign in" : "Create admin";
-  if (bootstrapped) renderAdminGoogleButton();
+  if (showGoogleLogin) renderAdminGoogleButton();
   else $("adminGoogleLogin").classList.add("hidden");
   $("authPanel").onsubmit = async event => {
     event.preventDefault();
@@ -902,6 +918,7 @@ async function showConsole(me) {
   $("console").classList.remove("hidden");
   $("whoami").textContent = me.user.username;
   $("logoutBtn").onclick = async () => { await api("/auth/logout", { method: "POST" }); boot(); };
+  applyAuthModeUi();
   await refreshRepos();
   await refreshUsers();
   await refreshAudit();
@@ -1019,13 +1036,27 @@ function resetEditPasswordVisibility() {
   );
 }
 
+function setEditPasswordControlsVisible(visible) {
+  [
+    "editPasswordLabel",
+    "editPasswordField",
+    "editPasswordConfirmLabel",
+    "editPasswordConfirmField",
+  ].forEach(id => $(id).classList.toggle("hidden", !visible));
+}
+
 function openUserEdit(user) {
   editingUser = user;
+  const googleOnly = isGoogleOnlyMode();
   $("editUsername").value = user.username;
   $("editEmail").value = user.email || "";
   $("editPassword").value = "";
   $("editPasswordConfirm").value = "";
   resetEditPasswordVisibility();
+  setEditPasswordControlsVisible(!googleOnly);
+  $("userEditHint").textContent = googleOnly
+    ? "Update the username, associated Gmail ID, or user type."
+    : "Update the username, associated Gmail ID, password, or user type.";
   $("editUserType").value = user.user_type || "dev_team";
   $("userEditError").textContent = "";
   $("userEditModal").style.display = "grid";
@@ -1044,9 +1075,10 @@ $("userEditCancel").onclick = closeUserEdit;
 $("userEditForm").onsubmit = async event => {
   event.preventDefault();
   if (!editingUser) return;
+  const googleOnly = isGoogleOnlyMode();
   const username = $("editUsername").value.trim();
-  const password = $("editPassword").value;
-  const passwordConfirm = $("editPasswordConfirm").value;
+  const password = googleOnly ? "" : $("editPassword").value;
+  const passwordConfirm = googleOnly ? "" : $("editPasswordConfirm").value;
   const userType = $("editUserType").value;
   const error = $("userEditError");
   error.textContent = "";
@@ -1067,7 +1099,9 @@ $("userEditForm").onsubmit = async event => {
   if (password) body.password = password;
   if (userType !== (editingUser.user_type || "dev_team")) body.user_type = userType;
   if (!Object.keys(body).length) {
-    error.textContent = "Change the username, Gmail ID, user type, or enter a new password.";
+    error.textContent = googleOnly
+      ? "Change the username, Gmail ID, or user type."
+      : "Change the username, Gmail ID, user type, or enter a new password.";
     return;
   }
 

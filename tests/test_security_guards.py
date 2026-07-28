@@ -360,6 +360,82 @@ class SecurityGuardTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 403)
             self.assertIsNone(db.get_user_by_email("unknown@gmail.com"))
 
+    def test_google_only_bootstraps_allowed_admin(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ), patch.object(auth_routes, "AUTH_MODE", "google"), patch.object(
+            auth_routes, "GOOGLE_BOOTSTRAP_ADMIN_EMAILS", {"admin@gmail.com"}
+        ), patch.object(
+            auth_routes, "GOOGLE_ALLOWED_DOMAINS", set()
+        ), patch.object(
+            auth_routes,
+            "verify_google_credential",
+            return_value={
+                "sub": "bootstrap-google-sub",
+                "email": "admin@gmail.com",
+                "email_verified": True,
+                "name": "Admin Person",
+            },
+        ):
+            db.init_db()
+
+            response = Response()
+            result = auth_routes.google_login(
+                auth_routes.GoogleCredentialRequest(credential="token"),
+                response,
+            )
+
+            self.assertEqual(result["user"]["role"], "admin")
+            self.assertEqual(result["user"]["email"], "admin@gmail.com")
+            self.assertEqual(result["user"]["auth_status"], "google_linked")
+            self.assertIn("ca_session=", response.headers["set-cookie"])
+            self.assertEqual(db.admin_count(), 1)
+            linked = db.get_user_by_google_sub("bootstrap-google-sub")
+            self.assertEqual(linked["display_name"], "Admin Person")
+
+    def test_google_only_blocks_credentials_but_allows_gmail_mapping(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ), patch.object(auth_routes, "AUTH_MODE", "google"), patch.object(
+            auth_routes, "GOOGLE_ALLOWED_DOMAINS", set()
+        ):
+            db.init_db()
+            admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
+            target = db.create_user("reader", hash_password("old-pass"), role="user")
+
+            with self.assertRaises(HTTPException) as raised:
+                auth_routes.create_user(
+                    auth_routes.CreateUserRequest(
+                        username="new-reader",
+                        password="reader-pass",
+                    ),
+                    admin,
+                )
+            self.assertEqual(raised.exception.status_code, 403)
+
+            with self.assertRaises(HTTPException) as raised:
+                auth_routes.update_user_credentials(
+                    target["id"],
+                    auth_routes.UpdateUserRequest(password="new-pass"),
+                    admin,
+                )
+            self.assertEqual(raised.exception.status_code, 403)
+
+            result = auth_routes.update_user_credentials(
+                target["id"],
+                auth_routes.UpdateUserRequest(
+                    email="Reader@Gmail.com",
+                    user_type="product_team",
+                ),
+                admin,
+            )
+
+            self.assertEqual(result["user"]["username"], "reader")
+            self.assertEqual(result["user"]["email"], "reader@gmail.com")
+            self.assertEqual(result["user"]["user_type"], "product_team")
+            updated = db.get_user_by_id(target["id"])
+            self.assertTrue(verify_password("old-pass", updated["password_hash"]))
+
     def test_admin_can_update_username_and_password(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
             db, "DB_PATH", Path(temp_dir) / "codeatlas.db"

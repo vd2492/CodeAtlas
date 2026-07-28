@@ -47,6 +47,16 @@ GOOGLE_ALLOWED_DOMAINS = {
     for domain in os.environ.get("CODEATLAS_GOOGLE_ALLOWED_DOMAINS", "").split(",")
     if domain.strip()
 }
+GOOGLE_BOOTSTRAP_ADMIN_EMAILS = {
+    email
+    for email in (
+        email.strip().lower()
+        for email in os.environ.get(
+            "CODEATLAS_GOOGLE_BOOTSTRAP_ADMIN_EMAILS", ""
+        ).split(",")
+    )
+    if email
+}
 GOOGLE_AUTO_CREATE = os.environ.get(
     "CODEATLAS_GOOGLE_AUTO_CREATE", "false"
 ).lower() in {"1", "true", "yes"}
@@ -93,6 +103,10 @@ def password_login_enabled() -> bool:
 
 def google_login_enabled() -> bool:
     return AUTH_MODE in {"mixed", "google"}
+
+
+def google_only_enabled() -> bool:
+    return AUTH_MODE == "google"
 
 
 def normalize_email(email: str) -> str:
@@ -268,12 +282,19 @@ def auth_config():
         "password_login_enabled": password_login_enabled(),
         "google_login_enabled": google_login_enabled() and bool(GOOGLE_CLIENT_ID),
         "google_client_id": GOOGLE_CLIENT_ID,
+        "google_bootstrap_enabled": google_only_enabled()
+        and bool(GOOGLE_BOOTSTRAP_ADMIN_EMAILS),
     }
 
 
 @router.post("/bootstrap")
 def bootstrap(creds: Credentials, response: Response):
     """Create the first admin. Only allowed while the user store is empty."""
+    if google_only_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Password bootstrap is disabled. Sign in with an allowed Google admin account.",
+        )
     if db.user_count() > 0:
         raise HTTPException(status_code=403, detail="Already bootstrapped.")
     if not creds.username or not creds.password:
@@ -330,6 +351,20 @@ def google_login(req: GoogleCredentialRequest, response: Response):
         )
     else:
         user = db.get_user_by_email(email) or db.get_user_by_username(email)
+        if not user and db.user_count() == 0 and google_only_enabled():
+            if email not in GOOGLE_BOOTSTRAP_ADMIN_EMAILS:
+                db.record_audit(email, "google_bootstrap_denied")
+                raise HTTPException(
+                    status_code=403,
+                    detail="This Google account is not allowed to bootstrap CodeAtlas.",
+                )
+            user = db.create_google_user(
+                email,
+                role="admin",
+                google_sub=google_sub,
+                display_name=id_info.get("name"),
+            )
+            db.record_audit(email, "google_bootstrap_admin", email)
         if not user and GOOGLE_AUTO_CREATE:
             user = db.create_google_user(
                 email,
@@ -393,6 +428,11 @@ def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
 
 @router.post("/admin/users")
 def create_user(req: CreateUserRequest, admin: dict = Depends(require_admin)):
+    if google_only_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Credential user creation is disabled in Google-only mode.",
+        )
     if req.role not in ("admin", "user"):
         raise HTTPException(status_code=400, detail="role must be 'admin' or 'user'.")
     if req.user_type not in ("product_team", "dev_team"):
@@ -530,6 +570,11 @@ def update_user_credentials(
         raise HTTPException(status_code=400, detail="username is required.")
     if req.password == "":
         raise HTTPException(status_code=400, detail="password cannot be empty.")
+    if google_only_enabled() and req.password is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Password updates are disabled in Google-only mode.",
+        )
     email = target.get("email")
     if req.email is not None:
         email = validate_email(req.email) if req.email.strip() else None
