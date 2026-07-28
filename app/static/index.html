@@ -110,6 +110,7 @@
     .header-spacer { flex: 1; }
     .header-context { display:flex; gap:8px; min-width:0; }
 
+    .history-toggle,
     .theme-toggle {
       flex: none;
       width: 44px;
@@ -124,6 +125,7 @@
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
     }
+    .history-toggle:hover,
     .theme-toggle:hover { color: var(--accent); border-color: rgba(95, 227, 154, 0.45); }
     .theme-toggle .icon-moon { display: none; }
     .theme-toggle .icon-sun { display: block; }
@@ -167,6 +169,115 @@
       color: transparent;
     }
     .subtitle { color: var(--muted); font-size: 14px; margin-top: 2px; }
+
+    .history-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 42;
+      background: rgba(3, 6, 12, 0.46);
+      backdrop-filter: blur(3px);
+      -webkit-backdrop-filter: blur(3px);
+    }
+    .question-history-panel {
+      position: fixed;
+      top: 18px;
+      left: 18px;
+      z-index: 43;
+      width: min(390px, calc(100vw - 36px));
+      max-height: calc(100vh - 36px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--card-solid);
+      border: 1px solid var(--border-strong);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }
+    .question-history-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .question-history-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-size: 15px;
+      font-weight: 800;
+    }
+    .question-history-close {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: var(--muted);
+      background: transparent;
+      box-shadow: none;
+    }
+    .question-history-close:hover {
+      color: var(--text);
+      background: rgba(148, 163, 184, 0.12);
+    }
+    .question-history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      overflow-y: auto;
+    }
+    .question-history-empty {
+      padding: 22px 8px;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+    .question-history-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--pre-bg);
+    }
+    .question-history-meta {
+      margin-bottom: 5px;
+      color: var(--faint);
+      font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .question-history-text {
+      min-width: 0;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .question-history-copy {
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: var(--muted);
+      background: rgba(148, 163, 184, 0.08);
+    }
+    .question-history-copy:hover {
+      color: var(--accent);
+      border-color: rgba(95, 227, 154, 0.45);
+    }
 
     /* ---------- Hero ask ---------- */
     .hero { margin-bottom: 16px; }
@@ -1187,6 +1298,30 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
+  <div id="questionHistoryBackdrop" class="history-backdrop" onclick="closeQuestionHistory()" hidden></div>
+  <aside id="questionHistoryPanel" class="question-history-panel"
+    aria-labelledby="questionHistoryTitle" hidden>
+    <div class="question-history-head">
+      <div id="questionHistoryTitle" class="question-history-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+        </svg>
+        Question history
+      </div>
+      <button type="button" class="question-history-close"
+        onclick="closeQuestionHistory()" aria-label="Close question history"
+        title="Close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
+    <div id="questionHistoryList" class="question-history-list"></div>
+  </aside>
+
   <!-- Login gate -->
   <div id="loginOverlay" class="overlay" style="display:none;">
     <div class="login-card">
@@ -1221,6 +1356,15 @@
 
   <div class="container">
     <header class="header">
+      <button class="history-toggle" type="button" onclick="toggleQuestionHistory()"
+        aria-label="Open question history" title="Question history"
+        aria-controls="questionHistoryPanel" aria-expanded="false">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+        </svg>
+      </button>
       <div class="logo-mark" aria-hidden="true"></div>
       <div class="brand">
         <div class="title">CodeAtlas</div>
@@ -1481,6 +1625,8 @@
     let ASK_MODE = 'single';
     let ACTIVE_REQUEST_CONTROLLER = null;
     let AUTH_CONFIG = {};
+    let QUESTION_HISTORY = [];
+    const QUESTION_HISTORY_STORAGE_KEY = 'codeatlas-question-history';
     const QUERY_IMAGE_MAX_COUNT = 3;
     const QUERY_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
     const QUERY_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -1492,6 +1638,122 @@
         return '<div class="empty-state"><div class="eyebrow">Ready</div><p>Select two indexed branches, ask a comparison question, and the side-by-side answer will appear here.</p></div>';
       }
       return '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question above, choose an LLM option, and the grounded answer will appear here.</p></div>';
+    }
+
+    function loadQuestionHistory() {
+      try {
+        const stored = JSON.parse(sessionStorage.getItem(QUESTION_HISTORY_STORAGE_KEY) || '[]');
+        QUESTION_HISTORY = Array.isArray(stored)
+          ? stored.filter(item => item && item.question).map(item => ({
+              question: String(item.question || ''),
+              type: String(item.type || 'Question'),
+              createdAt: item.createdAt || new Date().toISOString(),
+            }))
+          : [];
+      } catch (e) {
+        QUESTION_HISTORY = [];
+      }
+      renderQuestionHistory();
+    }
+
+    function saveQuestionHistory() {
+      try {
+        sessionStorage.setItem(
+          QUESTION_HISTORY_STORAGE_KEY,
+          JSON.stringify(QUESTION_HISTORY),
+        );
+      } catch (e) {}
+    }
+
+    function renderQuestionHistory() {
+      const list = document.getElementById('questionHistoryList');
+      if (!list) return;
+      if (!QUESTION_HISTORY.length) {
+        list.innerHTML = '<div class="question-history-empty">No questions in this session yet.</div>';
+        return;
+      }
+      list.innerHTML = QUESTION_HISTORY.map((item, index) => ({ item, index }))
+        .reverse()
+        .map(({ item, index }) => `
+          <div class="question-history-item">
+            <div>
+              <div class="question-history-meta">${escapeHtml(item.type || 'Question')}</div>
+              <div class="question-history-text">${escapeHtml(item.question)}</div>
+            </div>
+            <button type="button" class="question-history-copy"
+              onclick="copyQuestionHistoryItem(${index})"
+              aria-label="Copy question" title="Copy question">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            </button>
+          </div>
+        `).join('');
+    }
+
+    function addQuestionToHistory(question, type) {
+      const normalized = String(question || '').trim();
+      if (!normalized) return;
+      QUESTION_HISTORY.push({
+        question: normalized,
+        type: type || 'Question',
+        createdAt: new Date().toISOString(),
+      });
+      saveQuestionHistory();
+      renderQuestionHistory();
+    }
+
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+
+    async function copyQuestionHistoryItem(index) {
+      const item = QUESTION_HISTORY[index];
+      if (!item) return;
+      try {
+        await copyTextToClipboard(item.question);
+        showToast('Question copied.');
+      } catch (e) {
+        showToast('Unable to copy question.');
+      }
+    }
+
+    function setQuestionHistoryOpen(open) {
+      const panel = document.getElementById('questionHistoryPanel');
+      const backdrop = document.getElementById('questionHistoryBackdrop');
+      const toggle = document.querySelector('.history-toggle');
+      if (!panel || !backdrop) return;
+      panel.hidden = !open;
+      backdrop.hidden = !open;
+      if (toggle) {
+        toggle.setAttribute('aria-expanded', String(open));
+        toggle.setAttribute('aria-label', open ? 'Close question history' : 'Open question history');
+      }
+      if (open) renderQuestionHistory();
+    }
+
+    function toggleQuestionHistory() {
+      const panel = document.getElementById('questionHistoryPanel');
+      setQuestionHistoryOpen(Boolean(panel && panel.hidden));
+    }
+
+    function closeQuestionHistory() {
+      setQuestionHistoryOpen(false);
     }
 
     function setAskMode(mode, options = {}) {
@@ -2164,6 +2426,9 @@
       PRODUCT_ANSWER_OVERRIDE = false;
       stopBranchPolling();
       CONVERSATION_ID = null;
+      QUESTION_HISTORY = [];
+      try { sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY); } catch (e) {}
+      renderQuestionHistory();
       window.location.href = '/';   // back to the landing page
     }
 
@@ -2922,6 +3187,12 @@
       }
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
+      if (!deepInvestigation && options.recordHistory !== false) {
+        addQuestionToHistory(
+          requestQuestion,
+          options.followUp ? 'Follow-up' : 'Comparison question',
+        );
+      }
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       result.innerHTML = deepInvestigation
@@ -3090,6 +3361,16 @@
       const imageAttachments = (
         !options.flowSummary && !options.followUp && QUERY_IMAGE_ATTACHMENTS.length
       ) ? queryImagePayload() : [];
+      if (
+        !options.flowSummary
+        && !deepInvestigation
+        && options.recordHistory !== false
+      ) {
+        addQuestionToHistory(
+          requestQuestion,
+          options.followUp ? 'Follow-up' : 'Question',
+        );
+      }
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       setMainAskCancelVisible(true);
@@ -3381,7 +3662,14 @@
     // Submit Ask CodeAtlas when Enter is pressed inside the ask input.
     // Submit Graph Search when Enter is pressed inside the search input.
     window.addEventListener('DOMContentLoaded', function () {
+      loadQuestionHistory();
       initAuth();
+
+      document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') {
+          closeQuestionHistory();
+        }
+      });
 
       const flowButtons = document.getElementById('flowButtons');
       if (flowButtons) {
