@@ -39,6 +39,17 @@
     .header-links button.ghost:hover {
       color:var(--accent); border-color:var(--accent); background:rgba(148,163,184,0.14);
     }
+    .header-analytics { width:100%; display:flex; justify-content:flex-end; }
+    .analytics-fab {
+      width:34px; height:34px; padding:0; border-radius:8px;
+      display:grid; place-items:center; color:var(--fg);
+      background:rgba(148,163,184,0.08); border:1px solid var(--line);
+      transition:background .15s ease,border-color .15s ease,color .15s ease,transform .1s ease;
+    }
+    .analytics-fab:hover {
+      color:var(--accent); border-color:var(--accent); background:rgba(148,163,184,0.14);
+      transform:translateY(-1px);
+    }
     h1 { font-size: 22px; margin: 0; }
     h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 12px; }
     .muted { color: var(--muted); line-height: 1.6; }
@@ -216,6 +227,36 @@
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .mono, code { font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
     .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .analytics-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px; }
+    .analytics-head h2 { margin:0 0 4px; color:var(--fg); }
+    .analytics-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+    .analytics-actions select { width:auto; min-width:118px; padding:7px 10px; font-size:13px; }
+    .metric-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px; margin-bottom:14px; }
+    .metric-tile {
+      min-height:82px; padding:13px; border:1px solid var(--line); border-radius:8px;
+      background:rgba(148,163,184,0.08);
+    }
+    .metric-label { color:var(--muted); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+    .metric-value { margin-top:8px; color:var(--fg); font-size:22px; font-weight:700; line-height:1.1; }
+    .analytics-grid { display:grid; grid-template-columns:minmax(0, 1.45fr) minmax(260px, .55fr); gap:14px; }
+    .chart-frame { min-height:260px; display:flex; flex-direction:column; }
+    .chart-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }
+    .chart-title h2 { margin:0; color:var(--fg); }
+    .bar-chart { flex:1; min-height:190px; display:flex; align-items:flex-end; gap:5px; padding-top:10px; }
+    .bar-column { flex:1; min-width:7px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:7px; }
+    .bar {
+      width:100%; min-height:2px; border-radius:4px 4px 0 0;
+      background:linear-gradient(180deg, var(--accent), rgba(15,157,99,0.48));
+      border:1px solid rgba(95,227,154,0.24);
+    }
+    .bar.zero { background:rgba(148,163,184,0.12); border-color:var(--line); }
+    .bar-label { color:var(--muted); font-size:10px; line-height:1; transform:rotate(-45deg); transform-origin:center top; white-space:nowrap; height:30px; }
+    .analytics-scroll { overflow:auto; scrollbar-gutter:stable; }
+    #analyticsUserTable { min-width:640px; }
+    .provider-list { display:grid; gap:9px; }
+    .provider-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--line); }
+    .provider-row:last-child { border-bottom:0; }
+    .empty-state { min-height:120px; display:grid; place-items:center; color:var(--muted); font-size:13px; text-align:center; }
     .branch-detail { font-size: 11px; color: var(--muted); line-height: 1.55; margin-top: 3px; }
     .branch-settings { display:grid; gap:5px; min-width:150px; }
     .branch-settings label { display:flex; align-items:center; gap:6px; margin:0; white-space:nowrap; }
@@ -244,7 +285,7 @@
     #branchPanel { overflow-x:auto; }
     #branchTable { min-width:850px; }
     @media (max-width: 720px){
-      .grid2, .guide-fields, .guide-examples { grid-template-columns: 1fr; }
+      .grid2, .guide-fields, .guide-examples, .metric-grid, .analytics-grid { grid-template-columns: 1fr; }
       .config-actions { width:100%; }
       .header-right { width:176px; }
     }
@@ -274,6 +315,15 @@
       <div class="header-links">
         <a href="/">Home</a>
         <button id="logoutBtn" class="ghost">Sign out</button>
+      </div>
+      <div class="header-analytics">
+        <button id="analyticsBtn" class="analytics-fab hidden" type="button" title="Analytics" aria-label="Open analytics dashboard">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 3v18h18"></path>
+            <path d="M7 15l4-4 3 3 5-7"></path>
+            <path d="M17 7h2v2"></path>
+          </svg>
+        </button>
       </div>
     </div>
   </header>
@@ -641,6 +691,73 @@
     </div>
 
   </div>
+
+  <!-- ANALYTICS DASHBOARD -->
+  <div id="analyticsDashboard" class="hidden">
+    <div class="analytics-head">
+      <div>
+        <h2>Analytics</h2>
+        <p class="muted" style="margin:0;font-size:13px;">Token consumption across CodeAtlas users.</p>
+      </div>
+      <div class="analytics-actions">
+        <select id="analyticsDays" aria-label="Analytics date range">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+        <button id="analyticsRefreshBtn" class="ghost" type="button">Refresh</button>
+        <button id="analyticsBackBtn" class="ghost" type="button">Back</button>
+      </div>
+    </div>
+
+    <div class="metric-grid" aria-label="Token usage summary">
+      <div class="metric-tile">
+        <div class="metric-label">Total tokens</div>
+        <div id="metricTotalTokens" class="metric-value">0</div>
+      </div>
+      <div class="metric-tile">
+        <div class="metric-label">Input tokens</div>
+        <div id="metricInputTokens" class="metric-value">0</div>
+      </div>
+      <div class="metric-tile">
+        <div class="metric-label">Output tokens</div>
+        <div id="metricOutputTokens" class="metric-value">0</div>
+      </div>
+      <div class="metric-tile">
+        <div class="metric-label">LLM requests</div>
+        <div id="metricRequests" class="metric-value">0</div>
+      </div>
+      <div class="metric-tile">
+        <div class="metric-label">Active users</div>
+        <div id="metricActiveUsers" class="metric-value">0</div>
+      </div>
+    </div>
+
+    <div class="analytics-grid">
+      <div class="panel chart-frame">
+        <div class="chart-title">
+          <h2>Daily tokens</h2>
+          <span id="analyticsRangeLabel" class="muted" style="font-size:12px;"></span>
+        </div>
+        <div id="dailyTokenChart" class="bar-chart" aria-label="Daily token consumption chart"></div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0;color:var(--fg);">Provider usage</h2>
+        <div id="providerUsage" class="provider-list"></div>
+      </div>
+    </div>
+
+    <h2>Usage by user</h2>
+    <div class="panel analytics-scroll">
+      <table id="analyticsUserTable">
+        <thead>
+          <tr><th>User name</th><th>Email</th><th>Token consumption</th><th>Requests</th><th>Last used</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="analyticsEmpty" class="empty-state hidden">No token usage has been recorded yet.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -648,6 +765,7 @@ const $ = (id) => document.getElementById(id);
 let REPOS = [];
 let CURRENT_USER = null;
 let AUTH_CONFIG = {};
+const numberFormatter = new Intl.NumberFormat();
 
 function formatLocalTimestamp(value, fallback = "") {
   if (!value) return fallback;
@@ -659,6 +777,117 @@ function formatLocalTimestamp(value, fallback = "") {
   const pad = part => String(part).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function formatNumber(value) {
+  return numberFormatter.format(Number(value) || 0);
+}
+
+function formatShortDate(day) {
+  const parts = String(day || "").split("-");
+  if (parts.length !== 3) return String(day || "");
+  return `${parts[1]}/${parts[2]}`;
+}
+
+function setAdminView(view) {
+  const showingAnalytics = view === "analytics";
+  $("console").classList.toggle("hidden", showingAnalytics);
+  $("analyticsDashboard").classList.toggle("hidden", !showingAnalytics);
+}
+
+async function openAnalyticsDashboard() {
+  setAdminView("analytics");
+  await refreshAnalytics();
+}
+
+function closeAnalyticsDashboard() {
+  setAdminView("console");
+}
+
+function renderMetric(id, value) {
+  $(id).textContent = formatNumber(value);
+}
+
+function renderDailyTokenChart(days) {
+  const chart = $("dailyTokenChart");
+  chart.innerHTML = "";
+  const rows = days || [];
+  if (!rows.length) {
+    chart.innerHTML = '<div class="empty-state">No daily token data.</div>';
+    return;
+  }
+  const maxTokens = Math.max(1, ...rows.map(row => Number(row.total_tokens) || 0));
+  rows.forEach((row, index) => {
+    const total = Number(row.total_tokens) || 0;
+    const column = document.createElement("div");
+    column.className = "bar-column";
+    const bar = document.createElement("div");
+    bar.className = `bar${total ? "" : " zero"}`;
+    bar.style.height = `${Math.max(total ? 4 : 2, Math.round((total / maxTokens) * 170))}px`;
+    bar.title = `${row.day}: ${formatNumber(total)} tokens`;
+    const label = document.createElement("div");
+    label.className = "bar-label";
+    label.textContent = index % Math.ceil(rows.length / 8) === 0
+      ? formatShortDate(row.day)
+      : "";
+    column.append(bar, label);
+    chart.appendChild(column);
+  });
+}
+
+function renderProviderUsage(rows) {
+  const panel = $("providerUsage");
+  panel.innerHTML = "";
+  if (!rows || !rows.length) {
+    panel.innerHTML = '<div class="empty-state">No provider usage yet.</div>';
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement("div");
+    item.className = "provider-row";
+    item.innerHTML = `<span>${esc(row.provider || "unknown")}</span>`
+      + `<span class="muted">${formatNumber(row.total_tokens)} tokens</span>`;
+    panel.appendChild(item);
+  }
+}
+
+function renderAnalyticsUsers(rows) {
+  const tbody = $("analyticsUserTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  const hasUsage = (rows || []).some(row => Number(row.total_tokens) > 0);
+  $("analyticsEmpty").classList.toggle("hidden", hasUsage);
+  $("analyticsUserTable").style.display = rows && rows.length ? "table" : "none";
+  for (const row of rows || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(row.username || "Unknown user")}</td>`
+      + `<td class="muted">${esc(row.email || "")}</td>`
+      + `<td>${formatNumber(row.total_tokens)}</td>`
+      + `<td class="muted">${formatNumber(row.llm_requests)}</td>`
+      + `<td class="muted">${esc(formatLocalTimestamp(row.last_used_at, "never"))}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function refreshAnalytics() {
+  const days = $("analyticsDays").value || "30";
+  $("analyticsRefreshBtn").disabled = true;
+  try {
+    const data = await api(`/auth/admin/analytics?days=${encodeURIComponent(days)}`);
+    const totals = data.totals || {};
+    renderMetric("metricTotalTokens", totals.total_tokens);
+    renderMetric("metricInputTokens", totals.input_tokens);
+    renderMetric("metricOutputTokens", totals.output_tokens);
+    renderMetric("metricRequests", totals.llm_requests);
+    renderMetric("metricActiveUsers", totals.active_users);
+    $("analyticsRangeLabel").textContent = `Last ${data.days || days} days`;
+    renderDailyTokenChart(data.by_day || []);
+    renderProviderUsage(data.by_provider || []);
+    renderAnalyticsUsers(data.by_user || []);
+  } catch (e) {
+    flash(e.message);
+  } finally {
+    $("analyticsRefreshBtn").disabled = false;
+  }
 }
 
 function toggleTheme() {
@@ -880,6 +1109,8 @@ function resetCreateUserPasswordVisibility() {
 
 function showAuth(bootstrapped) {
   $("console").classList.add("hidden");
+  $("analyticsDashboard").classList.add("hidden");
+  $("analyticsBtn").classList.add("hidden");
   $("authPanel").classList.remove("hidden");
   setAuthPasswordVisibility(false);
   const googleBootstrap = !bootstrapped && isGoogleOnlyMode();
@@ -915,9 +1146,14 @@ function showAuth(bootstrapped) {
 async function showConsole(me) {
   CURRENT_USER = me.user;
   $("authPanel").classList.add("hidden");
-  $("console").classList.remove("hidden");
+  $("analyticsBtn").classList.remove("hidden");
+  setAdminView("console");
   $("whoami").textContent = me.user.username;
   $("logoutBtn").onclick = async () => { await api("/auth/logout", { method: "POST" }); boot(); };
+  $("analyticsBtn").onclick = openAnalyticsDashboard;
+  $("analyticsBackBtn").onclick = closeAnalyticsDashboard;
+  $("analyticsRefreshBtn").onclick = refreshAnalytics;
+  $("analyticsDays").onchange = refreshAnalytics;
   applyAuthModeUi();
   await refreshRepos();
   await refreshUsers();

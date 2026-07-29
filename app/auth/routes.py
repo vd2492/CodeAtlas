@@ -426,6 +426,11 @@ def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
     return {"audit": db.list_audit(limit)}
 
 
+@router.get("/admin/analytics")
+def admin_analytics(admin: dict = Depends(require_admin), days: int = 30):
+    return db.token_usage_analytics(days=days)
+
+
 @router.post("/admin/users")
 def create_user(req: CreateUserRequest, admin: dict = Depends(require_admin)):
     if google_only_enabled():

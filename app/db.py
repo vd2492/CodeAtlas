@@ -8,6 +8,7 @@ not here.
 import secrets
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from .config import (
@@ -108,6 +109,28 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail          TEXT,                        -- optional extra context
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS token_usage_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id             INTEGER,
+    username            TEXT,
+    repo_slug           TEXT,
+    workspace           TEXT,
+    endpoint            TEXT,
+    provider_used       TEXT,
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens        INTEGER NOT NULL DEFAULT 0,
+    llm_requests        INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_events_created
+ON token_usage_events(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_events_user
+ON token_usage_events(user_id);
 """
 
 
@@ -887,3 +910,175 @@ def list_audit(limit: int = 100) -> List[dict]:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# --- Token analytics ---------------------------------------------------------
+
+def _usage_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def record_token_usage(
+    *,
+    user_id: int = None,
+    username: str = None,
+    repo_slug: str = None,
+    workspace: str = None,
+    endpoint: str = None,
+    provider_used: str = None,
+    token_usage: dict = None,
+    created_at: str = None,
+) -> bool:
+    """Persist one completed LLM usage aggregate for admin analytics."""
+    usage = token_usage or {}
+    if not usage.get("available"):
+        return False
+    input_tokens = _usage_int(usage.get("input_tokens"))
+    output_tokens = _usage_int(usage.get("output_tokens"))
+    cached_input_tokens = _usage_int(usage.get("cached_input_tokens"))
+    total_tokens = _usage_int(usage.get("total_tokens"))
+    llm_requests = _usage_int(usage.get("requests"))
+    if total_tokens <= 0 and llm_requests <= 0:
+        return False
+    if total_tokens <= 0:
+        total_tokens = input_tokens + output_tokens + cached_input_tokens
+    columns = [
+        "user_id",
+        "username",
+        "repo_slug",
+        "workspace",
+        "endpoint",
+        "provider_used",
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "total_tokens",
+        "llm_requests",
+    ]
+    values = [
+        user_id,
+        username,
+        repo_slug,
+        workspace,
+        endpoint,
+        provider_used,
+        input_tokens,
+        output_tokens,
+        cached_input_tokens,
+        total_tokens,
+        llm_requests,
+    ]
+    if created_at:
+        columns.append("created_at")
+        values.append(created_at)
+    placeholders = ", ".join("?" for _ in columns)
+    with connect() as conn:
+        conn.execute(
+            f"INSERT INTO token_usage_events ({', '.join(columns)}) "
+            f"VALUES ({placeholders})",
+            values,
+        )
+    return True
+
+
+def token_usage_analytics(days: int = 30) -> dict:
+    chart_days = max(1, min(_usage_int(days) or 30, 365))
+    today = datetime.now(timezone.utc).date()
+    start_day = today - timedelta(days=chart_days - 1)
+    start_text = start_day.isoformat()
+    with connect() as conn:
+        totals = dict(conn.execute(
+            "SELECT "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, "
+            "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+            "COALESCE(SUM(llm_requests), 0) AS llm_requests, "
+            "COUNT(*) AS event_count, "
+            "COUNT(DISTINCT COALESCE(CAST(user_id AS TEXT), username, 'unknown')) "
+            "AS active_users "
+            "FROM token_usage_events"
+        ).fetchone())
+        current_user_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT u.id AS user_id, u.username, u.email, "
+                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(t.cached_input_tokens), 0) AS cached_input_tokens, "
+                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(t.llm_requests), 0) AS llm_requests, "
+                "COUNT(t.id) AS event_count, "
+                "MAX(t.created_at) AS last_used_at "
+                "FROM users u "
+                "LEFT JOIN token_usage_events t ON t.user_id = u.id "
+                "GROUP BY u.id, u.username, u.email"
+            ).fetchall()
+        ]
+        archived_user_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT NULL AS user_id, "
+                "COALESCE(NULLIF(t.username, ''), 'Unknown user') AS username, "
+                "NULL AS email, "
+                "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(t.cached_input_tokens), 0) AS cached_input_tokens, "
+                "COALESCE(SUM(t.total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(t.llm_requests), 0) AS llm_requests, "
+                "COUNT(t.id) AS event_count, "
+                "MAX(t.created_at) AS last_used_at "
+                "FROM token_usage_events t "
+                "LEFT JOIN users u ON u.id = t.user_id "
+                "WHERE u.id IS NULL "
+                "GROUP BY COALESCE(NULLIF(t.username, ''), 'Unknown user')"
+            ).fetchall()
+        ]
+        daily_rows = {
+            row["day"]: dict(row)
+            for row in conn.execute(
+                "SELECT date(created_at) AS day, "
+                "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+                "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+                "COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, "
+                "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(llm_requests), 0) AS llm_requests "
+                "FROM token_usage_events "
+                "WHERE date(created_at) >= date(?) "
+                "GROUP BY date(created_at) ORDER BY day",
+                (start_text,),
+            ).fetchall()
+        }
+        provider_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT COALESCE(NULLIF(provider_used, ''), 'unknown') AS provider, "
+                "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(llm_requests), 0) AS llm_requests, "
+                "COUNT(*) AS event_count "
+                "FROM token_usage_events "
+                "GROUP BY COALESCE(NULLIF(provider_used, ''), 'unknown') "
+                "ORDER BY total_tokens DESC, provider LIMIT 8"
+            ).fetchall()
+        ]
+    by_user = current_user_rows + archived_user_rows
+    by_user.sort(key=lambda row: (-row["total_tokens"], row["username"] or ""))
+    by_day = []
+    for offset in range(chart_days):
+        day = (start_day + timedelta(days=offset)).isoformat()
+        by_day.append({
+            "day": day,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_input_tokens": 0,
+            "total_tokens": 0,
+            "llm_requests": 0,
+            **daily_rows.get(day, {}),
+        })
+    return {
+        "days": chart_days,
+        "totals": totals,
+        "by_user": by_user,
+        "by_day": by_day,
+        "by_provider": provider_rows,
+    }

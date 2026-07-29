@@ -32,6 +32,33 @@ def _main():
     return main
 
 
+def record_answer_token_usage(
+    user: dict,
+    workspace: str,
+    endpoint: str,
+    response: dict,
+    *,
+    repo: Optional[dict] = None,
+) -> bool:
+    """Best-effort analytics recording that never blocks an answer response."""
+    usage = (response or {}).get("token_usage") or {}
+    if not usage.get("available"):
+        return False
+    try:
+        resolved_repo = repo or db.get_repo_by_workspace(workspace)
+        return db.record_token_usage(
+            user_id=user.get("id"),
+            username=user.get("username"),
+            repo_slug=resolved_repo.get("slug") if resolved_repo else None,
+            workspace=workspace,
+            endpoint=endpoint,
+            provider_used=(response or {}).get("provider_used"),
+            token_usage=usage,
+        )
+    except Exception:
+        return False
+
+
 def slack_actor_user(team_id: str, user_id: str, user_type: str = "dev_team") -> dict:
     """Stable synthetic user identity for Slack conversation scoping.
 
@@ -189,6 +216,13 @@ def answer_single_request(
                     question=request.question,
                     response=response,
                 )
+                record_answer_token_usage(
+                    user,
+                    workspace,
+                    "repo.ask.follow_up",
+                    response,
+                    repo=repo,
+                )
                 return response
 
             response = main.answer_question(
@@ -232,6 +266,13 @@ def answer_single_request(
                     question=request.question,
                     response=response,
                 )
+            record_answer_token_usage(
+                user,
+                workspace,
+                "repo.ask",
+                response,
+                repo=repo,
+            )
             return response
     except LLMCapacityError as error:
         raise HTTPException(
@@ -355,6 +396,13 @@ def answer_compare_request(
                     question=request.question,
                     response=response,
                 )
+                record_answer_token_usage(
+                    user,
+                    comparison_workspace,
+                    "repo.compare.follow_up",
+                    response,
+                    repo=repo,
+                )
                 return response
 
             response = main.answer_compare(
@@ -389,6 +437,13 @@ def answer_compare_request(
                 repository_revision=comparison_revision,
                 question=request.question,
                 response=response,
+            )
+            record_answer_token_usage(
+                user,
+                comparison_workspace,
+                "repo.compare",
+                response,
+                repo=repo,
             )
             return response
     except LLMCapacityError as error:
