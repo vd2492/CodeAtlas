@@ -725,6 +725,7 @@
       </div>
       <div class="analytics-actions">
         <select id="analyticsDays" aria-label="Analytics date range">
+          <option value="24h">Last 24h</option>
           <option value="7">Last 7 days</option>
           <option value="30" selected>Last 30 days</option>
           <option value="90">Last 90 days</option>
@@ -760,7 +761,7 @@
     <div class="analytics-grid">
       <div class="panel chart-frame">
         <div class="chart-title">
-          <h2>Daily tokens</h2>
+          <h2 id="analyticsChartTitle">Daily tokens</h2>
           <div class="chart-title-actions">
             <div class="chart-toggle" role="group" aria-label="Daily token chart type">
               <button id="dailyBarChartBtn" type="button" class="active" title="Bar chart" aria-label="Show bar chart" aria-pressed="true">Bar</button>
@@ -821,6 +822,15 @@ function formatShortDate(day) {
   return `${parts[1]}/${parts[2]}`;
 }
 
+function formatBucketLabel(value) {
+  const raw = String(value || "");
+  if (raw.includes(" ")) {
+    const hour = raw.split(" ")[1]?.slice(0, 5);
+    return hour || raw;
+  }
+  return formatShortDate(raw);
+}
+
 function setAdminView(view) {
   const showingAnalytics = view === "analytics";
   $("console").classList.toggle("hidden", showingAnalytics);
@@ -878,7 +888,7 @@ function renderDailyBarChart(days) {
     const label = document.createElement("div");
     label.className = "bar-label";
     label.textContent = index % Math.ceil(rows.length / 8) === 0
-      ? formatShortDate(row.day)
+      ? formatBucketLabel(row.day)
       : "";
     column.append(bar, label);
     chart.appendChild(column);
@@ -924,7 +934,7 @@ function renderDailyLineChart(days) {
         : ""
       ).join("")}
       ${rows.map((row, index) => index % labelStep === 0
-        ? `<text x="${points[index].x.toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(formatShortDate(row.day))}</text>`
+        ? `<text x="${points[index].x.toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(formatBucketLabel(row.day))}</text>`
         : ""
       ).join("")}
     </svg>
@@ -966,17 +976,26 @@ function renderAnalyticsUsers(rows) {
 }
 
 async function refreshAnalytics() {
-  const days = $("analyticsDays").value || "30";
+  const range = $("analyticsDays").value || "30";
+  const query = range === "24h"
+    ? "range=24h"
+    : `days=${encodeURIComponent(range)}`;
   $("analyticsRefreshBtn").disabled = true;
   try {
-    const data = await api(`/auth/admin/analytics?days=${encodeURIComponent(days)}`);
+    const data = await api(`/auth/admin/analytics?${query}`);
     const totals = data.totals || {};
     renderMetric("metricTotalTokens", totals.total_tokens);
     renderMetric("metricInputTokens", totals.input_tokens);
     renderMetric("metricOutputTokens", totals.output_tokens);
     renderMetric("metricRequests", totals.llm_requests);
     renderMetric("metricActiveUsers", totals.active_users);
-    $("analyticsRangeLabel").textContent = `Last ${data.days || days} days`;
+    const rangeLabel = data.hours
+      ? `Last ${data.hours}h`
+      : `Last ${data.days || range} days`;
+    $("analyticsChartTitle").textContent = data.bucket === "hour"
+      ? "Hourly tokens"
+      : "Daily tokens";
+    $("analyticsRangeLabel").textContent = rangeLabel;
     renderDailyTokenChart(data.by_day || []);
     renderProviderUsage(data.by_provider || []);
     renderAnalyticsUsers(data.by_user || []);

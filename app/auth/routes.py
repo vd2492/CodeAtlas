@@ -427,7 +427,13 @@ def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
 
 
 @router.get("/admin/analytics")
-def admin_analytics(admin: dict = Depends(require_admin), days: int = 30):
+def admin_analytics(
+    admin: dict = Depends(require_admin),
+    days: int = 30,
+    range: str = None,
+):
+    if (range or "").strip().lower() == "24h":
+        return db.token_usage_analytics(hours=24)
     return db.token_usage_analytics(days=days)
 
 

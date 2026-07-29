@@ -984,11 +984,22 @@ def record_token_usage(
     return True
 
 
-def token_usage_analytics(days: int = 30) -> dict:
+def token_usage_analytics(days: int = 30, hours: int = None) -> dict:
     chart_days = max(1, min(_usage_int(days) or 30, 365))
-    today = datetime.now(timezone.utc).date()
-    start_day = today - timedelta(days=chart_days - 1)
-    start_text = start_day.isoformat()
+    chart_hours = max(1, min(_usage_int(hours), 24 * 31)) if hours else None
+    now = datetime.now(timezone.utc)
+    if chart_hours:
+        start_at = now - timedelta(hours=chart_hours - 1)
+        start_at = start_at.replace(minute=0, second=0, microsecond=0)
+        period_filter = "created_at >= datetime(?)"
+        period_params = (start_at.strftime("%Y-%m-%d %H:%M:%S"),)
+        bucket_expr = "strftime('%Y-%m-%d %H:00:00', created_at)"
+    else:
+        today = now.date()
+        start_day = today - timedelta(days=chart_days - 1)
+        period_filter = "date(created_at) >= date(?)"
+        period_params = (start_day.isoformat(),)
+        bucket_expr = "date(created_at)"
     with connect() as conn:
         totals = dict(conn.execute(
             "SELECT "
@@ -1000,7 +1011,9 @@ def token_usage_analytics(days: int = 30) -> dict:
             "COUNT(*) AS event_count, "
             "COUNT(DISTINCT COALESCE(CAST(user_id AS TEXT), username, 'unknown')) "
             "AS active_users "
-            "FROM token_usage_events"
+            "FROM token_usage_events "
+            f"WHERE {period_filter}",
+            period_params,
         ).fetchone())
         current_user_rows = [
             dict(row) for row in conn.execute(
@@ -1014,7 +1027,9 @@ def token_usage_analytics(days: int = 30) -> dict:
                 "MAX(t.created_at) AS last_used_at "
                 "FROM users u "
                 "LEFT JOIN token_usage_events t ON t.user_id = u.id "
-                "GROUP BY u.id, u.username, u.email"
+                f"AND {period_filter.replace('created_at', 't.created_at')} "
+                "GROUP BY u.id, u.username, u.email",
+                period_params,
             ).fetchall()
         ]
         archived_user_rows = [
@@ -1032,22 +1047,24 @@ def token_usage_analytics(days: int = 30) -> dict:
                 "FROM token_usage_events t "
                 "LEFT JOIN users u ON u.id = t.user_id "
                 "WHERE u.id IS NULL "
-                "GROUP BY COALESCE(NULLIF(t.username, ''), 'Unknown user')"
+                f"AND {period_filter.replace('created_at', 't.created_at')} "
+                "GROUP BY COALESCE(NULLIF(t.username, ''), 'Unknown user')",
+                period_params,
             ).fetchall()
         ]
         daily_rows = {
-            row["day"]: dict(row)
+            row["bucket"]: dict(row)
             for row in conn.execute(
-                "SELECT date(created_at) AS day, "
+                f"SELECT {bucket_expr} AS bucket, "
                 "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens, "
                 "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
                 "COALESCE(SUM(llm_requests), 0) AS llm_requests "
                 "FROM token_usage_events "
-                "WHERE date(created_at) >= date(?) "
-                "GROUP BY date(created_at) ORDER BY day",
-                (start_text,),
+                f"WHERE {period_filter} "
+                f"GROUP BY {bucket_expr} ORDER BY bucket",
+                period_params,
             ).fetchall()
         }
         provider_rows = [
@@ -1057,26 +1074,34 @@ def token_usage_analytics(days: int = 30) -> dict:
                 "COALESCE(SUM(llm_requests), 0) AS llm_requests, "
                 "COUNT(*) AS event_count "
                 "FROM token_usage_events "
+                f"WHERE {period_filter} "
                 "GROUP BY COALESCE(NULLIF(provider_used, ''), 'unknown') "
-                "ORDER BY total_tokens DESC, provider LIMIT 8"
+                "ORDER BY total_tokens DESC, provider LIMIT 8",
+                period_params,
             ).fetchall()
         ]
     by_user = current_user_rows + archived_user_rows
     by_user.sort(key=lambda row: (-row["total_tokens"], row["username"] or ""))
     by_day = []
-    for offset in range(chart_days):
-        day = (start_day + timedelta(days=offset)).isoformat()
+    bucket_count = chart_hours or chart_days
+    for offset in range(bucket_count):
+        if chart_hours:
+            bucket = (start_at + timedelta(hours=offset)).strftime("%Y-%m-%d %H:00:00")
+        else:
+            bucket = (start_day + timedelta(days=offset)).isoformat()
         by_day.append({
-            "day": day,
+            "day": bucket,
             "input_tokens": 0,
             "output_tokens": 0,
             "cached_input_tokens": 0,
             "total_tokens": 0,
             "llm_requests": 0,
-            **daily_rows.get(day, {}),
+            **daily_rows.get(bucket, {}),
         })
     return {
         "days": chart_days,
+        "hours": chart_hours,
+        "bucket": "hour" if chart_hours else "day",
         "totals": totals,
         "by_user": by_user,
         "by_day": by_day,

@@ -98,6 +98,48 @@ class TokenAnalyticsTests(unittest.TestCase):
             self.assertEqual(result["by_user"][0]["username"], "admin")
             self.assertEqual(result["by_provider"][0]["provider"], "shared:mimo")
 
+    def test_admin_analytics_route_supports_last_24h(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ):
+            db.init_db()
+            admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
+            db.record_token_usage(
+                user_id=admin["id"],
+                username=admin["username"],
+                endpoint="repo.ask",
+                provider_used="shared:mimo",
+                token_usage={
+                    "available": True,
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "requests": 1,
+                },
+                created_at="2000-01-01 00:00:00",
+            )
+            db.record_token_usage(
+                user_id=admin["id"],
+                username=admin["username"],
+                endpoint="repo.ask",
+                provider_used="shared:mimo",
+                token_usage={
+                    "available": True,
+                    "input_tokens": 20,
+                    "output_tokens": 5,
+                    "total_tokens": 25,
+                    "requests": 1,
+                },
+            )
+
+            result = auth_routes.admin_analytics(admin=admin, range="24h")
+
+            self.assertEqual(result["hours"], 24)
+            self.assertEqual(result["bucket"], "hour")
+            self.assertEqual(len(result["by_day"]), 24)
+            self.assertEqual(result["totals"]["total_tokens"], 25)
+            self.assertEqual(result["by_user"][0]["event_count"], 1)
+
     def test_answer_token_usage_storage_is_deferred(self):
         response = {
             "provider_used": "shared:mimo",
@@ -132,6 +174,7 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn('id="analyticsBtn"', html)
         self.assertIn('id="analyticsDashboard"', html)
         self.assertIn("/auth/admin/analytics", html)
+        self.assertIn('<option value="24h">Last 24h</option>', html)
         self.assertIn("dailyTokenChart", html)
         self.assertIn("analyticsUserTable", html)
         self.assertIn("<th>Queries</th>", html)
@@ -139,6 +182,7 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn('id="dailyBarChartBtn"', html)
         self.assertIn('id="dailyLineChartBtn"', html)
         self.assertIn("renderDailyLineChart", html)
+        self.assertIn("Hourly tokens", html)
 
 
 if __name__ == "__main__":
