@@ -2198,7 +2198,7 @@ def flow_summary_endpoint(
             result["follow_up_reused"] = False
             result["token_usage"] = token_usage_payload(token_usage)
             result["answer_user_type"] = user_type
-            ask_service.record_answer_token_usage(
+            ask_service.schedule_answer_token_usage(
                 user,
                 workspace,
                 "repo.flow_summary",

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import db
+from app import ask_service, db
 from app.auth import routes as auth_routes
 from app.auth.security import hash_password
 
@@ -98,6 +98,35 @@ class TokenAnalyticsTests(unittest.TestCase):
             self.assertEqual(result["by_user"][0]["username"], "admin")
             self.assertEqual(result["by_provider"][0]["provider"], "shared:mimo")
 
+    def test_answer_token_usage_storage_is_deferred(self):
+        response = {
+            "provider_used": "shared:mimo",
+            "token_usage": {
+                "available": True,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cached_input_tokens": 0,
+                "total_tokens": 15,
+                "requests": 1,
+            },
+        }
+        with patch.object(ask_service._ANALYTICS_EXECUTOR, "submit") as submit, \
+             patch.object(db, "record_token_usage") as record_token_usage:
+            scheduled = ask_service.schedule_answer_token_usage(
+                {"id": 7, "username": "reader"},
+                "sample-workspace",
+                "repo.ask",
+                response,
+                repo={"slug": "sample"},
+            )
+
+        self.assertTrue(scheduled)
+        record_token_usage.assert_not_called()
+        submit.assert_called_once()
+        payload = submit.call_args.args[1]
+        self.assertEqual(payload["token_usage"]["total_tokens"], 15)
+        self.assertEqual(payload["repo_slug"], "sample")
+
     def test_admin_page_contains_analytics_dashboard_entry_point(self):
         html = (Path(__file__).resolve().parents[1] / "app/static/admin.html").read_text()
         self.assertIn('id="analyticsBtn"', html)
@@ -105,6 +134,11 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn("/auth/admin/analytics", html)
         self.assertIn("dailyTokenChart", html)
         self.assertIn("analyticsUserTable", html)
+        self.assertIn("<th>Queries</th>", html)
+        self.assertIn("provider-total", html)
+        self.assertIn('id="dailyBarChartBtn"', html)
+        self.assertIn('id="dailyLineChartBtn"', html)
+        self.assertIn("renderDailyLineChart", html)
 
 
 if __name__ == "__main__":

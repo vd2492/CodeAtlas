@@ -231,17 +231,29 @@
     .analytics-head h2 { margin:0 0 4px; color:var(--fg); }
     .analytics-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
     .analytics-actions select { width:auto; min-width:118px; padding:7px 10px; font-size:13px; }
+    .panel, .metric-tile { min-width:0; }
     .metric-grid { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px; margin-bottom:14px; }
     .metric-tile {
       min-height:82px; padding:13px; border:1px solid var(--line); border-radius:8px;
       background:rgba(148,163,184,0.08);
     }
     .metric-label { color:var(--muted); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
-    .metric-value { margin-top:8px; color:var(--fg); font-size:22px; font-weight:700; line-height:1.1; }
+    .metric-value { margin-top:8px; color:var(--fg); font-size:22px; font-weight:700; line-height:1.1; overflow-wrap:anywhere; }
     .analytics-grid { display:grid; grid-template-columns:minmax(0, 1.45fr) minmax(260px, .55fr); gap:14px; }
+    .analytics-grid > * { min-width:0; }
     .chart-frame { min-height:260px; display:flex; flex-direction:column; }
     .chart-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; }
     .chart-title h2 { margin:0; color:var(--fg); }
+    .chart-title-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; }
+    .chart-toggle {
+      display:grid; grid-template-columns:1fr 1fr; gap:3px; padding:3px;
+      border:1px solid var(--line); border-radius:8px; background:rgba(148,163,184,0.08);
+    }
+    .chart-toggle button {
+      min-width:42px; min-height:28px; padding:4px 8px; border-radius:6px;
+      color:var(--muted); background:transparent; border:0;
+    }
+    .chart-toggle button.active { color:#04140c; background:var(--accent); }
     .bar-chart { flex:1; min-height:190px; display:flex; align-items:flex-end; gap:5px; padding-top:10px; }
     .bar-column { flex:1; min-width:7px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:7px; }
     .bar {
@@ -251,10 +263,22 @@
     }
     .bar.zero { background:rgba(148,163,184,0.12); border-color:var(--line); }
     .bar-label { color:var(--muted); font-size:10px; line-height:1; transform:rotate(-45deg); transform-origin:center top; white-space:nowrap; height:30px; }
+    .line-chart { flex:1; min-height:220px; display:block; width:100%; }
+    .line-chart svg { width:100%; height:220px; display:block; }
+    .line-chart text { fill:var(--muted); font-size:10px; font-family:inherit; }
+    .line-chart .axis { stroke:rgba(148,163,184,0.35); stroke-width:1; stroke-dasharray:8 8; }
+    .line-chart .series { fill:none; stroke:var(--accent); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+    .line-chart .area { fill:rgba(95,227,154,0.14); }
+    .line-chart .point { fill:var(--panel); stroke:var(--accent); stroke-width:2; }
     .analytics-scroll { overflow:auto; scrollbar-gutter:stable; }
-    #analyticsUserTable { min-width:640px; }
+    #analyticsUserTable { min-width:760px; }
     .provider-list { display:grid; gap:9px; }
-    .provider-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--line); }
+    .provider-row {
+      display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:start; gap:12px;
+      padding:8px 0; border-bottom:1px solid var(--line);
+    }
+    .provider-row span:first-child { min-width:0; overflow-wrap:anywhere; }
+    .provider-total { min-width:92px; text-align:right; }
     .provider-row:last-child { border-bottom:0; }
     .empty-state { min-height:120px; display:grid; place-items:center; color:var(--muted); font-size:13px; text-align:center; }
     .branch-detail { font-size: 11px; color: var(--muted); line-height: 1.55; margin-top: 3px; }
@@ -737,7 +761,13 @@
       <div class="panel chart-frame">
         <div class="chart-title">
           <h2>Daily tokens</h2>
-          <span id="analyticsRangeLabel" class="muted" style="font-size:12px;"></span>
+          <div class="chart-title-actions">
+            <div class="chart-toggle" role="group" aria-label="Daily token chart type">
+              <button id="dailyBarChartBtn" type="button" class="active" title="Bar chart" aria-label="Show bar chart" aria-pressed="true">Bar</button>
+              <button id="dailyLineChartBtn" type="button" title="Line graph" aria-label="Show line graph" aria-pressed="false">Line</button>
+            </div>
+            <span id="analyticsRangeLabel" class="muted" style="font-size:12px;"></span>
+          </div>
         </div>
         <div id="dailyTokenChart" class="bar-chart" aria-label="Daily token consumption chart"></div>
       </div>
@@ -751,7 +781,7 @@
     <div class="panel analytics-scroll">
       <table id="analyticsUserTable">
         <thead>
-          <tr><th>User name</th><th>Email</th><th>Token consumption</th><th>Requests</th><th>Last used</th></tr>
+          <tr><th>User name</th><th>Email</th><th>Token consumption</th><th>Queries</th><th>LLM requests</th><th>Last used</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -765,6 +795,8 @@ const $ = (id) => document.getElementById(id);
 let REPOS = [];
 let CURRENT_USER = null;
 let AUTH_CONFIG = {};
+let DAILY_CHART_TYPE = "bar";
+let DAILY_CHART_ROWS = [];
 const numberFormatter = new Intl.NumberFormat();
 
 function formatLocalTimestamp(value, fallback = "") {
@@ -808,9 +840,27 @@ function renderMetric(id, value) {
   $(id).textContent = formatNumber(value);
 }
 
+function setDailyChartType(type) {
+  DAILY_CHART_TYPE = type === "line" ? "line" : "bar";
+  $("dailyBarChartBtn").classList.toggle("active", DAILY_CHART_TYPE === "bar");
+  $("dailyLineChartBtn").classList.toggle("active", DAILY_CHART_TYPE === "line");
+  $("dailyBarChartBtn").setAttribute("aria-pressed", String(DAILY_CHART_TYPE === "bar"));
+  $("dailyLineChartBtn").setAttribute("aria-pressed", String(DAILY_CHART_TYPE === "line"));
+  renderDailyTokenChart(DAILY_CHART_ROWS);
+}
+
 function renderDailyTokenChart(days) {
+  DAILY_CHART_ROWS = days || [];
+  return DAILY_CHART_TYPE === "line"
+    ? renderDailyLineChart(DAILY_CHART_ROWS)
+    : renderDailyBarChart(DAILY_CHART_ROWS);
+}
+
+function renderDailyBarChart(days) {
   const chart = $("dailyTokenChart");
   chart.innerHTML = "";
+  chart.className = "bar-chart";
+  chart.setAttribute("aria-label", "Daily token consumption bar chart");
   const rows = days || [];
   if (!rows.length) {
     chart.innerHTML = '<div class="empty-state">No daily token data.</div>';
@@ -835,6 +885,52 @@ function renderDailyTokenChart(days) {
   });
 }
 
+function renderDailyLineChart(days) {
+  const chart = $("dailyTokenChart");
+  chart.innerHTML = "";
+  chart.className = "line-chart";
+  chart.setAttribute("aria-label", "Daily token consumption line graph");
+  const rows = days || [];
+  if (!rows.length) {
+    chart.innerHTML = '<div class="empty-state">No daily token data.</div>';
+    return;
+  }
+  const width = 760;
+  const height = 220;
+  const pad = { top: 16, right: 18, bottom: 38, left: 18 };
+  const maxTokens = Math.max(1, ...rows.map(row => Number(row.total_tokens) || 0));
+  const usableWidth = width - pad.left - pad.right;
+  const usableHeight = height - pad.top - pad.bottom;
+  const pointFor = (row, index) => {
+    const ratio = rows.length <= 1 ? 0 : index / (rows.length - 1);
+    const value = Number(row.total_tokens) || 0;
+    return {
+      x: pad.left + ratio * usableWidth,
+      y: pad.top + usableHeight - (value / maxTokens) * usableHeight,
+      value,
+    };
+  };
+  const points = rows.map(pointFor);
+  const line = points.map(point => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const area = `${pad.left},${pad.top + usableHeight} ${line} ${pad.left + usableWidth},${pad.top + usableHeight}`;
+  const labelStep = Math.ceil(rows.length / 8);
+  chart.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Daily token consumption line graph">
+      <polygon class="area" points="${area}"></polygon>
+      <line class="axis" x1="${pad.left}" y1="${pad.top + usableHeight}" x2="${pad.left + usableWidth}" y2="${pad.top + usableHeight}"></line>
+      <polyline class="series" points="${line}"></polyline>
+      ${points.map((point, index) => point.value
+        ? `<circle class="point" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="3"><title>${esc(rows[index].day)}: ${formatNumber(point.value)} tokens</title></circle>`
+        : ""
+      ).join("")}
+      ${rows.map((row, index) => index % labelStep === 0
+        ? `<text x="${points[index].x.toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(formatShortDate(row.day))}</text>`
+        : ""
+      ).join("")}
+    </svg>
+  `;
+}
+
 function renderProviderUsage(rows) {
   const panel = $("providerUsage");
   panel.innerHTML = "";
@@ -846,7 +942,7 @@ function renderProviderUsage(rows) {
     const item = document.createElement("div");
     item.className = "provider-row";
     item.innerHTML = `<span>${esc(row.provider || "unknown")}</span>`
-      + `<span class="muted">${formatNumber(row.total_tokens)} tokens</span>`;
+      + `<span class="muted provider-total">${formatNumber(row.total_tokens)} tokens</span>`;
     panel.appendChild(item);
   }
 }
@@ -862,6 +958,7 @@ function renderAnalyticsUsers(rows) {
     tr.innerHTML = `<td>${esc(row.username || "Unknown user")}</td>`
       + `<td class="muted">${esc(row.email || "")}</td>`
       + `<td>${formatNumber(row.total_tokens)}</td>`
+      + `<td class="muted">${formatNumber(row.event_count)}</td>`
       + `<td class="muted">${formatNumber(row.llm_requests)}</td>`
       + `<td class="muted">${esc(formatLocalTimestamp(row.last_used_at, "never"))}</td>`;
     tbody.appendChild(tr);
@@ -1927,6 +2024,8 @@ $("cfgRepo").onchange = () => {
   $("cfgText").value = "";
   updateRepoToolActions();
 };
+$("dailyBarChartBtn").onclick = () => setDailyChartType("bar");
+$("dailyLineChartBtn").onclick = () => setDailyChartType("line");
 $("userModeGoogle").onclick = () => setUserCreateMode("google");
 $("userModeCredentials").onclick = () => setUserCreateMode("credentials");
 

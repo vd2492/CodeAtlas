@@ -8,8 +8,10 @@ the same cache, follow-up, and deep-investigation behavior as the browser UI.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import HTTPException
@@ -25,6 +27,12 @@ from .repos.branches import (
     submit_branch_job,
 )
 
+logger = logging.getLogger(__name__)
+_ANALYTICS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("CODEATLAS_ANALYTICS_MAX_WORKERS", "1"))),
+    thread_name_prefix="codeatlas-analytics",
+)
+
 
 def _main():
     from . import main
@@ -32,7 +40,14 @@ def _main():
     return main
 
 
-def record_answer_token_usage(
+def _record_token_usage_event(payload: dict) -> None:
+    try:
+        db.record_token_usage(**payload)
+    except Exception:
+        logger.exception("Failed to record token usage analytics event.")
+
+
+def schedule_answer_token_usage(
     user: dict,
     workspace: str,
     endpoint: str,
@@ -40,22 +55,24 @@ def record_answer_token_usage(
     *,
     repo: Optional[dict] = None,
 ) -> bool:
-    """Best-effort analytics recording that never blocks an answer response."""
+    """Schedule analytics storage from the response's existing usage payload."""
     usage = (response or {}).get("token_usage") or {}
     if not usage.get("available"):
         return False
+    payload = {
+        "user_id": user.get("id"),
+        "username": user.get("username"),
+        "repo_slug": repo.get("slug") if repo else None,
+        "workspace": workspace,
+        "endpoint": endpoint,
+        "provider_used": (response or {}).get("provider_used"),
+        "token_usage": dict(usage),
+    }
     try:
-        resolved_repo = repo or db.get_repo_by_workspace(workspace)
-        return db.record_token_usage(
-            user_id=user.get("id"),
-            username=user.get("username"),
-            repo_slug=resolved_repo.get("slug") if resolved_repo else None,
-            workspace=workspace,
-            endpoint=endpoint,
-            provider_used=(response or {}).get("provider_used"),
-            token_usage=usage,
-        )
+        _ANALYTICS_EXECUTOR.submit(_record_token_usage_event, payload)
+        return True
     except Exception:
+        logger.exception("Failed to schedule token usage analytics event.")
         return False
 
 
@@ -216,7 +233,7 @@ def answer_single_request(
                     question=request.question,
                     response=response,
                 )
-                record_answer_token_usage(
+                schedule_answer_token_usage(
                     user,
                     workspace,
                     "repo.ask.follow_up",
@@ -266,7 +283,7 @@ def answer_single_request(
                     question=request.question,
                     response=response,
                 )
-            record_answer_token_usage(
+            schedule_answer_token_usage(
                 user,
                 workspace,
                 "repo.ask",
@@ -396,7 +413,7 @@ def answer_compare_request(
                     question=request.question,
                     response=response,
                 )
-                record_answer_token_usage(
+                schedule_answer_token_usage(
                     user,
                     comparison_workspace,
                     "repo.compare.follow_up",
@@ -438,7 +455,7 @@ def answer_compare_request(
                 question=request.question,
                 response=response,
             )
-            record_answer_token_usage(
+            schedule_answer_token_usage(
                 user,
                 comparison_workspace,
                 "repo.compare",
