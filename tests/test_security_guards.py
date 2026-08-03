@@ -64,12 +64,21 @@ class SecurityGuardTests(unittest.TestCase):
             }
         )
 
-        with patch.object(main.db, "delete_session") as delete_session:
+        with patch.object(main.db, "delete_session") as delete_session, \
+             patch.object(main.db, "record_site_visit") as record_site_visit, \
+             patch.object(main.secrets, "token_urlsafe", return_value="visitor-token"):
             response = main.root(request)
 
         delete_session.assert_called_once_with("session-token")
-        self.assertIn("ca_session=", response.headers["set-cookie"])
-        self.assertIn("Max-Age=0", response.headers["set-cookie"])
+        record_site_visit.assert_called_once_with("visitor-token")
+        set_cookie = "\n".join(
+            value.decode("latin-1")
+            for key, value in response.raw_headers
+            if key == b"set-cookie"
+        )
+        self.assertIn("ca_session=", set_cookie)
+        self.assertIn("Max-Age=0", set_cookie)
+        self.assertIn("ca_site_visitor=visitor-token", set_cookie)
         self.assertEqual(response.headers["cache-control"], "no-store")
 
     def test_eager_source_scan_skips_symlink_escapes_and_secrets(self):

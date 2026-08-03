@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import secrets
 import subprocess
 import time
 from collections import defaultdict
@@ -55,7 +56,7 @@ from .llm.client import (
 from .llm.admission import LLMCapacityError, llm_admission
 from .auth.routes import router as auth_router, load_user_llm
 from .auth.security import hash_password
-from .auth.sessions import COOKIE_NAME, clear_session_cookie, require_user
+from .auth.sessions import COOKIE_NAME, COOKIE_SECURE, clear_session_cookie, require_user
 from .repos.branch_routes import router as branch_router
 from .repos.branches import (
     ensure_legacy_repo_branches,
@@ -68,6 +69,8 @@ from .slack.routes import router as slack_router
 app = FastAPI(title="CodeAtlas", version="0.2.0")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+VISITOR_COOKIE_NAME = "ca_site_visitor"
+VISITOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 # Multi-tenant routers (auth + admin repo lifecycle).
 app.include_router(auth_router)
@@ -662,8 +665,19 @@ def repo_summary_dynamic_from_loaded(nodes: list[dict], links: list[dict]) -> di
 def root(request: Request):
     """Marketing page. Visiting home always starts a signed-out session."""
     db.delete_session(request.cookies.get(COOKIE_NAME))
+    visitor_key = request.cookies.get(VISITOR_COOKIE_NAME) or secrets.token_urlsafe(24)
+    db.record_site_visit(visitor_key)
     response = FileResponse(STATIC_DIR / "home.html")
     clear_session_cookie(response)
+    response.set_cookie(
+        VISITOR_COOKIE_NAME,
+        visitor_key,
+        max_age=VISITOR_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 

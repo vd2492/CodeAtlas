@@ -131,6 +131,13 @@ ON token_usage_events(created_at);
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_events_user
 ON token_usage_events(user_id);
+
+CREATE TABLE IF NOT EXISTS site_visitors (
+    visitor_key   TEXT PRIMARY KEY,
+    first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    visit_count   INTEGER NOT NULL DEFAULT 1
+);
 """
 
 
@@ -389,6 +396,24 @@ def delete_user(user_id: int) -> None:
     """Delete a user; FK cascade removes their sessions and repo_access grants."""
     with connect() as conn:
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def record_site_visit(visitor_key: str) -> None:
+    if not visitor_key:
+        return
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO site_visitors (visitor_key) VALUES (?) "
+            "ON CONFLICT(visitor_key) DO UPDATE SET "
+            "last_seen_at = datetime('now'), "
+            "visit_count = visit_count + 1",
+            (visitor_key,),
+        )
+
+
+def site_visitor_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM site_visitors").fetchone()[0]
 
 
 def set_user_llm_creds(user_id: int, blob: Optional[str]) -> None:

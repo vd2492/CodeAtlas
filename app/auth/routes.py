@@ -410,7 +410,10 @@ def me(user: Optional[dict] = Depends(get_current_user)):
         repos = db.list_repos()
     else:
         repos = db.list_repos_for_user(user["id"])
-    return {"user": _public_user(user), "repos": [_public_repo(r) for r in repos]}
+    payload = {"user": _public_user(user), "repos": [_public_repo(r) for r in repos]}
+    if user["role"] == "admin":
+        payload["site_visitors"] = db.site_visitor_count()
+    return payload
 
 
 @router.get("/admin/users")
@@ -434,14 +437,17 @@ def admin_analytics(
     tz_offset_minutes: int = 0,
 ):
     if (range or "").strip().lower() == "24h":
-        return db.token_usage_analytics(
+        analytics = db.token_usage_analytics(
             hours=24,
             tz_offset_minutes=tz_offset_minutes,
         )
-    return db.token_usage_analytics(
-        days=days,
-        tz_offset_minutes=tz_offset_minutes,
-    )
+    else:
+        analytics = db.token_usage_analytics(
+            days=days,
+            tz_offset_minutes=tz_offset_minutes,
+        )
+    analytics["site_visitors"] = db.site_visitor_count()
+    return analytics
 
 
 @router.post("/admin/users")

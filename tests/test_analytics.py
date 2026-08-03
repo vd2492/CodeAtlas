@@ -71,12 +71,25 @@ class TokenAnalyticsTests(unittest.TestCase):
             self.assertEqual(providers["shared:mimo"]["total_tokens"], 150)
             self.assertEqual(providers["user:openai"]["llm_requests"], 2)
 
+    def test_records_unique_marketing_page_visitors(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ):
+            db.init_db()
+
+            db.record_site_visit("visitor-a")
+            db.record_site_visit("visitor-a")
+            db.record_site_visit("visitor-b")
+
+            self.assertEqual(db.site_visitor_count(), 2)
+
     def test_admin_analytics_route_returns_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
             db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
         ):
             db.init_db()
             admin = db.create_user("admin", hash_password("admin-pass"), role="admin")
+            db.record_site_visit("visitor-a")
             db.record_token_usage(
                 user_id=admin["id"],
                 username=admin["username"],
@@ -97,6 +110,7 @@ class TokenAnalyticsTests(unittest.TestCase):
             self.assertEqual(result["totals"]["total_tokens"], 25)
             self.assertEqual(result["by_user"][0]["username"], "admin")
             self.assertEqual(result["by_provider"][0]["provider"], "shared:mimo")
+            self.assertEqual(result["site_visitors"], 1)
 
     def test_admin_analytics_route_supports_last_24h(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
@@ -142,7 +156,8 @@ class TokenAnalyticsTests(unittest.TestCase):
 
     def test_admin_analytics_route_passes_timezone_offset(self):
         admin = {"id": 1, "username": "admin", "role": "admin"}
-        with patch.object(auth_routes.db, "token_usage_analytics") as analytics:
+        with patch.object(auth_routes.db, "token_usage_analytics") as analytics, \
+             patch.object(auth_routes.db, "site_visitor_count", return_value=3):
             analytics.return_value = {"ok": True}
 
             self.assertEqual(
@@ -151,7 +166,7 @@ class TokenAnalyticsTests(unittest.TestCase):
                     range="24h",
                     tz_offset_minutes=330,
                 ),
-                {"ok": True},
+                {"ok": True, "site_visitors": 3},
             )
 
         analytics.assert_called_once_with(hours=24, tz_offset_minutes=330)
@@ -196,6 +211,8 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn('id="dailyTokenChartViewport"', html)
         self.assertIn("bindDailyChartPan", html)
         self.assertIn("analyticsUserTable", html)
+        self.assertIn('id="siteVisitedUsers"', html)
+        self.assertIn("Total site visitors", html)
         self.assertIn("<th>Queries</th>", html)
         self.assertIn("provider-total", html)
         self.assertIn('id="dailyBarChartBtn"', html)
