@@ -431,10 +431,17 @@ def admin_analytics(
     admin: dict = Depends(require_admin),
     days: int = 30,
     range: str = None,
+    tz_offset_minutes: int = 0,
 ):
     if (range or "").strip().lower() == "24h":
-        return db.token_usage_analytics(hours=24)
-    return db.token_usage_analytics(days=days)
+        return db.token_usage_analytics(
+            hours=24,
+            tz_offset_minutes=tz_offset_minutes,
+        )
+    return db.token_usage_analytics(
+        days=days,
+        tz_offset_minutes=tz_offset_minutes,
+    )
 
 
 @router.post("/admin/users")

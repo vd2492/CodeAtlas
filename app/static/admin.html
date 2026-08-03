@@ -254,6 +254,11 @@
       color:var(--muted); background:transparent; border:0;
     }
     .chart-toggle button.active { color:#04140c; background:var(--accent); }
+    .chart-scroll {
+      flex:1; min-height:220px; overflow-x:auto; overflow-y:hidden;
+      cursor:grab; overscroll-behavior-x:contain; scrollbar-gutter:stable;
+    }
+    .chart-scroll.dragging { cursor:grabbing; user-select:none; }
     .bar-chart { flex:1; min-height:190px; display:flex; align-items:flex-end; gap:5px; padding-top:10px; }
     .bar-column { flex:1; min-width:7px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:7px; }
     .bar {
@@ -770,7 +775,9 @@
             <span id="analyticsRangeLabel" class="muted" style="font-size:12px;"></span>
           </div>
         </div>
-        <div id="dailyTokenChart" class="bar-chart" aria-label="Daily token consumption chart"></div>
+        <div id="dailyTokenChartViewport" class="chart-scroll" tabindex="0" aria-label="Move daily token chart horizontally">
+          <div id="dailyTokenChart" class="bar-chart" aria-label="Daily token consumption chart"></div>
+        </div>
       </div>
       <div class="panel">
         <h2 style="margin-top:0;color:var(--fg);">Provider usage</h2>
@@ -831,6 +838,14 @@ function formatBucketLabel(value) {
   return formatShortDate(raw);
 }
 
+function formatBucketTitle(value) {
+  const raw = String(value || "");
+  if (raw.includes(" ")) {
+    return raw.slice(0, 16);
+  }
+  return raw;
+}
+
 function setAdminView(view) {
   const showingAnalytics = view === "analytics";
   $("console").classList.toggle("hidden", showingAnalytics);
@@ -848,6 +863,49 @@ function closeAnalyticsDashboard() {
 
 function renderMetric(id, value) {
   $(id).textContent = formatNumber(value);
+}
+
+function chartMinWidth(rows) {
+  return Math.max(760, (rows || []).length * 44);
+}
+
+function scrollDailyChartToLatest() {
+  const viewport = $("dailyTokenChartViewport");
+  if (!viewport) return;
+  requestAnimationFrame(() => {
+    viewport.scrollLeft = viewport.scrollWidth;
+  });
+}
+
+function bindDailyChartPan() {
+  const viewport = $("dailyTokenChartViewport");
+  if (!viewport || viewport.dataset.panBound === "true") return;
+  viewport.dataset.panBound = "true";
+  let dragging = false;
+  let startX = 0;
+  let startLeft = 0;
+  const stopDrag = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    viewport.classList.remove("dragging");
+    try { viewport.releasePointerCapture(event.pointerId); } catch (e) {}
+  };
+  viewport.addEventListener("pointerdown", event => {
+    if (event.button !== undefined && event.button !== 0) return;
+    dragging = true;
+    startX = event.clientX;
+    startLeft = viewport.scrollLeft;
+    viewport.classList.add("dragging");
+    try { viewport.setPointerCapture(event.pointerId); } catch (e) {}
+  });
+  viewport.addEventListener("pointermove", event => {
+    if (!dragging) return;
+    event.preventDefault();
+    viewport.scrollLeft = startLeft - (event.clientX - startX);
+  });
+  viewport.addEventListener("pointerup", stopDrag);
+  viewport.addEventListener("pointercancel", stopDrag);
+  viewport.addEventListener("pointerleave", stopDrag);
 }
 
 function setDailyChartType(type) {
@@ -872,6 +930,7 @@ function renderDailyBarChart(days) {
   chart.className = "bar-chart";
   chart.setAttribute("aria-label", "Daily token consumption bar chart");
   const rows = days || [];
+  chart.style.minWidth = `${chartMinWidth(rows)}px`;
   if (!rows.length) {
     chart.innerHTML = '<div class="empty-state">No daily token data.</div>';
     return;
@@ -884,7 +943,7 @@ function renderDailyBarChart(days) {
     const bar = document.createElement("div");
     bar.className = `bar${total ? "" : " zero"}`;
     bar.style.height = `${Math.max(total ? 4 : 2, Math.round((total / maxTokens) * 170))}px`;
-    bar.title = `${row.day}: ${formatNumber(total)} tokens`;
+    bar.title = `${formatBucketTitle(row.day)}: ${formatNumber(total)} tokens`;
     const label = document.createElement("div");
     label.className = "bar-label";
     label.textContent = index % Math.ceil(rows.length / 8) === 0
@@ -893,6 +952,7 @@ function renderDailyBarChart(days) {
     column.append(bar, label);
     chart.appendChild(column);
   });
+  scrollDailyChartToLatest();
 }
 
 function renderDailyLineChart(days) {
@@ -901,11 +961,12 @@ function renderDailyLineChart(days) {
   chart.className = "line-chart";
   chart.setAttribute("aria-label", "Daily token consumption line graph");
   const rows = days || [];
+  const width = chartMinWidth(rows);
+  chart.style.minWidth = `${width}px`;
   if (!rows.length) {
     chart.innerHTML = '<div class="empty-state">No daily token data.</div>';
     return;
   }
-  const width = 760;
   const height = 220;
   const pad = { top: 16, right: 18, bottom: 38, left: 18 };
   const maxTokens = Math.max(1, ...rows.map(row => Number(row.total_tokens) || 0));
@@ -930,7 +991,7 @@ function renderDailyLineChart(days) {
       <line class="axis" x1="${pad.left}" y1="${pad.top + usableHeight}" x2="${pad.left + usableWidth}" y2="${pad.top + usableHeight}"></line>
       <polyline class="series" points="${line}"></polyline>
       ${points.map((point, index) => point.value
-        ? `<circle class="point" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="3"><title>${esc(rows[index].day)}: ${formatNumber(point.value)} tokens</title></circle>`
+        ? `<circle class="point" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="3"><title>${esc(formatBucketTitle(rows[index].day))}: ${formatNumber(point.value)} tokens</title></circle>`
         : ""
       ).join("")}
       ${rows.map((row, index) => index % labelStep === 0
@@ -939,6 +1000,7 @@ function renderDailyLineChart(days) {
       ).join("")}
     </svg>
   `;
+  scrollDailyChartToLatest();
 }
 
 function renderProviderUsage(rows) {
@@ -977,9 +1039,10 @@ function renderAnalyticsUsers(rows) {
 
 async function refreshAnalytics() {
   const range = $("analyticsDays").value || "30";
+  const tzOffset = -new Date().getTimezoneOffset();
   const query = range === "24h"
-    ? "range=24h"
-    : `days=${encodeURIComponent(range)}`;
+    ? `range=24h&tz_offset_minutes=${encodeURIComponent(tzOffset)}`
+    : `days=${encodeURIComponent(range)}&tz_offset_minutes=${encodeURIComponent(tzOffset)}`;
   $("analyticsRefreshBtn").disabled = true;
   try {
     const data = await api(`/auth/admin/analytics?${query}`);
@@ -2045,6 +2108,7 @@ $("cfgRepo").onchange = () => {
 };
 $("dailyBarChartBtn").onclick = () => setDailyChartType("bar");
 $("dailyLineChartBtn").onclick = () => setDailyChartType("line");
+bindDailyChartPan();
 $("userModeGoogle").onclick = () => setUserCreateMode("google");
 $("userModeCredentials").onclick = () => setUserCreateMode("credentials");
 

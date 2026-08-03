@@ -140,6 +140,22 @@ class TokenAnalyticsTests(unittest.TestCase):
             self.assertEqual(result["totals"]["total_tokens"], 25)
             self.assertEqual(result["by_user"][0]["event_count"], 1)
 
+    def test_admin_analytics_route_passes_timezone_offset(self):
+        admin = {"id": 1, "username": "admin", "role": "admin"}
+        with patch.object(auth_routes.db, "token_usage_analytics") as analytics:
+            analytics.return_value = {"ok": True}
+
+            self.assertEqual(
+                auth_routes.admin_analytics(
+                    admin=admin,
+                    range="24h",
+                    tz_offset_minutes=330,
+                ),
+                {"ok": True},
+            )
+
+        analytics.assert_called_once_with(hours=24, tz_offset_minutes=330)
+
     def test_answer_token_usage_storage_is_deferred(self):
         response = {
             "provider_used": "shared:mimo",
@@ -175,7 +191,10 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn('id="analyticsDashboard"', html)
         self.assertIn("/auth/admin/analytics", html)
         self.assertIn('<option value="24h">Last 24h</option>', html)
+        self.assertIn("tz_offset_minutes", html)
         self.assertIn("dailyTokenChart", html)
+        self.assertIn('id="dailyTokenChartViewport"', html)
+        self.assertIn("bindDailyChartPan", html)
         self.assertIn("analyticsUserTable", html)
         self.assertIn("<th>Queries</th>", html)
         self.assertIn("provider-total", html)

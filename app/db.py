@@ -984,22 +984,39 @@ def record_token_usage(
     return True
 
 
-def token_usage_analytics(days: int = 30, hours: int = None) -> dict:
+def token_usage_analytics(
+    days: int = 30,
+    hours: int = None,
+    tz_offset_minutes: int = 0,
+) -> dict:
     chart_days = max(1, min(_usage_int(days) or 30, 365))
     chart_hours = max(1, min(_usage_int(hours), 24 * 31)) if hours else None
+    try:
+        tz_offset = int(tz_offset_minutes or 0)
+    except (TypeError, ValueError):
+        tz_offset = 0
+    tz_offset = max(-14 * 60, min(14 * 60, tz_offset))
+    tz_delta = timedelta(minutes=tz_offset)
+    sqlite_tz_modifier = f"{tz_offset:+d} minutes"
     now = datetime.now(timezone.utc)
+    local_now = (now + tz_delta).replace(tzinfo=None)
     if chart_hours:
-        start_at = now - timedelta(hours=chart_hours - 1)
-        start_at = start_at.replace(minute=0, second=0, microsecond=0)
+        local_start = (local_now - timedelta(hours=chart_hours - 1)).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        start_at = local_start - tz_delta
         period_filter = "created_at >= datetime(?)"
         period_params = (start_at.strftime("%Y-%m-%d %H:%M:%S"),)
-        bucket_expr = "strftime('%Y-%m-%d %H:00:00', created_at)"
+        bucket_expr = "strftime('%Y-%m-%d %H:00:00', datetime(created_at, ?))"
     else:
-        today = now.date()
-        start_day = today - timedelta(days=chart_days - 1)
-        period_filter = "date(created_at) >= date(?)"
-        period_params = (start_day.isoformat(),)
-        bucket_expr = "date(created_at)"
+        local_start_day = local_now.date() - timedelta(days=chart_days - 1)
+        local_start = datetime.combine(local_start_day, datetime.min.time())
+        start_at = local_start - tz_delta
+        period_filter = "created_at >= datetime(?)"
+        period_params = (start_at.strftime("%Y-%m-%d %H:%M:%S"),)
+        bucket_expr = "date(datetime(created_at, ?))"
     with connect() as conn:
         totals = dict(conn.execute(
             "SELECT "
@@ -1064,7 +1081,7 @@ def token_usage_analytics(days: int = 30, hours: int = None) -> dict:
                 "FROM token_usage_events "
                 f"WHERE {period_filter} "
                 f"GROUP BY {bucket_expr} ORDER BY bucket",
-                period_params,
+                (sqlite_tz_modifier, *period_params, sqlite_tz_modifier),
             ).fetchall()
         }
         provider_rows = [
@@ -1086,9 +1103,11 @@ def token_usage_analytics(days: int = 30, hours: int = None) -> dict:
     bucket_count = chart_hours or chart_days
     for offset in range(bucket_count):
         if chart_hours:
-            bucket = (start_at + timedelta(hours=offset)).strftime("%Y-%m-%d %H:00:00")
+            bucket = (local_start + timedelta(hours=offset)).strftime(
+                "%Y-%m-%d %H:00:00"
+            )
         else:
-            bucket = (start_day + timedelta(days=offset)).isoformat()
+            bucket = (local_start_day + timedelta(days=offset)).isoformat()
         by_day.append({
             "day": bucket,
             "input_tokens": 0,
