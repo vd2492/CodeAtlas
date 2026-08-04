@@ -1078,6 +1078,18 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
     nodes, links = load_graph(graph_path(workspace))
     source_root = _safe_source_root(workspace)
     node_meta_cache = {}
+    link_meta_by_node = {}
+    for link in links:
+        meta = (
+            link.get("source_file", "unknown"),
+            link.get("source_location", "?"),
+        )
+        source = link.get("source")
+        target = link.get("target")
+        if source:
+            link_meta_by_node.setdefault(source, meta)
+        if target:
+            link_meta_by_node.setdefault(target, meta)
 
     def node_id_of(node):
         return str(node.get("id") or node.get("label") or node.get("name") or "")
@@ -1087,7 +1099,7 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
 
     def meta_for_node(node_id: str):
         if node_id not in node_meta_cache:
-            node_meta_cache[node_id] = meta_for(node_id, links)
+            node_meta_cache[node_id] = link_meta_by_node.get(node_id, ("unknown", "?"))
         return node_meta_cache[node_id]
 
     def payload_for_node(node_id: str, score: int = 0):
@@ -2152,6 +2164,114 @@ def flow_summary_question(flow_title: str, user_type: str) -> str:
     )
 
 
+def build_flow_summary_context(
+    question: str,
+    flow_data: dict,
+    workspace: str,
+    user_type: str,
+) -> dict:
+    """Use the selected flow payload directly instead of rediscovering it via
+    broad repository search. Flow chips are already graph-scoped; this keeps the
+    LLM request small, relevant, and fast."""
+    source_root = _safe_source_root(workspace)
+    response_style_instruction = (
+        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        if user_type == "product_team"
+        else ""
+    )
+    sections = [
+        ("entry_points", flow_data.get("entry_points") or flow_data.get("screens") or []),
+        ("viewmodels", flow_data.get("viewmodels") or []),
+        ("repositories", flow_data.get("repositories") or []),
+        ("important_methods", flow_data.get("important_methods") or []),
+    ]
+    context_nodes = []
+    seen_nodes = set()
+
+    for section, items in sections:
+        limit = 8 if section == "important_methods" else 12
+        for item in items[:limit]:
+            node_id = item.get("node")
+            if not node_id or node_id in seen_nodes:
+                continue
+            seen_nodes.add(node_id)
+            payload = dict(item)
+            payload["section"] = section
+            excerpt = read_source_excerpt(
+                payload.get("source_file", ""),
+                payload.get("source_location", ""),
+                source_root,
+                max_lines=24,
+                max_chars=900,
+            )
+            if excerpt:
+                payload["source_excerpt"] = excerpt["code"]
+                payload["excerpt_range"] = (
+                    f"L{excerpt['start_line']}-L{excerpt['end_line']}"
+                )
+            context_nodes.append(payload)
+
+    preview_nodes = context_nodes[:LLM_PREVIEW_NODE_LIMIT]
+    return {
+        "question": question,
+        "query_terms": [flow_data.get("topic") or flow_data.get("title") or "flow"],
+        "context_nodes": context_nodes,
+        "context_relations": [],
+        "source_hits": [],
+        "response_style_instruction": response_style_instruction,
+        **(
+            {"product_flow_summary": True}
+            if user_type == "product_team"
+            else {}
+        ),
+        "llm_context_preview": {
+            "instruction": (
+                "Answer using only the selected flow evidence below. Cite source "
+                "files and line numbers for developer-facing claims. If this "
+                "flow evidence is incomplete, say what could not be verified."
+            ),
+            "pre_search_instruction": "",
+            "question": question,
+            "flow": {
+                "title": flow_data.get("title"),
+                "topic": flow_data.get("topic"),
+                "high_level_flow": flow_data.get("high_level_flow"),
+                "sections": {
+                    section: [
+                        {
+                            "name": item.get("name"),
+                            "source": (
+                                f"{item.get('source_file', '')} "
+                                f"{item.get('source_location', '')}"
+                            ).strip(),
+                        }
+                        for item in items
+                    ]
+                    for section, items in sections
+                },
+            },
+            "nodes": [
+                {
+                    "name": n["name"],
+                    "source": (
+                        f'{n.get("source_file", "")} '
+                        f'{n.get("source_location", "")}'
+                    ).strip(),
+                    "section": n.get("section"),
+                    **(
+                        {"code": n["source_excerpt"][:LLM_PREVIEW_SNIPPET_CHARS]}
+                        if n.get("source_excerpt")
+                        else {}
+                    ),
+                }
+                for n in preview_nodes
+            ],
+            "relations": [],
+            "source_search_hits": [],
+        },
+    }
+
+
 @app.post("/repo/ask-llm")
 def ask_llm_endpoint(
     request: AskRequest,
@@ -2187,15 +2307,29 @@ def flow_summary_endpoint(
     user_llm = request.user_llm or load_user_llm(user["id"])
     try:
         with llm_admission.slot(), collect_token_usage() as token_usage:
-            result = answer_question(
+            started_at = time.perf_counter()
+            retrieval_started_at = time.perf_counter()
+            context = build_flow_summary_context(
                 question,
-                workspace=workspace,
+                flow_data,
+                workspace,
+                user_type,
+            )
+            retrieval_ms = round((time.perf_counter() - retrieval_started_at) * 1000, 1)
+            generation_started_at = time.perf_counter()
+            generated = generate(
+                context,
                 user_llm=user_llm,
                 allow_shared_fallback=allow_shared,
                 llm_mode=request.llm_mode,
-                user_type=user_type,
-                answer_mode="flow_summary",
             )
+            generation_ms = round((time.perf_counter() - generation_started_at) * 1000, 1)
+            result = _answer_response(question, generated, context, workspace)
+            result["timings_ms"] = {
+                "retrieval": retrieval_ms,
+                "generation": generation_ms,
+                "total": round((time.perf_counter() - started_at) * 1000, 1),
+            }
             result["question"] = flow_data.get("title") or topic
             result["flow_topic"] = flow_data.get("topic") or topic
             state = conversation_store.create(

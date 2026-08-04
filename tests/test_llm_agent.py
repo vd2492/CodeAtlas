@@ -1,5 +1,6 @@
 import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -766,9 +767,9 @@ class AgentLoopTests(unittest.TestCase):
             return_value={"provider": "openai", "api_key": "saved"},
         ), patch.object(
             main,
-            "answer_question",
+            "generate",
             return_value=generated,
-        ) as answer:
+        ) as generate:
             result = main.flow_summary_endpoint(
                 "createbadgeview",
                 request,
@@ -776,13 +777,55 @@ class AgentLoopTests(unittest.TestCase):
                 user={"id": 7, "user_type": "product_team"},
             )
 
-        question = answer.call_args.args[0]
+        context = generate.call_args.args[0]
+        question = context["llm_context_preview"]["question"]
         self.assertIn("brief product-friendly summary", question)
-        self.assertEqual(answer.call_args.kwargs["user_type"], "product_team")
-        self.assertEqual(answer.call_args.kwargs["llm_mode"], "mimo")
-        self.assertEqual(answer.call_args.kwargs["answer_mode"], "flow_summary")
+        self.assertTrue(context["product_flow_summary"])
+        self.assertEqual(generate.call_args.kwargs["llm_mode"], "mimo")
+        self.assertIsNone(generate.call_args.kwargs.get("toolbox"))
         self.assertEqual(result["question"], "CreatebadgeView flow")
         self.assertEqual(result["flow_topic"], "createbadgeview")
+
+    def test_flow_summary_context_uses_selected_flow_evidence(self):
+        flow_data = {
+            "topic": "createbadgeview",
+            "title": "CreatebadgeView flow",
+            "high_level_flow": "Entry point -> related components -> data/persistence",
+            "entry_points": [
+                {
+                    "name": "CreatebadgeView",
+                    "node": "ui_createbadgeview_createbadgeview",
+                    "source_file": "app/src/main/java/CreatebadgeView.kt",
+                    "source_location": "L12",
+                },
+            ],
+            "viewmodels": [
+                {
+                    "name": "BadgeViewModel",
+                    "node": "viewmodel_badgeviewmodel_badgeviewmodel",
+                    "source_file": "app/src/main/java/BadgeViewModel.kt",
+                    "source_location": "L20",
+                },
+            ],
+            "repositories": [],
+            "important_methods": [],
+        }
+
+        with patch.object(main, "_safe_source_root", return_value=Path("/missing")):
+            context = main.build_flow_summary_context(
+                "Summarize the flow.",
+                flow_data,
+                "sample",
+                "dev_team",
+            )
+
+        preview = context["llm_context_preview"]
+        self.assertEqual(preview["flow"]["title"], "CreatebadgeView flow")
+        self.assertEqual(
+            [node["name"] for node in context["context_nodes"]],
+            ["CreatebadgeView", "BadgeViewModel"],
+        )
+        self.assertEqual(context["source_hits"], [])
 
     def test_answer_compare_combines_context_from_both_branches(self):
         left = {
