@@ -246,6 +246,15 @@
       border: 1px solid var(--border);
       border-radius: 12px;
       background: var(--pre-bg);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.2s ease, background-color 0.2s ease;
+    }
+    .question-history-item:hover,
+    .question-history-item:focus-visible {
+      border-color: rgba(95, 227, 154, 0.42);
+      background: rgba(95, 227, 154, 0.08);
+      outline: none;
     }
     .question-history-meta {
       margin-bottom: 5px;
@@ -277,6 +286,82 @@
     .question-history-copy:hover {
       color: var(--accent);
       border-color: rgba(95, 227, 154, 0.45);
+    }
+    .question-history-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 44;
+      background: rgba(3, 6, 12, 0.58);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+    .question-history-dialog {
+      position: fixed;
+      z-index: 45;
+      top: 50%;
+      left: 50%;
+      width: min(760px, calc(100vw - 32px));
+      max-height: min(780px, calc(100vh - 32px));
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border-strong);
+      border-radius: 16px;
+      background: var(--card-solid);
+      box-shadow: var(--shadow);
+    }
+    .question-history-dialog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .question-history-dialog-title {
+      min-width: 0;
+      font-size: 16px;
+      font-weight: 800;
+    }
+    .question-history-dialog-body {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 18px;
+      overflow-y: auto;
+    }
+    .question-history-dialog-section {
+      min-width: 0;
+    }
+    .question-history-dialog-label {
+      margin-bottom: 6px;
+      color: var(--faint);
+      font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .question-history-dialog-question {
+      margin: 0;
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .question-history-dialog-answer {
+      color: var(--answer);
+      font-size: 15px;
+      line-height: 1.62;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .question-history-dialog-empty {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
     }
 
     /* ---------- Hero ask ---------- */
@@ -1321,6 +1406,23 @@
     </div>
     <div id="questionHistoryList" class="question-history-list"></div>
   </aside>
+  <div id="questionHistoryDialogBackdrop" class="question-history-dialog-backdrop"
+    onclick="closeQuestionHistoryDialog()" hidden></div>
+  <section id="questionHistoryDialog" class="question-history-dialog" role="dialog"
+    aria-modal="true" aria-labelledby="questionHistoryDialogTitle" hidden>
+    <div class="question-history-dialog-head">
+      <div id="questionHistoryDialogTitle" class="question-history-dialog-title">History item</div>
+      <button type="button" class="question-history-close"
+        onclick="closeQuestionHistoryDialog()" aria-label="Close history item"
+        title="Close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M18 6 6 18M6 6l12 12"></path>
+        </svg>
+      </button>
+    </div>
+    <div id="questionHistoryDialogBody" class="question-history-dialog-body"></div>
+  </section>
 
   <!-- Login gate -->
   <div id="loginOverlay" class="overlay" style="display:none;">
@@ -1645,8 +1747,11 @@
         const stored = JSON.parse(sessionStorage.getItem(QUESTION_HISTORY_STORAGE_KEY) || '[]');
         QUESTION_HISTORY = Array.isArray(stored)
           ? stored.filter(item => item && item.question).map(item => ({
+              id: String(item.id || `history-${Date.now()}-${Math.random().toString(36).slice(2)}`),
               question: String(item.question || ''),
               type: String(item.type || 'Question'),
+              answer: item.answer ? String(item.answer) : '',
+              answeredAt: item.answeredAt || null,
               createdAt: item.createdAt || new Date().toISOString(),
             }))
           : [];
@@ -1675,13 +1780,15 @@
       list.innerHTML = QUESTION_HISTORY.map((item, index) => ({ item, index }))
         .reverse()
         .map(({ item, index }) => `
-          <div class="question-history-item">
+          <div class="question-history-item" role="button" tabindex="0"
+            onclick="openQuestionHistoryItem(${index})"
+            onkeydown="handleQuestionHistoryItemKeydown(event, ${index})">
             <div>
               <div class="question-history-meta">${escapeHtml(item.type || 'Question')}</div>
               <div class="question-history-text">${escapeHtml(item.question)}</div>
             </div>
             <button type="button" class="question-history-copy"
-              onclick="copyQuestionHistoryItem(${index})"
+              onclick="event.stopPropagation(); copyQuestionHistoryItem(${index})"
               aria-label="Copy question" title="Copy question">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -1696,14 +1803,69 @@
 
     function addQuestionToHistory(question, type) {
       const normalized = String(question || '').trim();
-      if (!normalized) return;
-      QUESTION_HISTORY.push({
+      if (!normalized) return null;
+      const item = {
+        id: `history-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         question: normalized,
         type: type || 'Question',
+        answer: '',
+        answeredAt: null,
         createdAt: new Date().toISOString(),
-      });
+      };
+      QUESTION_HISTORY.push(item);
       saveQuestionHistory();
       renderQuestionHistory();
+      return item.id;
+    }
+
+    function updateQuestionHistoryAnswer(historyId, answer) {
+      if (!historyId) return;
+      const item = QUESTION_HISTORY.find(entry => entry.id === historyId);
+      if (!item) return;
+      item.answer = String(answer || '').trim().slice(0, 20000);
+      item.answeredAt = new Date().toISOString();
+      saveQuestionHistory();
+      renderQuestionHistory();
+    }
+
+    function handleQuestionHistoryItemKeydown(event, index) {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openQuestionHistoryItem(index);
+    }
+
+    function openQuestionHistoryItem(index) {
+      const item = QUESTION_HISTORY[index];
+      const dialog = document.getElementById('questionHistoryDialog');
+      const backdrop = document.getElementById('questionHistoryDialogBackdrop');
+      const body = document.getElementById('questionHistoryDialogBody');
+      const title = document.getElementById('questionHistoryDialogTitle');
+      if (!item || !dialog || !backdrop || !body) return;
+      if (title) title.textContent = item.type || 'History item';
+      body.innerHTML = `
+        <div class="question-history-dialog-section">
+          <div class="question-history-dialog-label">Question</div>
+          <p class="question-history-dialog-question">${escapeHtml(item.question)}</p>
+        </div>
+        <div class="question-history-dialog-section">
+          <div class="question-history-dialog-label">Answer</div>
+          ${
+            item.answer
+              ? `<div class="question-history-dialog-answer">${renderAnswer(item.answer)}</div>`
+              : '<p class="question-history-dialog-empty">No answer has been captured for this history item yet.</p>'
+          }
+        </div>
+      `;
+      backdrop.hidden = false;
+      dialog.hidden = false;
+      dialog.querySelector('button')?.focus();
+    }
+
+    function closeQuestionHistoryDialog() {
+      const dialog = document.getElementById('questionHistoryDialog');
+      const backdrop = document.getElementById('questionHistoryDialogBackdrop');
+      if (dialog) dialog.hidden = true;
+      if (backdrop) backdrop.hidden = true;
     }
 
     async function copyTextToClipboard(text) {
@@ -1753,6 +1915,7 @@
     }
 
     function closeQuestionHistory() {
+      closeQuestionHistoryDialog();
       setQuestionHistoryOpen(false);
     }
 
@@ -3187,8 +3350,9 @@
       }
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
+      let historyId = null;
       if (!deepInvestigation && options.recordHistory !== false) {
-        addQuestionToHistory(
+        historyId = addQuestionToHistory(
           requestQuestion,
           options.followUp ? 'Follow-up' : 'Comparison question',
         );
@@ -3252,6 +3416,7 @@
         }
 
         renderCompareResult(data, requestQuestion, options);
+        updateQuestionHistoryAnswer(historyId, data.answer);
       } catch (error) {
         if (error && error.name === 'AbortError') {
           result.innerHTML = `
@@ -3361,12 +3526,13 @@
       const imageAttachments = (
         !options.flowSummary && !options.followUp && QUERY_IMAGE_ATTACHMENTS.length
       ) ? queryImagePayload() : [];
+      let historyId = null;
       if (
         !options.flowSummary
         && !deepInvestigation
         && options.recordHistory !== false
       ) {
-        addQuestionToHistory(
+        historyId = addQuestionToHistory(
           requestQuestion,
           options.followUp ? 'Follow-up' : 'Question',
         );
@@ -3581,6 +3747,7 @@
         if (imageAttachments.length) {
           clearQueryImages();
         }
+        updateQuestionHistoryAnswer(historyId, data.answer);
         bindFollowUpInput();
       } catch (error) {
         if (error && error.name === 'AbortError') {
@@ -3667,6 +3834,7 @@
 
       document.addEventListener('keydown', function(event) {
         if (event.key === 'Escape') {
+          closeQuestionHistoryDialog();
           closeQuestionHistory();
         }
       });
