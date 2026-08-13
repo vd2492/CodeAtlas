@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -28,6 +29,43 @@ class SecurityGuardTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 main.healthz()
         self.assertEqual(raised.exception.status_code, 503)
+
+    def test_crawler_protection_headers_and_robots_txt(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/admin.html",
+                "headers": [],
+                "query_string": b"",
+                "scheme": "http",
+                "server": ("testserver", 80),
+                "client": ("testclient", 50000),
+            }
+        )
+
+        async def call_next(_request):
+            return Response("ok")
+
+        response = asyncio.run(main.add_noindex_header(request, call_next))
+        self.assertEqual(
+            response.headers["x-robots-tag"],
+            "noindex, nofollow, noarchive",
+        )
+
+        robots = main.robots_txt()
+        self.assertIn("User-agent: *", robots.body.decode())
+        self.assertIn("Disallow: /", robots.body.decode())
+        self.assertEqual(
+            robots.headers["x-robots-tag"],
+            "noindex, nofollow, noarchive",
+        )
+
+    def test_readme_uses_generic_domain_examples(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        self.assertNotIn("shadow" + "fax", readme.lower())
+        self.assertIn("https://codeatlas.example.com", readme)
+        self.assertIn("admin@example.com", readme)
 
     def test_mimo_key_must_match_endpoint_type(self):
         auth_routes.validate_llm_key_endpoint(

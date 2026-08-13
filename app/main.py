@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from . import ask_service, db
@@ -77,6 +77,13 @@ app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(branch_router)
 app.include_router(slack_router)
+
+
+@app.middleware("http")
+async def add_noindex_header(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Robots-Tag", "noindex, nofollow, noarchive")
+    return response
 
 
 @app.on_event("startup")
@@ -691,6 +698,17 @@ def healthz():
     except Exception as error:
         raise HTTPException(status_code=503, detail="Database unavailable.") from error
     return {"status": "ok"}
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    return PlainTextResponse(
+        "User-agent: *\nDisallow: /\n",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "X-Robots-Tag": "noindex, nofollow, noarchive",
+        },
+    )
 
 
 @app.get("/app")

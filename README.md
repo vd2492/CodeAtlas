@@ -372,7 +372,7 @@ of only creating username/password users.
 
 ```text
 http://localhost:8000
-https://codeatlas.staging.shadowfax.in
+https://codeatlas.example.com
 ```
 
 This implementation uses Google Identity Services to receive an ID token in the
@@ -384,8 +384,8 @@ Set the server environment:
 ```bash
 CODEATLAS_AUTH_MODE=mixed
 CODEATLAS_GOOGLE_CLIENT_ID=<Google OAuth web client ID>
-CODEATLAS_GOOGLE_ALLOWED_DOMAINS=shadowfax.in
-CODEATLAS_GOOGLE_BOOTSTRAP_ADMIN_EMAILS=admin@shadowfax.in
+CODEATLAS_GOOGLE_ALLOWED_DOMAINS=example.com
+CODEATLAS_GOOGLE_BOOTSTRAP_ADMIN_EMAILS=admin@example.com
 CODEATLAS_GOOGLE_AUTO_CREATE=false
 ```
 
@@ -443,8 +443,8 @@ Interactivity Request URL: https://<ngrok-host>/slack/interactions
 For staging, configure Slack with:
 
 ```text
-Slash command Request URL: https://codeatlas.staging.shadowfax.in/slack/commands
-Interactivity Request URL: https://codeatlas.staging.shadowfax.in/slack/interactions
+Slash command Request URL: https://codeatlas.example.com/slack/commands
+Interactivity Request URL: https://codeatlas.example.com/slack/interactions
 ```
 
 Set these on the VM/container environment:
