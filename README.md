@@ -8,6 +8,8 @@ direct repository access.
 
 Everything runs on your own box. Private code never has to leave it.
 
+![CodeAtlas landing page showing the self-hosted codebase intelligence overview.](docs/screenshots/codeatlas-home-hero.png)
+
 ---
 
 ## Table of Contents
@@ -101,6 +103,8 @@ the workspace, and grants access to selected users. Users then log in, pick an
 authorized repo and indexed branch, inspect its commit and freshness metadata,
 and ask questions.
 
+![CodeAtlas repository lifecycle from clone through publish and ask.](docs/screenshots/codeatlas-how-it-works.png)
+
 ### LLM and Retrieval Behavior
 
 Every question resolves through `app/llm/client.py` in order:
@@ -138,6 +142,8 @@ follow-up field.
 
 The API response reports `retrieval_mode` (`agentic` or `one_shot`) and a compact
 `agent_trace`. The Ask UI displays this investigation under Grounded Evidence.
+
+![CodeAtlas question examples for repository-grounded answers.](docs/screenshots/codeatlas-questions.png)
 
 #### Fast Grounded Follow-Ups
 
@@ -245,6 +251,8 @@ presented:
   default.
 - Secrets live in environment variables or `.env`, which is gitignored. The
   local encryption key and database are never committed.
+
+![CodeAtlas secure-by-design trust model.](docs/screenshots/codeatlas-security.png)
 
 ---
 
@@ -489,6 +497,8 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
    - Use **Edit user** to update username, associated Gmail ID, and user type;
      password updates are available only outside Google-only mode.
 10. Review repo access and audit logs as needed.
+
+![CodeAtlas admin analytics dashboard with generic sample usage data.](docs/screenshots/codeatlas-admin-analytics.png)
 
 ### User Workflow
 
