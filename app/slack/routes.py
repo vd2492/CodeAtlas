@@ -13,7 +13,7 @@ from typing import Optional
 from urllib.parse import parse_qs
 
 import requests
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import ask_service, db
 
@@ -923,7 +923,7 @@ def _handle_view_submission(payload: dict) -> dict:
 
 
 @router.post("/commands")
-async def slash_command(request: Request, background_tasks: BackgroundTasks):
+async def slash_command(request: Request):
     if not slack_enabled():
         raise HTTPException(status_code=404, detail="Slack integration is not enabled.")
     body = await request.body()
@@ -950,7 +950,7 @@ async def slash_command(request: Request, background_tasks: BackgroundTasks):
         "user_type": USER_DEV,
     }
     logger.info("Accepted Slack slash command for team=%s channel=%s user=%s", team_id, channel_id, slack_user)
-    background_tasks.add_task(_open_ask_modal, metadata, _form_value(form, "trigger_id"))
+    _open_ask_modal(metadata, _form_value(form, "trigger_id"))
     return Response(status_code=200)
 
 
