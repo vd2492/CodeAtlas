@@ -119,6 +119,16 @@ def _load_metadata(value: str) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _slack_user_id(*sources: dict) -> Optional[str]:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        user_id = source.get("slack_user_id") or source.get("user_id")
+        if user_id:
+            return user_id
+    return None
+
+
 def _form_value(form: dict, key: str) -> str:
     values = form.get(key) or [""]
     return values[0]
@@ -220,9 +230,12 @@ def _send_user_message(values: dict, text: str, blocks: list[dict] = None) -> No
             return
         except Exception:
             pass
+    slack_user_id = _slack_user_id(values)
+    if not values.get("channel_id") or not slack_user_id:
+        raise RuntimeError("Slack channel_id and user_id are required to send a user message.")
     _post_ephemeral(
         values["channel_id"],
-        values["slack_user_id"],
+        slack_user_id,
         text,
         blocks,
     )
@@ -489,6 +502,8 @@ def _collect_view_values(payload: dict) -> dict:
     state = view.get("state") or {}
     repo_slug = _state_value(state, BLOCK_REPO, ACTION_REPO) or metadata.get("repo_slug")
     repo = _repo_by_slug(repo_slug)
+    payload_user_id = (payload.get("user") or {}).get("id")
+    slack_user_id = _slack_user_id(metadata) or payload_user_id
     values = {
         **metadata,
         "repo_slug": repo_slug,
@@ -506,6 +521,9 @@ def _collect_view_values(payload: dict) -> dict:
         or USER_DEV,
         "question": (_state_value(state, BLOCK_QUESTION, ACTION_QUESTION) or "").strip(),
     }
+    if slack_user_id:
+        values["slack_user_id"] = slack_user_id
+        values["user_id"] = values.get("user_id") or slack_user_id
     return values
 
 
@@ -893,7 +911,10 @@ def _handle_view_submission(payload: dict) -> dict:
 
     values = _collect_view_values(payload)
     values["team_id"] = values.get("team_id") or (payload.get("team") or {}).get("id")
-    values["slack_user_id"] = values.get("slack_user_id") or (payload.get("user") or {}).get("id")
+    slack_user_id = _slack_user_id(values) or (payload.get("user") or {}).get("id")
+    if slack_user_id:
+        values["slack_user_id"] = slack_user_id
+        values["user_id"] = values.get("user_id") or slack_user_id
     errors = _validate_ask_values(values)
     if errors:
         return {"response_action": "errors", "errors": errors}
@@ -921,6 +942,7 @@ async def slash_command(request: Request, background_tasks: BackgroundTasks):
         "team_id": team_id,
         "enterprise_id": enterprise_id,
         "channel_id": channel_id,
+        "user_id": slack_user,
         "slack_user_id": slack_user,
         "response_url": _form_value(form, "response_url"),
         "question": _form_value(form, "text").strip(),

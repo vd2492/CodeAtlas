@@ -97,6 +97,18 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(trigger_id, "trigger-1")
         self.assertEqual(metadata["question"], "explain auth")
         self.assertEqual(metadata["team_id"], "T123")
+        self.assertEqual(metadata["user_id"], "U123")
+        self.assertEqual(metadata["slack_user_id"], "U123")
+
+    def test_send_user_message_accepts_user_id_alias(self):
+        values = {
+            "channel_id": "C123",
+            "user_id": "U123",
+        }
+        with patch.object(slack_routes, "_post_ephemeral") as post:
+            slack_routes._send_user_message(values, "hello")
+
+        post.assert_called_once_with("C123", "U123", "hello", None)
 
     def test_open_ask_modal_posts_expected_view(self):
         metadata = {
@@ -216,6 +228,26 @@ class SlackIntegrationTests(unittest.TestCase):
             branch_block["element"]["options"][0]["value"],
             "feature/auth",
         )
+
+    def test_collect_view_values_preserves_user_id_alias(self):
+        payload = {
+            "user": {"id": "U123"},
+            "view": {
+                "private_metadata": json.dumps({
+                    "team_id": "T123",
+                    "channel_id": "C123",
+                    "user_id": "U123",
+                    "repo_slug": "payments",
+                }),
+                "state": {"values": {}},
+            },
+        }
+        repo = {"id": 1, "name": "Payments", "slug": "payments", "status": "published"}
+        with patch.object(slack_routes, "_repo_by_slug", return_value=repo):
+            values = slack_routes._collect_view_values(payload)
+
+        self.assertEqual(values["user_id"], "U123")
+        self.assertEqual(values["slack_user_id"], "U123")
 
     def test_repo_initial_option_matches_static_option_shape(self):
         repo = {
