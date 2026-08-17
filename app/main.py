@@ -10,6 +10,7 @@ import subprocess
 import time
 from collections import defaultdict
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -121,6 +122,24 @@ def workspace_source_root(workspace: str) -> Path:
 # single-process self-host model); resets on restart.
 RATE_LIMIT_PER_MIN = int(os.environ.get("CODEATLAS_RATE_LIMIT_PER_MIN", "20"))
 _ask_hits: "dict[int, list]" = defaultdict(list)
+ASK_ACTIVITY_TTL_SECONDS = 60 * 10
+ASK_ACTIVITY_MAX_RECORDS = 256
+ASK_ACTIVITY_NODE_LIMIT = 20
+ASK_ACTIVITY_RELATION_LIMIT = 12
+ASK_ACTIVITY_SOURCE_FILE_LIMIT = 12
+ASK_ACTIVITY_VISIBLE_NODE_LIMIT = 8
+ASK_ACTIVITY_VISIBLE_RELATION_LIMIT = 6
+ASK_ACTIVITY_VISIBLE_SOURCE_FILE_LIMIT = 6
+_ask_activity_lock = Lock()
+_ask_activity: dict[str, dict] = {}
+_ask_activity_id_pattern = re.compile(r"^[A-Za-z0-9_-]{8,96}$")
+_ask_activity_stopwords = {
+    "about", "after", "again", "also", "and", "are", "can", "code", "does",
+    "explain", "feature", "features", "flow", "for", "from", "functionality",
+    "functionalities", "happen", "happens", "how", "into", "more", "screen",
+    "show", "shows", "tell", "that", "the", "their", "this", "what", "when",
+    "where", "which", "with", "work", "works",
+}
 _source_file_cache: "dict[str, list[tuple[str, Path]]]" = {}
 
 SOURCE_EXTENSIONS = {
@@ -167,6 +186,330 @@ def enforce_rate_limit(user_id: int) -> None:
         )
     hits.append(now)
     _ask_hits[user_id] = hits
+
+
+def _valid_activity_request_id(value: str = None) -> Optional[str]:
+    value = str(value or "").strip()
+    if not value or not _ask_activity_id_pattern.fullmatch(value):
+        return None
+    return value
+
+
+def _activity_node_type(item: dict) -> str:
+    name = str(item.get("name") or "")
+    node = str(item.get("node") or "")
+    source_file = str(item.get("source_file") or "")
+    lowered = f"{name} {node} {source_file}".lower()
+    if "/test/" in lowered or "test_" in lowered or name.lower().startswith("test"):
+        return "Test"
+    if source_file.endswith((".sql", ".ddl")) or node.startswith(("table_", "db_table_")):
+        return "Table"
+    if any(marker in lowered for marker in [" route ", " endpoint ", "router", "controller"]):
+        return "Route"
+    if source_file and not name:
+        return "File"
+    if "." in name or node.startswith(("func_", "method_")):
+        return "Function"
+    if name[:1].isupper() and "." not in name:
+        return "Class"
+    return "Symbol"
+
+
+def _activity_source_label(source_file: str, source_location: str = None) -> str:
+    source = str(source_file or "").strip()
+    location = str(source_location or "").strip()
+    if source and location and location != "?":
+        return f"{source} {location}"
+    return source or location
+
+
+def _activity_query_terms(question: str = None, context: dict = None) -> list[str]:
+    text = str(question or (context or {}).get("question") or "")
+    preview = (context or {}).get("llm_context_preview") or {}
+    if not text and isinstance(preview, dict):
+        text = str(preview.get("question") or "")
+    terms = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9]+", text.lower()):
+        if len(token) <= 2 or token in _ask_activity_stopwords:
+            continue
+        terms.append(token)
+        if token.endswith("ies") and len(token) > 4:
+            terms.append(f"{token[:-3]}y")
+        elif token.endswith("s") and len(token) > 4:
+            terms.append(token[:-1])
+    seen = set()
+    unique = []
+    for term in terms:
+        if term not in seen:
+            unique.append(term)
+            seen.add(term)
+    return unique[:10]
+
+
+def _activity_compact(value: str) -> str:
+    return str(value or "").lower().replace("_", "").replace("-", "").replace(".", "").replace("/", "")
+
+
+def _activity_match_score(item: dict, terms: list[str], *, file_item: bool = False) -> int:
+    if not terms:
+        return 1
+    name = str(item.get("name") or item.get("path") or "")
+    node = str(item.get("node") or "")
+    source = str(item.get("source_file") or item.get("path") or "")
+    haystacks = {
+        "name": _activity_compact(name),
+        "node": _activity_compact(node),
+        "source": _activity_compact(source),
+    }
+    score = 0
+    for term in terms:
+        compact = _activity_compact(term)
+        if compact and compact in haystacks["name"]:
+            score += 8
+        if compact and compact in haystacks["node"]:
+            score += 5
+        if compact and compact in haystacks["source"]:
+            score += 4
+    if file_item and score > 0:
+        score += min(5, int(item.get("score") or 0) // 200)
+    return score
+
+
+def _answer_activity_from_context(context: dict, question: str = None) -> dict:
+    context = context or {}
+    query_terms = _activity_query_terms(question, context)
+    if context.get("comparison_mode"):
+        repositories = context.get("comparison_repositories") or []
+        nodes = []
+        relations = []
+        source_hits = []
+        for repository in repositories:
+            branch_label = repository.get("label") or repository.get("name") or "Branch"
+            for node in repository.get("context_nodes") or []:
+                item = {**node}
+                item["branch_label"] = branch_label
+                nodes.append(item)
+            for relation in repository.get("context_relations") or []:
+                item = {**relation}
+                item["branch_label"] = branch_label
+                relations.append(item)
+            for hit in repository.get("source_hits") or []:
+                item = {**hit}
+                item["branch_label"] = branch_label
+                source_hits.append(item)
+    else:
+        nodes = list(context.get("context_nodes") or [])
+        relations = list(context.get("context_relations") or [])
+        source_hits = list(context.get("source_hits") or [])
+
+    scored_nodes = [
+        (index, _activity_match_score(item, query_terms), item)
+        for index, item in enumerate(nodes[:ASK_ACTIVITY_NODE_LIMIT])
+    ]
+    visible_nodes = [
+        item for index, score, item in sorted(scored_nodes, key=lambda row: (-row[1], row[0]))
+        if score > 0
+    ][:ASK_ACTIVITY_VISIBLE_NODE_LIMIT]
+
+    activity_nodes = []
+    visible_node_names = set()
+    visible_node_ids = set()
+    visible_source_files = set()
+    for item in visible_nodes:
+        source = _activity_source_label(item.get("source_file"), item.get("source_location"))
+        node_name = item.get("name") or readable_name(str(item.get("node") or ""))
+        visible_node_names.add(str(node_name))
+        visible_node_ids.add(str(item.get("node") or ""))
+        if item.get("source_file"):
+            visible_source_files.add(str(item.get("source_file")))
+        activity_nodes.append({
+            "type": _activity_node_type(item),
+            "name": node_name,
+            "source": source,
+            **({"branch_label": item["branch_label"]} if item.get("branch_label") else {}),
+        })
+
+    scored_relations = []
+    for index, item in enumerate(relations[:ASK_ACTIVITY_RELATION_LIMIT]):
+        relation_score = 0
+        source_name = str(item.get("source_name") or readable_name(str(item.get("source") or "")))
+        target_name = str(item.get("target_name") or readable_name(str(item.get("target") or "")))
+        if (
+            source_name in visible_node_names
+            or target_name in visible_node_names
+            or str(item.get("source") or "") in visible_node_ids
+            or str(item.get("target") or "") in visible_node_ids
+        ):
+            relation_score += 8
+        relation_score += _activity_match_score({
+            "name": f"{source_name} {target_name} {item.get('relation_label') or item.get('relation') or ''}",
+            "source_file": item.get("source_file"),
+        }, query_terms)
+        scored_relations.append((index, relation_score, item))
+    visible_relations = [
+        item for index, score, item in sorted(scored_relations, key=lambda row: (-row[1], row[0]))
+        if score > 0
+    ][:ASK_ACTIVITY_VISIBLE_RELATION_LIMIT]
+
+    activity_relations = []
+    for item in visible_relations:
+        activity_relations.append({
+            "from": item.get("source_name") or readable_name(str(item.get("source") or "")),
+            "relation": item.get("relation_label") or item.get("relation") or "related to",
+            "to": item.get("target_name") or readable_name(str(item.get("target") or "")),
+            "source": _activity_source_label(item.get("source_file"), item.get("source_location")),
+            **({"branch_label": item["branch_label"]} if item.get("branch_label") else {}),
+        })
+
+    seen_files = set()
+    scored_source_hits = []
+    for index, hit in enumerate(source_hits[:ASK_ACTIVITY_SOURCE_FILE_LIMIT]):
+        score = _activity_match_score(hit, query_terms, file_item=True)
+        if str(hit.get("path") or "") in visible_source_files:
+            score += 8
+        scored_source_hits.append((index, score, hit))
+    activity_files = []
+    for index, score, hit in sorted(scored_source_hits, key=lambda row: (-row[1], row[0])):
+        if score <= 0:
+            continue
+        path = str(hit.get("path") or "").strip()
+        if not path or path in seen_files:
+            continue
+        seen_files.add(path)
+        ranges = [
+            f"L{snippet.get('start_line')}-L{snippet.get('end_line')}"
+            for snippet in (hit.get("snippets") or [])[:2]
+            if snippet.get("start_line") and snippet.get("end_line")
+        ]
+        activity_files.append({
+            "path": path,
+            "ranges": ranges,
+            **({"branch_label": hit["branch_label"]} if hit.get("branch_label") else {}),
+        })
+        if len(activity_files) >= ASK_ACTIVITY_VISIBLE_SOURCE_FILE_LIMIT:
+            break
+
+    return {
+        "candidate_node_count": len(nodes),
+        "candidate_relation_count": len(relations),
+        "candidate_source_file_count": len({str(hit.get("path") or "") for hit in source_hits if hit.get("path")}),
+        "node_count": len(activity_nodes),
+        "relation_count": len(activity_relations),
+        "source_file_count": len(activity_files),
+        "query_terms": query_terms,
+        "nodes": activity_nodes,
+        "relations": activity_relations,
+        "source_files": activity_files,
+    }
+
+
+def _prune_answer_activity(now: float) -> None:
+    stale = [
+        key for key, value in _ask_activity.items()
+        if now - float(value.get("_monotonic_updated_at") or 0) > ASK_ACTIVITY_TTL_SECONDS
+    ]
+    for key in stale:
+        _ask_activity.pop(key, None)
+    overflow = len(_ask_activity) - ASK_ACTIVITY_MAX_RECORDS
+    if overflow > 0:
+        oldest = sorted(
+            _ask_activity,
+            key=lambda key: _ask_activity[key].get("_monotonic_updated_at") or 0,
+        )
+        for key in oldest[:overflow]:
+            _ask_activity.pop(key, None)
+
+
+def record_answer_activity(
+    request_id: str = None,
+    *,
+    user_id: int,
+    workspace: str = None,
+    question: str = None,
+    status: str = "generating_answer",
+    context: dict = None,
+) -> None:
+    request_id = _valid_activity_request_id(request_id)
+    if not request_id:
+        return
+    now = time.monotonic()
+    context_payload = _answer_activity_from_context(context or {}, question=question)
+    activity = {
+        "request_id": request_id,
+        "user_id": int(user_id),
+        "workspace": workspace,
+        "question": str(question or "")[:240],
+        "status": status,
+        "stage": status,
+        "updated_at": time.time(),
+        "_monotonic_updated_at": now,
+        **context_payload,
+    }
+    with _ask_activity_lock:
+        _prune_answer_activity(now)
+        _ask_activity[request_id] = activity
+
+
+def update_answer_activity(
+    request_id: str = None,
+    *,
+    user_id: int,
+    workspace: str = None,
+    question: str = None,
+    status: str = None,
+    context: dict = None,
+) -> None:
+    request_id = _valid_activity_request_id(request_id)
+    if not request_id:
+        return
+    now = time.monotonic()
+    update = {
+        "request_id": request_id,
+        "user_id": int(user_id),
+        "updated_at": time.time(),
+        "_monotonic_updated_at": now,
+    }
+    if workspace is not None:
+        update["workspace"] = workspace
+    if question is not None:
+        update["question"] = str(question or "")[:240]
+    if status:
+        update["status"] = status
+        update["stage"] = status
+    if context is not None:
+        update.update(_answer_activity_from_context(context, question=question))
+
+    with _ask_activity_lock:
+        _prune_answer_activity(now)
+        current = _ask_activity.get(request_id, {})
+        if current and int(current.get("user_id") or 0) != int(user_id):
+            return
+        merged = {**current, **update}
+        merged.setdefault("node_count", 0)
+        merged.setdefault("relation_count", 0)
+        merged.setdefault("source_file_count", 0)
+        merged.setdefault("candidate_node_count", 0)
+        merged.setdefault("candidate_relation_count", 0)
+        merged.setdefault("candidate_source_file_count", 0)
+        merged.setdefault("query_terms", [])
+        merged.setdefault("nodes", [])
+        merged.setdefault("relations", [])
+        merged.setdefault("source_files", [])
+        _ask_activity[request_id] = merged
+
+
+@app.get("/repo/ask-activity/{request_id}")
+def answer_activity_endpoint(request_id: str, user: dict = Depends(require_user)):
+    request_id = _valid_activity_request_id(request_id)
+    if not request_id:
+        raise HTTPException(status_code=404, detail="Answer activity was not found.")
+    with _ask_activity_lock:
+        record = copy.deepcopy(_ask_activity.get(request_id))
+    if not record or int(record.get("user_id") or 0) != int(user["id"]):
+        raise HTTPException(status_code=404, detail="Answer activity was not found.")
+    record.pop("user_id", None)
+    record.pop("_monotonic_updated_at", None)
+    return record
 
 
 def authorized_workspace(
@@ -804,6 +1147,7 @@ class AskRequest(BaseModel):
     deep_investigation: bool = False
     answer_user_type: Optional[str] = None
     image_attachments: Optional[list[dict]] = None
+    activity_request_id: Optional[str] = None
     # Optional bring-your-own-key creds {provider, base_url, api_key, model}.
     user_llm: Optional[dict] = None
 
@@ -882,6 +1226,7 @@ class CompareRequest(BaseModel):
     follow_up: bool = False
     deep_investigation: bool = False
     answer_user_type: Optional[str] = None
+    activity_request_id: Optional[str] = None
     user_llm: Optional[dict] = None
 
 
@@ -1090,8 +1435,21 @@ def repo_context_endpoint(
     return build_context(question, limit, workspace)
 
 
-def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKSPACE):
+def build_context(
+    question: str,
+    limit: int = 12,
+    workspace: str = DEFAULT_WORKSPACE,
+    activity_callback=None,
+):
     import re
+
+    def emit_activity(status: str, partial_context: dict) -> None:
+        if not activity_callback:
+            return
+        try:
+            activity_callback(status, partial_context)
+        except Exception:
+            pass
 
     nodes, links = load_graph(graph_path(workspace))
     source_root = _safe_source_root(workspace)
@@ -1214,6 +1572,10 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
         t for t in raw_tokens
         if len(t) > 2 and t not in SOURCE_QUERY_STOPWORDS
     ]
+    emit_activity("searching_source", {
+        "question": question,
+        "query_terms": query_terms,
+    })
     source_hits = _search_source_files(source_root, source_terms, limit=10)
     seen_follow_terms = set()
     for _ in range(2):
@@ -1227,6 +1589,11 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
         follow_hits = _search_source_files(source_root, follow_terms, limit=14)
         source_hits = _merge_source_hits(source_hits, follow_hits, limit=14)
     matched_source_files = {hit["path"] for hit in source_hits}
+    emit_activity("matching_source_files", {
+        "question": question,
+        "query_terms": query_terms,
+        "source_hits": source_hits,
+    })
 
     def anchor_matches_query(name: str) -> bool:
         """Seed a preferred anchor only when it's relevant to the question, so
@@ -1306,6 +1673,13 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
         seen_names.add(item["name"])
         seen_nodes.add(item["node"])
 
+    emit_activity("ranking_graph_nodes", {
+        "question": question,
+        "query_terms": query_terms,
+        "context_nodes": context_nodes,
+        "source_hits": source_hits,
+    })
+
     selected_names = {item["name"] for item in context_nodes}
     selected_node_ids = {item["node"] for item in context_nodes}
 
@@ -1356,6 +1730,13 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
 
         if len(context_relations) >= relation_limit:
             break
+    emit_activity("expanding_relations", {
+        "question": question,
+        "query_terms": query_terms,
+        "context_nodes": context_nodes,
+        "context_relations": context_relations,
+        "source_hits": source_hits,
+    })
 
     # Attach real source code for the most relevant nodes so the LLM can explain
     # actual behavior (e.g. what a feature enforces), not just node names. Kept
@@ -1369,6 +1750,13 @@ def build_context(question: str, limit: int = 12, workspace: str = DEFAULT_WORKS
         if excerpt:
             node["source_excerpt"] = excerpt["code"]
             node["excerpt_range"] = f"L{excerpt['start_line']}-L{excerpt['end_line']}"
+    emit_activity("reading_source", {
+        "question": question,
+        "query_terms": query_terms,
+        "context_nodes": context_nodes,
+        "context_relations": context_relations,
+        "source_hits": source_hits,
+    })
 
     preview_nodes = context_nodes[:LLM_PREVIEW_NODE_LIMIT]
     preview_source_hits = source_hits[:LLM_PREVIEW_SOURCE_HITS]
@@ -1775,8 +2163,9 @@ def _comparison_branch_payload(label: str, resolved: dict, context: dict) -> dic
 
 
 def _comparison_workspace_key(repo: dict, left: dict, right: dict) -> str:
+    repo_workspace = repo.get("workspace") or left.get("workspace") or repo.get("slug") or repo.get("id")
     return (
-        f"compare:{repo['workspace']}:"
+        f"compare:{repo_workspace}:"
         f"{left['branch']['id']}:{right['branch']['id']}"
     )
 
@@ -1802,10 +2191,36 @@ def _effective_answer_user_type(user: dict, requested: str = None) -> str:
     return "product_team" if requested_type == "product_team" else "dev_team"
 
 
-def build_compare_context(question: str, left: dict, right: dict, user_type: str) -> dict:
+def build_compare_context(
+    question: str,
+    left: dict,
+    right: dict,
+    user_type: str,
+    activity_callback=None,
+) -> dict:
+    def emit_activity(status: str, partial_context: dict) -> None:
+        if not activity_callback:
+            return
+        try:
+            activity_callback(status, partial_context)
+        except Exception:
+            pass
+
     started_at = time.perf_counter()
     left_context = build_context(question, limit=12, workspace=left["workspace"])
+    left_payload = _comparison_branch_payload("Branch A", left, left_context)
+    emit_activity("ranking_graph_nodes", {
+        "question": question,
+        "comparison_mode": True,
+        "comparison_repositories": [left_payload],
+    })
     right_context = build_context(question, limit=12, workspace=right["workspace"])
+    right_payload = _comparison_branch_payload("Branch B", right, right_context)
+    emit_activity("expanding_relations", {
+        "question": question,
+        "comparison_mode": True,
+        "comparison_repositories": [left_payload, right_payload],
+    })
     response_style_instruction = (
         PRODUCT_TEAM_RESPONSE_INSTRUCTION
         if user_type == "product_team"
@@ -1816,8 +2231,6 @@ def build_compare_context(question: str, left: dict, right: dict, user_type: str
         if user_type == "product_team"
         else question
     )
-    left_payload = _comparison_branch_payload("Branch A", left, left_context)
-    right_payload = _comparison_branch_payload("Branch B", right, right_context)
     return {
         "question": question,
         "comparison_mode": True,
@@ -1856,9 +2269,48 @@ def answer_compare(
     allow_shared_fallback: bool = True,
     llm_mode: str = None,
     user_type: str = "dev_team",
+    activity_request_id: str = None,
+    activity_user_id: int = None,
 ) -> dict:
     started_at = time.perf_counter()
-    context = build_compare_context(question, left, right, user_type)
+    activity_workspace = None
+    activity_callback = None
+    if activity_request_id and activity_user_id is not None:
+        activity_workspace = _comparison_workspace_key(left["repo"], left, right)
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=activity_workspace,
+            question=question,
+            status="understanding_query",
+        )
+
+        def activity_callback(status: str, partial_context: dict) -> None:
+            update_answer_activity(
+                activity_request_id,
+                user_id=activity_user_id,
+                workspace=activity_workspace,
+                question=question,
+                status=status,
+                context=partial_context,
+            )
+
+    context = build_compare_context(
+        question,
+        left,
+        right,
+        user_type,
+        activity_callback=activity_callback,
+    )
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=activity_workspace,
+            question=question,
+            status="generating_answer",
+            context=context,
+        )
     toolbox = ComparisonRepositoryToolbox(
         context["comparison_repositories"][0],
         context["comparison_repositories"][1],
@@ -1918,9 +2370,19 @@ def answer_compare_follow_up(
     llm_mode: str = None,
     user_type: str = "dev_team",
     deep_investigation: bool = False,
+    activity_request_id: str = None,
+    activity_user_id: int = None,
 ) -> dict:
     """Answer a follow-up from branch-comparison evidence or rerun comparison."""
     started_at = time.perf_counter()
+    activity_kwargs = (
+        {
+            "activity_request_id": activity_request_id,
+            "activity_user_id": activity_user_id,
+        }
+        if activity_request_id and activity_user_id is not None
+        else {}
+    )
     if deep_investigation:
         response = answer_compare(
             question,
@@ -1930,6 +2392,7 @@ def answer_compare_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            **activity_kwargs,
         )
         response["follow_up_reused"] = False
         response["follow_up_fallback"] = True
@@ -1956,7 +2419,25 @@ def answer_compare_follow_up(
     context["question"] = question
     context["response_style_instruction"] = response_style_instruction
     preview["question"] = llm_question
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=_comparison_workspace_key(left["repo"], left, right),
+            question=question,
+            status="using_conversation_evidence",
+            context=context,
+        )
     evidence = compact_follow_up_evidence(state)
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=_comparison_workspace_key(left["repo"], left, right),
+            question=question,
+            status="generating_answer",
+            context=context,
+        )
 
     fast_started_at = time.perf_counter()
     try:
@@ -1978,6 +2459,7 @@ def answer_compare_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            **activity_kwargs,
         )
         response["follow_up_reused"] = False
         response["follow_up_fallback"] = True
@@ -2018,12 +2500,48 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     user_llm: dict = None, allow_shared_fallback: bool = True,
                     llm_mode: str = None, user_type: str = "dev_team",
                     answer_mode: str = None,
-                    image_attachments: list[dict] = None) -> dict:
+                    image_attachments: list[dict] = None,
+                    activity_request_id: str = None,
+                    activity_user_id: int = None) -> dict:
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     started_at = time.perf_counter()
     retrieval_started_at = time.perf_counter()
-    context = build_context(question, limit=16, workspace=workspace)
+    activity_callback = None
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=workspace,
+            question=question,
+            status="understanding_query",
+        )
+
+        def activity_callback(status: str, partial_context: dict) -> None:
+            update_answer_activity(
+                activity_request_id,
+                user_id=activity_user_id,
+                workspace=workspace,
+                question=question,
+                status=status,
+                context=partial_context,
+            )
+
+    context = build_context(
+        question,
+        limit=16,
+        workspace=workspace,
+        activity_callback=activity_callback,
+    )
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=workspace,
+            question=question,
+            status="generating_answer",
+            context=context,
+        )
     toolbox = RepositoryToolbox(workspace)
     retrieval_ms = round((time.perf_counter() - retrieval_started_at) * 1000, 1)
     response_style_instruction = (
@@ -2074,9 +2592,19 @@ def answer_follow_up(
     llm_mode: str = None,
     user_type: str = "dev_team",
     deep_investigation: bool = False,
+    activity_request_id: str = None,
+    activity_user_id: int = None,
 ) -> dict:
     """Answer from revision-matched evidence, using repository tools only as needed."""
     started_at = time.perf_counter()
+    activity_kwargs = (
+        {
+            "activity_request_id": activity_request_id,
+            "activity_user_id": activity_user_id,
+        }
+        if activity_request_id and activity_user_id is not None
+        else {}
+    )
     if deep_investigation:
         response = answer_question(
             question,
@@ -2085,6 +2613,7 @@ def answer_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            **activity_kwargs,
         )
         response["follow_up_reused"] = False
         response["follow_up_fallback"] = True
@@ -2111,7 +2640,25 @@ def answer_follow_up(
     context["question"] = question
     context["response_style_instruction"] = response_style_instruction
     preview["question"] = llm_question
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=workspace,
+            question=question,
+            status="using_conversation_evidence",
+            context=context,
+        )
     evidence = compact_follow_up_evidence(state)
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=workspace,
+            question=question,
+            status="generating_answer",
+            context=context,
+        )
 
     fast_started_at = time.perf_counter()
     try:
@@ -2132,6 +2679,7 @@ def answer_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            **activity_kwargs,
         )
         response["follow_up_reused"] = False
         response["follow_up_fallback"] = True

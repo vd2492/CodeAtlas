@@ -1385,5 +1385,184 @@ class AgentLoopTests(unittest.TestCase):
         )
 
 
+class AnswerActivityTests(unittest.TestCase):
+    def tearDown(self):
+        with main._ask_activity_lock:
+            main._ask_activity.clear()
+
+    def test_answer_activity_returns_capped_human_readable_context(self):
+        request_id = "activity-test-123"
+        context = {
+            "context_nodes": [
+                {
+                    "name": "create_session",
+                    "node": "func_create_session",
+                    "source_file": "app/db.py",
+                    "source_location": "L433-L441",
+                }
+            ],
+            "context_relations": [
+                {
+                    "source_name": "create_session",
+                    "relation_label": "queries",
+                    "target_name": "sessions",
+                    "source_file": "app/db.py",
+                    "source_location": "L433-L441",
+                }
+            ],
+            "source_hits": [
+                {
+                    "path": "app/db.py",
+                    "snippets": [{"start_line": 433, "end_line": 441}],
+                }
+            ],
+        }
+
+        main.record_answer_activity(
+            request_id,
+            user_id=7,
+            workspace="repo-main",
+            question="How does create session work?",
+            context=context,
+        )
+        payload = main.answer_activity_endpoint(request_id, {"id": 7})
+
+        self.assertEqual(payload["status"], "generating_answer")
+        self.assertEqual(payload["candidate_node_count"], 1)
+        self.assertEqual(payload["node_count"], 1)
+        self.assertEqual(payload["nodes"][0]["name"], "create_session")
+        self.assertEqual(payload["nodes"][0]["type"], "Function")
+        self.assertEqual(payload["relations"][0]["relation"], "queries")
+        self.assertEqual(payload["source_files"][0]["path"], "app/db.py")
+        self.assertNotIn("user_id", payload)
+
+    def test_answer_activity_hides_unrelated_filled_context(self):
+        request_id = "activity-test-earnings"
+        context = {
+            "context_nodes": [
+                {
+                    "name": "analytics",
+                    "node": "analytics",
+                    "source_file": "core/analytics/Analytics.kt",
+                    "source_location": "L68",
+                },
+                {
+                    "name": "EarningsScreen",
+                    "node": "features_earnings_earningsscreen",
+                    "source_file": "features/earnings/EarningsScreen.kt",
+                    "source_location": "L12-L90",
+                },
+            ],
+            "context_relations": [],
+            "source_hits": [
+                {
+                    "path": "core/analytics/Analytics.kt",
+                    "score": 700,
+                    "snippets": [{"start_line": 68, "end_line": 80}],
+                },
+                {
+                    "path": "features/earnings/EarningsScreen.kt",
+                    "score": 900,
+                    "snippets": [{"start_line": 12, "end_line": 90}],
+                },
+            ],
+        }
+
+        main.record_answer_activity(
+            request_id,
+            user_id=7,
+            workspace="repo-main",
+            question="What are the functionalities of earnings screen?",
+            context=context,
+        )
+        payload = main.answer_activity_endpoint(request_id, {"id": 7})
+
+        self.assertEqual(payload["candidate_node_count"], 2)
+        self.assertEqual(payload["node_count"], 1)
+        self.assertEqual([node["name"] for node in payload["nodes"]], ["EarningsScreen"])
+        self.assertEqual(payload["source_files"][0]["path"], "features/earnings/EarningsScreen.kt")
+        self.assertNotIn(
+            "core/analytics/Analytics.kt",
+            [item["path"] for item in payload["source_files"]],
+        )
+
+    def test_answer_activity_is_scoped_to_user(self):
+        request_id = "activity-test-456"
+        main.record_answer_activity(
+            request_id,
+            user_id=7,
+            workspace="repo-main",
+            question="How does login work?",
+            context={"context_nodes": []},
+        )
+
+        with self.assertRaises(main.HTTPException) as raised:
+            main.answer_activity_endpoint(request_id, {"id": 8})
+
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_answer_question_updates_activity_from_retrieval_progress(self):
+        request_id = "activity-progress-123"
+
+        def fake_build_context(question, limit=16, workspace="repo-main", activity_callback=None):
+            partial_context = {
+                "context_nodes": [
+                    {
+                        "name": "CheckoutScreen",
+                        "node": "features_checkout_checkoutscreen",
+                        "source_file": "features/checkout/CheckoutScreen.kt",
+                        "source_location": "L12-L90",
+                    }
+                ],
+                "context_relations": [],
+                "source_hits": [
+                    {
+                        "path": "features/checkout/CheckoutScreen.kt",
+                        "score": 900,
+                        "snippets": [{"start_line": 12, "end_line": 90}],
+                    }
+                ],
+                "llm_context_preview": {"question": question},
+            }
+            if activity_callback:
+                activity_callback("matching_source_files", {
+                    "question": question,
+                    "source_hits": partial_context["source_hits"],
+                })
+                activity_callback("ranking_graph_nodes", partial_context)
+            return partial_context
+
+        with patch.object(
+            main, "build_context", side_effect=fake_build_context
+        ), patch.object(
+            main, "RepositoryToolbox", return_value=SimpleNamespace()
+        ), patch.object(
+            main,
+            "generate",
+            return_value={"answer": "Checkout uses CheckoutScreen.", "provider_used": "test"},
+        ), patch.object(
+            main,
+            "repository_version_payload",
+            return_value={"workspace": "repo-main", "revision": "test"},
+        ):
+            main.answer_question(
+                "What does checkout screen do?",
+                workspace="repo-main",
+                activity_request_id=request_id,
+                activity_user_id=7,
+            )
+
+        payload = main.answer_activity_endpoint(request_id, {"id": 7})
+
+        self.assertEqual(payload["stage"], "generating_answer")
+        self.assertEqual(payload["candidate_node_count"], 1)
+        self.assertEqual(payload["node_count"], 1)
+        self.assertEqual(payload["nodes"][0]["name"], "CheckoutScreen")
+        self.assertEqual(
+            payload["source_files"][0]["path"],
+            "features/checkout/CheckoutScreen.kt",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

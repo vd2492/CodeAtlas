@@ -1140,6 +1140,74 @@
     }
     @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 
+    .answer-activity {
+      margin-top: 16px;
+    }
+    .answer-activity .details-body {
+      padding-top: 0;
+    }
+    .activity-stage {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 0;
+      margin: 10px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .activity-stage.done { color: var(--text); }
+    .activity-stage .stage-dot {
+      width: 7px;
+      height: 7px;
+      flex: none;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .activity-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 12px 0;
+    }
+    .activity-metric {
+      padding: 5px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      background: rgba(148, 163, 184, 0.06);
+    }
+    .activity-list {
+      margin: 7px 0 12px;
+      padding: 0;
+      list-style: none;
+    }
+    #result .activity-list li {
+      padding: 8px 0;
+    }
+    .activity-mainline {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .activity-type {
+      flex: none;
+      min-width: 58px;
+      color: var(--accent);
+      font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .activity-relation {
+      color: var(--faint);
+      font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+      font-size: 12px;
+    }
+
     /* ---------- Details / grounded context ---------- */
     details {
       width: 100%;
@@ -1726,6 +1794,7 @@
     let LAST_FOLLOW_UP_QUESTION = '';
     let ASK_MODE = 'single';
     let ACTIVE_REQUEST_CONTROLLER = null;
+    let ACTIVE_ACTIVITY_POLL = null;
     let AUTH_CONFIG = {};
     let QUESTION_HISTORY = [];
     const QUESTION_HISTORY_STORAGE_KEY = 'codeatlas-question-history';
@@ -2947,6 +3016,118 @@
         .replace(/'/g, '&#39;');
     }
 
+    function createActivityRequestId() {
+      if (window.crypto?.randomUUID) {
+        return `activity-${window.crypto.randomUUID()}`;
+      }
+      return `activity-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+
+    function answerActivityPanel() {
+      return `
+        <details class="answer-activity" id="answerActivityPanel" open>
+          <summary>Graph activity <span class="badge">live</span></summary>
+          <div class="details-body" id="answerActivityBody">
+            <div class="activity-stage done"><span class="stage-dot"></span>Understanding query</div>
+            <div class="activity-stage"><span class="spinner"></span>Searching indexed graph</div>
+            <div class="activity-stage"><span class="dot-pulse"></span>Preparing graph nodes</div>
+          </div>
+        </details>
+      `;
+    }
+
+    function activityBranchLabel(item) {
+      return item.branch_label ? `${escapeHtml(item.branch_label)} · ` : '';
+    }
+
+	    function renderAnswerActivity(data) {
+	      const body = document.getElementById('answerActivityBody');
+	      if (!body || !data) return;
+	      const nodes = data.nodes || [];
+	      const relations = data.relations || [];
+	      const sourceFiles = data.source_files || [];
+	      const nodeCount = Number(data.node_count || nodes.length);
+	      const relationCount = Number(data.relation_count || relations.length);
+	      const sourceFileCount = Number(data.source_file_count || sourceFiles.length);
+	      const candidateNodeCount = Number(data.candidate_node_count || nodeCount);
+	      const stage = data.stage || data.status || 'understanding_query';
+	      const retrievalStages = [
+	        'understanding_query',
+	        'searching_source',
+	        'matching_source_files',
+	        'ranking_graph_nodes',
+	        'expanding_relations',
+	        'reading_source',
+	        'generating_answer',
+	      ];
+	      const stages = stage === 'answered_from_cache' || stage === 'using_conversation_evidence'
+	        ? ['using_conversation_evidence', 'generating_answer']
+	        : retrievalStages;
+	      let currentStageIndex = stages.indexOf(stage);
+	      if (currentStageIndex === -1) currentStageIndex = 0;
+	      const stageLabels = {
+	        understanding_query: 'Understanding query',
+	        searching_source: 'Searching indexed graph',
+	        matching_source_files: 'Matching source files',
+	        ranking_graph_nodes: 'Reading graph nodes',
+	        expanding_relations: 'Expanding neighbors',
+	        reading_source: 'Reading source files',
+	        using_conversation_evidence: 'Using previous evidence',
+	        generating_answer: 'Generating answer',
+	      };
+	      const allDone = stage === 'answered_from_cache';
+	      const renderStage = (stageName, index) => {
+	        const done = allDone || index < currentStageIndex;
+	        const active = !allDone && index === currentStageIndex;
+	        const icon = done ? '<span class="stage-dot"></span>' : active ? '<span class="spinner"></span>' : '<span class="dot-pulse"></span>';
+	        return `<div class="activity-stage ${done ? 'done' : ''}">${icon}${escapeHtml(stageLabels[stageName] || stageName)}</div>`;
+	      };
+	      const metrics = [
+	        candidateNodeCount ? `${candidateNodeCount.toLocaleString()} candidate node${candidateNodeCount === 1 ? '' : 's'}` : '',
+	        nodeCount ? `reading ${nodeCount.toLocaleString()} high-confidence node${nodeCount === 1 ? '' : 's'}` : '',
+	        relationCount ? `${relationCount.toLocaleString()} matched relation${relationCount === 1 ? '' : 's'}` : '',
+	        sourceFileCount ? `${sourceFileCount.toLocaleString()} matched source file${sourceFileCount === 1 ? '' : 's'}` : '',
+	      ].filter(Boolean);
+
+	      body.innerHTML = `
+	        ${stages.map(renderStage).join('')}
+	        ${metrics.length ? `
+	          <div class="activity-metrics">
+	            ${metrics.map(metric => `<span class="activity-metric">${escapeHtml(metric)}</span>`).join('')}
+	          </div>
+	        ` : ''}
+	      `;
+	    }
+
+    function stopAnswerActivityPolling(activityId = null) {
+      if (!ACTIVE_ACTIVITY_POLL) return;
+      if (activityId && ACTIVE_ACTIVITY_POLL.id !== activityId) return;
+      clearInterval(ACTIVE_ACTIVITY_POLL.timer);
+      ACTIVE_ACTIVITY_POLL = null;
+    }
+
+    function startAnswerActivityPolling(activityId) {
+      if (!activityId) {
+        stopAnswerActivityPolling();
+        return;
+      }
+      stopAnswerActivityPolling();
+      const state = { id: activityId, timer: null };
+      ACTIVE_ACTIVITY_POLL = state;
+      const poll = async () => {
+        if (ACTIVE_ACTIVITY_POLL !== state) return;
+        try {
+          const res = await fetch(`/repo/ask-activity/${encodeURIComponent(activityId)}`, {
+            cache: 'no-store',
+          });
+          if (!res.ok || ACTIVE_ACTIVITY_POLL !== state) return;
+          renderAnswerActivity(await res.json());
+        } catch (e) {}
+      };
+      window.setTimeout(poll, 250);
+      state.timer = window.setInterval(poll, 900);
+    }
+
     function cleanAnswerText(value) {
       return String(value ?? '')
         .replace(/\*\*([^*\n]+)\*\*/g, '$1')
@@ -3359,6 +3540,7 @@
       }
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
+      const activityRequestId = createActivityRequestId();
       result.innerHTML = deepInvestigation
         ? `
           <h2>Investigating comparison deeply…</h2>
@@ -3366,6 +3548,7 @@
             <div class="step"><span class="spinner"></span> Running fresh investigations on both branches…</div>
             <div class="step"><span class="dot-pulse"></span> Verifying branch-specific files, symbols, and behavior…</div>
           </div>
+          ${answerActivityPanel()}
         `
         : followUpWithContext
           ? `
@@ -3377,6 +3560,7 @@
               <div class="step"><span class="spinner"></span> Reusing verified comparison evidence…</div>
               <div class="step"><span class="dot-pulse"></span> Checking whether fresh branch investigation is needed…</div>
             </div>
+            ${answerActivityPanel()}
           `
           : `
             <h2>Comparing branches…</h2>
@@ -3384,8 +3568,10 @@
               <div class="step"><span class="spinner"></span> Retrieving evidence from both branches…</div>
               <div class="step"><span class="dot-pulse"></span> Preparing a side-by-side comparison…</div>
             </div>
+            ${answerActivityPanel()}
           `;
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      startAnswerActivityPolling(activityRequestId);
 
       try {
         const res = await fetch(`/repo/compare?workspace=${encodeURIComponent(WORKSPACE)}`, {
@@ -3401,6 +3587,7 @@
             follow_up: Boolean(options.followUp),
             conversation_id: options.followUp ? CONVERSATION_ID : null,
             deep_investigation: deepInvestigation,
+            activity_request_id: activityRequestId,
           }),
         });
         if (handle401(res)) return;
@@ -3437,6 +3624,7 @@
         if (ACTIVE_REQUEST_CONTROLLER === controller) {
           ACTIVE_REQUEST_CONTROLLER = null;
         }
+        stopAnswerActivityPolling(activityRequestId);
       }
     }
 
@@ -3540,6 +3728,7 @@
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       setMainAskCancelVisible(true);
+      const activityRequestId = productFlowSummary ? null : createActivityRequestId();
       result.innerHTML = productFlowSummary
         ? `
           <h2>Thinking…</h2>
@@ -3551,11 +3740,12 @@
         : deepInvestigation
           ? `
             <h2>Investigating deeply…</h2>
-            <div class="loading-steps">
-              <div class="step"><span class="spinner"></span> Running a fresh repository investigation…</div>
-              <div class="step"><span class="dot-pulse"></span> Verifying related files, symbols, and behavior…</div>
-            </div>
-          `
+          <div class="loading-steps">
+            <div class="step"><span class="spinner"></span> Running a fresh repository investigation…</div>
+            <div class="step"><span class="dot-pulse"></span> Verifying related files, symbols, and behavior…</div>
+          </div>
+          ${answerActivityPanel()}
+        `
         : followUpWithContext
           ? `
             <div class="loading-heading-row">
@@ -3566,6 +3756,7 @@
               <div class="step"><span class="spinner"></span> Reusing verified evidence from this conversation…</div>
               <div class="step"><span class="dot-pulse"></span> Checking whether more repository investigation is needed…</div>
             </div>
+            ${answerActivityPanel()}
           `
         : `
           <h2>Thinking…</h2>
@@ -3573,9 +3764,11 @@
             <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
             <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
           </div>
+          ${answerActivityPanel()}
         `;
 
       result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      startAnswerActivityPolling(activityRequestId);
 
       try {
         const res = await fetch(wsUrl(options.endpoint || '/repo/ask-llm'), {
@@ -3595,6 +3788,7 @@
                   follow_up: Boolean(options.followUp),
                   conversation_id: options.followUp ? CONVERSATION_ID : null,
                   deep_investigation: deepInvestigation,
+                  activity_request_id: activityRequestId,
                   ...(imageAttachments.length ? { image_attachments: imageAttachments } : {}),
                 }
           )
@@ -3770,6 +3964,7 @@
           ACTIVE_REQUEST_CONTROLLER = null;
         }
         setMainAskCancelVisible(false);
+        stopAnswerActivityPolling(activityRequestId);
       }
     }
 

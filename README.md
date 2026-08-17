@@ -466,6 +466,18 @@ CODEATLAS_SLACK_LLM_MODE=auto
 CODEATLAS_SLACK_BRANCH_WAIT_SECONDS=900
 ```
 
+When Slack traffic is routed through an internal relay, configure the same shared
+secret on the relay and CodeAtlas:
+
+```bash
+CODEATLAS_SLACK_RELAY_SECRET=<shared relay secret>
+CODEATLAS_SLACK_REQUIRE_RELAY_SECRET=true
+```
+
+The relay must forward `X-CodeAtlas-Relay-Secret` with that value. Leave
+`CODEATLAS_SLACK_REQUIRE_RELAY_SECRET` unset for direct Slack-to-CodeAtlas local
+testing.
+
 `CODEATLAS_SLACK_ALLOWED_TEAM_IDS` is a workspace allowlist, not a person or
 channel allowlist. Keeping it set still lets anyone in that Slack workspace use
 the command in DMs, groups, or channels where Slack allows the command, while
@@ -557,6 +569,9 @@ secret-management path.
 - **Slack `/codeatlas` returns 404:** confirm the VM has the latest code,
   `CODEATLAS_SLACK_ENABLED=true`, the service was restarted, and Slack points to
   `/slack/commands`.
+- **Slack relay returns 401:** confirm the relay forwards
+  `X-CodeAtlas-Relay-Secret` and it exactly matches
+  `CODEATLAS_SLACK_RELAY_SECRET` on the VM.
 - **Slack modal action times out:** confirm the interactivity URL points to
   `/slack/interactions` and the public HTTPS URL reaches the VM.
 - **Slack branch list is empty:** publish the repository and approve/index the

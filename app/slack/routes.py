@@ -46,6 +46,7 @@ CALLBACK_FOLLOW_UP = "codeatlas_follow_up_submit"
 ACTION_FOLLOW_UP = "codeatlas_follow_up"
 ACTION_DEEP = "codeatlas_investigate_deeply"
 ACTION_NEW = "codeatlas_new_question"
+RELAY_SECRET_HEADER = "x-codeatlas-relay-secret"
 
 _executor = ThreadPoolExecutor(
     max_workers=int(os.environ.get("CODEATLAS_SLACK_MAX_WORKERS", "4")),
@@ -75,6 +76,16 @@ def _bot_token() -> str:
 
 def _llm_mode() -> str:
     return os.environ.get("CODEATLAS_SLACK_LLM_MODE", "auto").strip().lower() or "auto"
+
+
+def _relay_secret() -> str:
+    return os.environ.get("CODEATLAS_SLACK_RELAY_SECRET", "").strip()
+
+
+def _valid_relay_request(headers) -> bool:
+    secret = _relay_secret()
+    provided = headers.get(RELAY_SECRET_HEADER, "").strip()
+    return bool(secret and provided and hmac.compare_digest(provided, secret))
 
 
 def _truncate(value: str, limit: int = 75) -> str:
@@ -139,6 +150,13 @@ def _parse_form(body: bytes) -> dict:
 
 
 def verify_slack_request(headers, body: bytes) -> None:
+    if _valid_relay_request(headers):
+        return
+    if _env_bool("CODEATLAS_SLACK_REQUIRE_RELAY_SECRET"):
+        if not _relay_secret():
+            raise HTTPException(status_code=503, detail="Slack relay secret is not configured.")
+        raise HTTPException(status_code=401, detail="Invalid Slack relay secret.")
+
     secret = os.environ.get("CODEATLAS_SLACK_SIGNING_SECRET", "").strip()
     if not secret:
         raise HTTPException(status_code=503, detail="Slack signing secret is not configured.")

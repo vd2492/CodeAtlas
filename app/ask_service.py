@@ -142,6 +142,14 @@ def answer_single_request(
                 request.question,
                 workspace,
             )
+            main.record_answer_activity(
+                getattr(request, "activity_request_id", None),
+                user_id=user["id"],
+                workspace=workspace,
+                question=request.question,
+                status="answered_from_cache",
+                context=response.get("context"),
+            )
             state = main._create_conversation_from_response(
                 user=user,
                 workspace=workspace,
@@ -174,6 +182,14 @@ def answer_single_request(
                 repo_cached_response,
                 request.question,
                 workspace,
+            )
+            main.record_answer_activity(
+                getattr(request, "activity_request_id", None),
+                user_id=user["id"],
+                workspace=workspace,
+                question=request.question,
+                status="answered_from_cache",
+                context=response.get("context"),
             )
             state = main._create_conversation_from_response(
                 user=user,
@@ -214,6 +230,8 @@ def answer_single_request(
                     llm_mode=llm_mode,
                     user_type=user_type,
                     deep_investigation=request.deep_investigation,
+                    activity_request_id=getattr(request, "activity_request_id", None),
+                    activity_user_id=user["id"],
                 )
                 main.conversation_store.append(
                     state.conversation_id,
@@ -250,6 +268,8 @@ def answer_single_request(
                 llm_mode=llm_mode,
                 user_type=user_type,
                 image_attachments=image_attachments,
+                activity_request_id=getattr(request, "activity_request_id", None),
+                activity_user_id=user["id"],
             )
             state = main._create_conversation_from_response(
                 user=user,
@@ -354,6 +374,14 @@ def answer_compare_request(
                 request.question,
                 workspace=None,
             )
+            main.record_answer_activity(
+                getattr(request, "activity_request_id", None),
+                user_id=user["id"],
+                workspace=comparison_workspace,
+                question=request.question,
+                status="answered_from_cache",
+                context=response.get("context"),
+            )
             state = main._create_conversation_from_response(
                 user=user,
                 workspace=comparison_workspace,
@@ -394,6 +422,8 @@ def answer_compare_request(
                     llm_mode=llm_mode,
                     user_type=user_type,
                     deep_investigation=request.deep_investigation,
+                    activity_request_id=getattr(request, "activity_request_id", None),
+                    activity_user_id=user["id"],
                 )
                 main.conversation_store.append(
                     state.conversation_id,
@@ -430,6 +460,8 @@ def answer_compare_request(
                 allow_shared_fallback=allow_shared,
                 llm_mode=llm_mode,
                 user_type=user_type,
+                activity_request_id=getattr(request, "activity_request_id", None),
+                activity_user_id=user["id"],
             )
             state = main._create_conversation_from_response(
                 user=user,

@@ -57,6 +57,27 @@ class SlackIntegrationTests(unittest.TestCase):
         body = b"team_id=T123&text=hello"
         slack_routes.verify_slack_request(signed_headers(self.secret, body), body)
 
+    def test_verify_slack_request_accepts_valid_relay_secret(self):
+        body = b"team_id=T123&text=hello"
+        with patch.dict(os.environ, {
+            "CODEATLAS_SLACK_RELAY_SECRET": "relay-secret",
+            "CODEATLAS_SLACK_SIGNING_SECRET": "",
+        }):
+            slack_routes.verify_slack_request({
+                "x-codeatlas-relay-secret": "relay-secret",
+            }, body)
+
+    def test_verify_slack_request_can_require_relay_secret(self):
+        body = b"team_id=T123&text=hello"
+        with patch.dict(os.environ, {
+            "CODEATLAS_SLACK_RELAY_SECRET": "relay-secret",
+            "CODEATLAS_SLACK_REQUIRE_RELAY_SECRET": "true",
+        }):
+            with self.assertRaises(HTTPException) as raised:
+                slack_routes.verify_slack_request(signed_headers(self.secret, body), body)
+
+        self.assertEqual(raised.exception.status_code, 401)
+
     def test_verify_slack_request_rejects_stale_signature(self):
         body = b"team_id=T123&text=hello"
         stale = int(time.time()) - 600
@@ -95,6 +116,29 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(metadata["team_id"], "T123")
         self.assertEqual(metadata["user_id"], "U123")
         self.assertEqual(metadata["slack_user_id"], "U123")
+
+    def test_slash_command_accepts_relay_secret(self):
+        body = urlencode({
+            "team_id": "T123",
+            "enterprise_id": "",
+            "channel_id": "C123",
+            "user_id": "U123",
+            "trigger_id": "trigger-1",
+            "response_url": "https://hooks.slack.test/response",
+            "text": "explain auth",
+        }).encode("utf-8")
+        headers = {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-codeatlas-relay-secret": "relay-secret",
+        }
+        with patch.dict(os.environ, {
+            "CODEATLAS_SLACK_RELAY_SECRET": "relay-secret",
+            "CODEATLAS_SLACK_SIGNING_SECRET": "",
+        }), patch.object(slack_routes, "_open_ask_modal") as modal:
+            response = asyncio.run(slack_routes.slash_command(FakeRequest(body, headers)))
+
+        self.assertEqual(response.status_code, 200)
+        modal.assert_called_once()
 
     def test_send_user_message_accepts_user_id_alias(self):
         values = {
