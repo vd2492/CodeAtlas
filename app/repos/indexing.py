@@ -5,10 +5,13 @@ graphify is a structural extractor (no LLM needed): `graphify update . --no-clus
 
 import shutil
 import subprocess
+import logging
 
-from ..config import graph_path, repo_clone_dir
+from ..config import graph_path, repo_clone_dir, source_index_path
+from ..retrieval.source_index import build_source_index
 
 INDEX_TIMEOUT = 1800
+logger = logging.getLogger(__name__)
 
 
 def index_repo(workspace: str):
@@ -34,4 +37,8 @@ def index_repo(workspace: str):
     target = graph_path(workspace)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(produced, target)
+    try:
+        build_source_index(repo, source_index_path(workspace))
+    except Exception:
+        logger.exception("Failed to build persisted source index for workspace %s.", workspace)
     return target

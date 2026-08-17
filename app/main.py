@@ -25,6 +25,7 @@ from .config import (
     graph_path,
     repo_clone_dir,
     retrieval_config_path,
+    source_index_path,
 )
 from .conversations import ConversationState, conversation_store
 from .retrieval.flow_map import (
@@ -38,6 +39,7 @@ from .retrieval.flow_map import (
     pretty_method,
 )
 from .retrieval.graph_insights import repo_summary_dynamic
+from .retrieval.source_index import search_source_index
 from .retrieval.relation_utils import (
     format_link,
     is_noise_node,
@@ -913,9 +915,18 @@ def _rg_source_matches(
     return matches
 
 
-def _search_source_files(source_root: Path, terms: list[str], limit: int = 8) -> list[dict]:
+def _search_source_files(
+    source_root: Path,
+    terms: list[str],
+    limit: int = 8,
+    index_path: Path = None,
+) -> list[dict]:
     if not terms:
         return []
+    if index_path is not None:
+        indexed_hits = search_source_index(index_path, terms, limit=limit)
+        if indexed_hits is not None:
+            return indexed_hits
 
     hits = []
     compact_terms = [t.lower().replace("_", "").replace("-", "").replace(".", "") for t in terms]
@@ -1953,7 +1964,13 @@ def build_context(
         "question": question,
         "query_terms": query_terms,
     })
-    source_hits = _search_source_files(source_root, source_terms, limit=10)
+    workspace_source_index = source_index_path(workspace)
+    source_hits = _search_source_files(
+        source_root,
+        source_terms,
+        limit=10,
+        index_path=workspace_source_index,
+    )
     seen_follow_terms = set()
     for _ in range(2):
         follow_terms = [
@@ -1963,7 +1980,12 @@ def build_context(
         if not follow_terms:
             break
         seen_follow_terms.update(follow_terms)
-        follow_hits = _search_source_files(source_root, follow_terms, limit=14)
+        follow_hits = _search_source_files(
+            source_root,
+            follow_terms,
+            limit=14,
+            index_path=workspace_source_index,
+        )
         source_hits = _merge_source_hits(source_hits, follow_hits, limit=14)
     matched_source_files = {hit["path"] for hit in source_hits}
     emit_activity("matching_source_files", {
@@ -2183,6 +2205,7 @@ def repository_revision(workspace: str) -> str:
     for label, path in (
         ("graph", graph_path(workspace)),
         ("retrieval", retrieval_config_path(workspace)),
+        ("source_index", source_index_path(workspace)),
     ):
         try:
             stat = path.stat()

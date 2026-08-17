@@ -61,6 +61,10 @@ def retrieval_config_path(workspace: str = DEFAULT_WORKSPACE) -> Path:
     return workspace_dir(workspace) / "retrieval_config.json"
 
 
+def source_index_path(workspace: str = DEFAULT_WORKSPACE) -> Path:
+    return workspace_dir(workspace) / "source_index.json"
+
+
 def branch_version_workspace(repo_workspace: str, branch_id: int, commit_sha: str) -> str:
     """Stable, server-generated workspace name for an immutable branch version."""
     return f"{repo_workspace}--branch-{branch_id}--{commit_sha.lower()}"
