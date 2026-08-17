@@ -1,6 +1,7 @@
 import base64
 import binascii
 import copy
+import hashlib
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import shutil
 import secrets
 import subprocess
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from pathlib import Path
 from threading import Lock
 from typing import Optional
@@ -141,6 +142,11 @@ _ask_activity_stopwords = {
     "where", "which", "with", "work", "works",
 }
 _source_file_cache: "dict[str, list[tuple[str, Path]]]" = {}
+RETRIEVAL_CONTEXT_CACHE_MAX_RECORDS = max(
+    0, int(os.environ.get("CODEATLAS_RETRIEVAL_CONTEXT_CACHE_MAX_RECORDS", "256"))
+)
+_retrieval_context_cache_lock = Lock()
+_retrieval_context_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 
 SOURCE_EXTENSIONS = {
     ".kt", ".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".rs",
@@ -1548,6 +1554,77 @@ def fast_context_sufficient(query_type: str, context_nodes: list[dict], context_
     return False
 
 
+def retrieval_config_fingerprint(config) -> str:
+    try:
+        payload = json.dumps(
+            config.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except Exception:
+        payload = repr(config)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def normalized_retrieval_question(question: str) -> str:
+    return " ".join(str(question or "").strip().lower().split())
+
+
+def retrieval_context_cache_key(
+    *,
+    workspace: str,
+    question: str,
+    limit: int,
+    query_type: str,
+    config,
+) -> tuple:
+    return (
+        workspace,
+        repository_revision(workspace),
+        retrieval_config_fingerprint(config),
+        query_type,
+        int(limit or 0),
+        normalized_retrieval_question(question),
+    )
+
+
+def get_cached_retrieval_context(cache_key: tuple) -> "dict | None":
+    if RETRIEVAL_CONTEXT_CACHE_MAX_RECORDS <= 0:
+        return None
+    with _retrieval_context_cache_lock:
+        cached = _retrieval_context_cache.get(cache_key)
+        if cached is None:
+            return None
+        _retrieval_context_cache.move_to_end(cache_key)
+        return copy.deepcopy(cached)
+
+
+def put_cached_retrieval_context(cache_key: tuple, context: dict) -> None:
+    if RETRIEVAL_CONTEXT_CACHE_MAX_RECORDS <= 0:
+        return
+    with _retrieval_context_cache_lock:
+        _retrieval_context_cache[cache_key] = copy.deepcopy(context)
+        _retrieval_context_cache.move_to_end(cache_key)
+        while len(_retrieval_context_cache) > RETRIEVAL_CONTEXT_CACHE_MAX_RECORDS:
+            _retrieval_context_cache.popitem(last=False)
+
+
+def emit_cached_retrieval_activity(activity_callback, context: dict) -> None:
+    if not activity_callback:
+        return
+    for status in (
+        "searching_source",
+        "matching_source_files",
+        "ranking_graph_nodes",
+        "expanding_relations",
+        "reading_source",
+    ):
+        try:
+            activity_callback(status, context)
+        except Exception:
+            return
+
+
 def build_context(
     question: str,
     limit: int = 12,
@@ -1563,6 +1640,60 @@ def build_context(
             activity_callback(status, partial_context)
         except Exception:
             pass
+
+    def compact_text(value: str) -> str:
+        return value.lower().replace("_", "").replace("-", "").replace(".", "")
+
+    # Everything below is driven by the workspace's RetrievalConfig — no repo is
+    # special-cased in code. The default workspace is seeded with the demo
+    # anchors (config_schema.DEFAULT_DESTINY_CONFIG); other repos start from
+    # RetrievalConfig() defaults and are tuned from the admin console.
+    config = load_retrieval_config(workspace)
+    stopwords = set(config.stopwords)
+
+    raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]+", question.lower())
+    keywords = [t for t in raw_tokens if t not in stopwords and len(t) > 2]
+    expanded = set(keywords)
+
+    # Expand query terms with the workspace's synonym map (domain vocabulary).
+    for term in list(expanded):
+        for syn in config.synonyms.get(term, []):
+            expanded.add(syn)
+
+    raw_token_set = set(raw_tokens)
+    if ({"log", "logs"} & raw_token_set and "in" in raw_token_set) or {"signin", "login"} & raw_token_set:
+        expanded.discard("log")
+        expanded.discard("logs")
+        expanded.update({"login", "signin", "auth", "authentication"})
+
+    if "sign" in raw_token_set and "in" in raw_token_set:
+        expanded.update({"login", "signin", "auth", "authentication"})
+
+    if "sign" in raw_token_set and "up" in raw_token_set:
+        expanded.update({"register", "registration", "auth", "authentication"})
+
+    query_terms = list(expanded)
+    expanded_compact = {compact_text(t) for t in expanded}
+    source_terms = [
+        t for t in query_terms
+        if len(t) > 2 and t not in SOURCE_QUERY_STOPWORDS
+    ] or [
+        t for t in raw_tokens
+        if len(t) > 2 and t not in SOURCE_QUERY_STOPWORDS
+    ]
+    query_type = route_query_type(question)
+    budget = query_type_budget(query_type, limit, config)
+    cache_key = retrieval_context_cache_key(
+        workspace=workspace,
+        question=question,
+        limit=limit,
+        query_type=query_type,
+        config=config,
+    )
+    cached_context = get_cached_retrieval_context(cache_key)
+    if cached_context is not None:
+        emit_cached_retrieval_activity(activity_callback, cached_context)
+        return cached_context
 
     nodes, links = load_graph(graph_path(workspace))
     source_root = _safe_source_root(workspace)
@@ -1582,9 +1713,6 @@ def build_context(
 
     def node_id_of(node):
         return str(node.get("id") or node.get("label") or node.get("name") or "")
-
-    def compact_text(value: str) -> str:
-        return value.lower().replace("_", "").replace("-", "").replace(".", "")
 
     def meta_for_node(node_id: str):
         if node_id not in node_meta_cache:
@@ -1647,47 +1775,6 @@ def build_context(
         ))
 
         return candidates[0]
-
-    # Everything below is driven by the workspace's RetrievalConfig — no repo is
-    # special-cased in code. The default workspace is seeded with the demo
-    # anchors (config_schema.DEFAULT_DESTINY_CONFIG); other repos start from
-    # RetrievalConfig() defaults and are tuned from the admin console.
-    config = load_retrieval_config(workspace)
-    stopwords = set(config.stopwords)
-
-    raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9]+", question.lower())
-    keywords = [t for t in raw_tokens if t not in stopwords and len(t) > 2]
-    expanded = set(keywords)
-
-    # Expand query terms with the workspace's synonym map (domain vocabulary).
-    for term in list(expanded):
-        for syn in config.synonyms.get(term, []):
-            expanded.add(syn)
-
-    raw_token_set = set(raw_tokens)
-    if ({"log", "logs"} & raw_token_set and "in" in raw_token_set) or {"signin", "login"} & raw_token_set:
-        expanded.discard("log")
-        expanded.discard("logs")
-        expanded.update({"login", "signin", "auth", "authentication"})
-
-    if "sign" in raw_token_set and "in" in raw_token_set:
-        expanded.update({"login", "signin", "auth", "authentication"})
-
-    if "sign" in raw_token_set and "up" in raw_token_set:
-        expanded.update({"register", "registration", "auth", "authentication"})
-
-    query_terms = list(expanded)
-    expanded_compact = {compact_text(t) for t in expanded}
-    source_terms = [
-        t for t in query_terms
-        if len(t) > 2 and t not in SOURCE_QUERY_STOPWORDS
-    ] or [
-        t for t in raw_tokens
-        if len(t) > 2 and t not in SOURCE_QUERY_STOPWORDS
-    ]
-
-    query_type = route_query_type(question)
-    budget = query_type_budget(query_type, limit, config)
 
     def attach_source_excerpts(context_nodes: list[dict], excerpt_limit: int) -> None:
         for node in context_nodes[:excerpt_limit]:
@@ -1858,7 +1945,9 @@ def build_context(
                 "context_relations": context_relations,
                 "source_hits": source_hits,
             })
-            return assemble_context(context_nodes, context_relations, source_hits)
+            context = assemble_context(context_nodes, context_relations, source_hits)
+            put_cached_retrieval_context(cache_key, context)
+            return context
 
     emit_activity("searching_source", {
         "question": question,
@@ -2038,7 +2127,9 @@ def build_context(
         "source_hits": source_hits,
     })
 
-    return assemble_context(context_nodes, context_relations, source_hits)
+    context = assemble_context(context_nodes, context_relations, source_hits)
+    put_cached_retrieval_context(cache_key, context)
+    return context
 
 
 FOLLOW_UP_EVIDENCE_CHARS = max(

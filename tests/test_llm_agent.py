@@ -1386,6 +1386,14 @@ class AgentLoopTests(unittest.TestCase):
 
 
 class QueryRoutingTests(unittest.TestCase):
+    def setUp(self):
+        with main._retrieval_context_cache_lock:
+            main._retrieval_context_cache.clear()
+
+    def tearDown(self):
+        with main._retrieval_context_cache_lock:
+            main._retrieval_context_cache.clear()
+
     def retrieval_config(self):
         return SimpleNamespace(
             stopwords=["what", "is", "the", "of", "to", "for", "and", "how"],
@@ -1500,6 +1508,45 @@ class QueryRoutingTests(unittest.TestCase):
 
         self.assertTrue(source_search_calls)
         self.assertEqual(context["context_nodes"][0]["node"], "createSession")
+
+    def test_retrieval_context_cache_reuses_context_and_returns_deep_copy(self):
+        nodes = [
+            {
+                "id": "createSession",
+                "source_file": "app/auth.py",
+                "source_location": "L10-L20",
+            }
+        ]
+        links = [
+            {
+                "source": "loginRoute",
+                "target": "createSession",
+                "relation": "calls",
+                "source_file": "app/auth.py",
+                "source_location": "L18",
+            }
+        ]
+
+        with patch.object(
+            main, "repository_revision", return_value="rev-1"
+        ), patch.object(
+            main, "load_graph", return_value=(nodes, links)
+        ) as load_graph, patch.object(
+            main, "load_retrieval_config", return_value=self.retrieval_config()
+        ), patch.object(
+            main,
+            "read_source_excerpt",
+            return_value={"start_line": 10, "end_line": 20, "code": "def createSession(): pass"},
+        ):
+            first = main.build_context("createSession", workspace="repo-main")
+            first["context_nodes"][0]["source_excerpt"] = "mutated"
+            second = main.build_context("createSession", workspace="repo-main")
+
+        self.assertEqual(load_graph.call_count, 1)
+        self.assertEqual(
+            second["context_nodes"][0]["source_excerpt"],
+            "def createSession(): pass",
+        )
 
 
 class AnswerActivityTests(unittest.TestCase):
