@@ -1385,6 +1385,123 @@ class AgentLoopTests(unittest.TestCase):
         )
 
 
+class QueryRoutingTests(unittest.TestCase):
+    def retrieval_config(self):
+        return SimpleNamespace(
+            stopwords=["what", "is", "the", "of", "to", "for", "and", "how"],
+            synonyms={},
+            keyword_boosts={},
+            preferred_components=[],
+            preferred_methods=[],
+            node_limit=16,
+            relation_limit=24,
+            excerpt_nodes=6,
+            excerpt_max_lines=22,
+            excerpt_max_chars=1100,
+            pre_search_instruction="Map terms first.",
+        )
+
+    def test_routes_common_query_shapes(self):
+        self.assertEqual(
+            main.route_query_type("createSession"),
+            main.QUERY_EXACT_SYMBOL,
+        )
+        self.assertEqual(
+            main.route_query_type("where is createSession defined?"),
+            main.QUERY_DEFINITION,
+        )
+        self.assertEqual(
+            main.route_query_type("who calls createSession?"),
+            main.QUERY_CALLERS,
+        )
+        self.assertEqual(
+            main.route_query_type("what does createSession call?"),
+            main.QUERY_CALLEES,
+        )
+        self.assertEqual(
+            main.route_query_type("show references to createSession"),
+            main.QUERY_REFERENCES,
+        )
+        self.assertEqual(
+            main.route_query_type("explain checkout flow"),
+            main.QUERY_FLOW,
+        )
+        self.assertEqual(
+            main.route_query_type("debug login crash"),
+            main.QUERY_DEBUG,
+        )
+        self.assertEqual(
+            main.route_query_type("how does login work?"),
+            main.QUERY_CONCEPT,
+        )
+
+    def test_exact_symbol_fast_path_skips_source_search_when_sufficient(self):
+        nodes = [
+            {
+                "id": "createSession",
+                "source_file": "app/auth.py",
+                "source_location": "L10-L20",
+            }
+        ]
+        links = [
+            {
+                "source": "loginRoute",
+                "target": "createSession",
+                "relation": "calls",
+                "source_file": "app/auth.py",
+                "source_location": "L18",
+            }
+        ]
+
+        with patch.object(
+            main, "load_graph", return_value=(nodes, links)
+        ), patch.object(
+            main, "load_retrieval_config", return_value=self.retrieval_config()
+        ), patch.object(
+            main,
+            "read_source_excerpt",
+            return_value={"start_line": 10, "end_line": 20, "code": "def createSession(): pass"},
+        ), patch.object(
+            main,
+            "_search_source_files",
+            side_effect=AssertionError("fast path should not run source search"),
+        ):
+            context = main.build_context("createSession", workspace="repo-main")
+
+        self.assertEqual(context["context_nodes"][0]["node"], "createSession")
+        self.assertEqual(context["source_hits"][0]["path"], "app/auth.py")
+        self.assertEqual(
+            context["llm_context_preview"]["nodes"][0]["name"],
+            "createsession",
+        )
+
+    def test_fast_path_falls_back_when_evidence_is_not_sufficient(self):
+        nodes = [
+            {
+                "id": "createSession",
+                "source_file": "app/auth.py",
+                "source_location": "L10-L20",
+            }
+        ]
+        source_search_calls = []
+
+        def fake_source_search(*args, **kwargs):
+            source_search_calls.append((args, kwargs))
+            return []
+
+        with patch.object(
+            main, "load_graph", return_value=(nodes, [])
+        ), patch.object(
+            main, "load_retrieval_config", return_value=self.retrieval_config()
+        ), patch.object(
+            main, "_search_source_files", side_effect=fake_source_search
+        ):
+            context = main.build_context("who calls createSession?", workspace="repo-main")
+
+        self.assertTrue(source_search_calls)
+        self.assertEqual(context["context_nodes"][0]["node"], "createSession")
+
+
 class AnswerActivityTests(unittest.TestCase):
     def tearDown(self):
         with main._ask_activity_lock:

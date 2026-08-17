@@ -1435,6 +1435,119 @@ def repo_context_endpoint(
     return build_context(question, limit, workspace)
 
 
+QUERY_EXACT_SYMBOL = "EXACT_SYMBOL"
+QUERY_DEFINITION = "DEFINITION"
+QUERY_REFERENCES = "REFERENCES"
+QUERY_CALLERS = "CALLERS"
+QUERY_CALLEES = "CALLEES"
+QUERY_FLOW = "FLOW"
+QUERY_CONCEPT = "CONCEPT"
+QUERY_DEBUG = "DEBUG"
+
+FAST_QUERY_TYPES = {
+    QUERY_EXACT_SYMBOL,
+    QUERY_DEFINITION,
+    QUERY_REFERENCES,
+    QUERY_CALLERS,
+    QUERY_CALLEES,
+}
+
+QUERY_ROUTER_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "by", "can", "code", "does",
+    "do", "file", "files", "for", "from", "get", "give", "how", "i",
+    "in", "is", "it", "me", "of", "on", "or", "please", "show", "tell",
+    "the", "this", "to", "use", "used", "uses", "what", "when", "where",
+    "which", "who", "why", "work", "works",
+}
+
+
+def query_symbol_candidates(question: str, limit: int = 6) -> list[str]:
+    candidates = []
+    for value in re.findall(r"`([^`]+)`", question or ""):
+        value = value.strip()
+        if value:
+            candidates.append(value)
+    for value in re.findall(
+        r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\b",
+        question or "",
+    ):
+        lower = value.lower()
+        if lower in QUERY_ROUTER_STOPWORDS or len(value) < 3:
+            continue
+        if value not in candidates:
+            candidates.append(value)
+    return candidates[:limit]
+
+
+def route_query_type(question: str) -> str:
+    text = f" {str(question or '').strip().lower()} "
+    symbols = query_symbol_candidates(question)
+    has_symbol_shape = any(
+        "." in item
+        or "_" in item
+        or any(ch.isupper() for ch in item[1:])
+        for item in symbols
+    )
+    word_count = len(re.findall(r"[A-Za-z][A-Za-z0-9_]*", question or ""))
+
+    if re.search(r"\b(debug|bug|crash|error|exception|failing|failure|fix|issue|wrong)\b", text):
+        return QUERY_DEBUG
+    if re.search(r"\b(flow|workflow|journey|sequence|end[\s-]?to[\s-]?end|process|steps?)\b", text):
+        return QUERY_FLOW
+    if re.search(r"\b(who calls|callers? of|called by|where .* called)\b", text):
+        return QUERY_CALLERS
+    if re.search(r"\b(callees? of|what .* calls?|calls from|dependencies of)\b", text):
+        return QUERY_CALLEES
+    if re.search(r"\b(references?|usages?|where .* used|used by|using)\b", text):
+        return QUERY_REFERENCES
+    if re.search(r"\b(definition|defined|define|implementation of|what is|where is)\b", text):
+        return QUERY_DEFINITION
+    if symbols and (has_symbol_shape or word_count <= 2):
+        return QUERY_EXACT_SYMBOL
+    return QUERY_CONCEPT
+
+
+def query_type_budget(query_type: str, requested_limit: int, config) -> dict:
+    requested_limit = max(1, int(requested_limit or 12))
+    default_limit = max(1, int(getattr(config, "node_limit", requested_limit) or requested_limit))
+    budgets = {
+        QUERY_EXACT_SYMBOL: {"nodes": 4, "relations": 10, "source": 0, "excerpts": 3},
+        QUERY_DEFINITION: {"nodes": 6, "relations": 12, "source": 3, "excerpts": 4},
+        QUERY_REFERENCES: {"nodes": 8, "relations": 18, "source": 4, "excerpts": 4},
+        QUERY_CALLERS: {"nodes": 8, "relations": 18, "source": 3, "excerpts": 4},
+        QUERY_CALLEES: {"nodes": 8, "relations": 18, "source": 3, "excerpts": 4},
+        QUERY_FLOW: {"nodes": max(default_limit, requested_limit), "relations": 32, "source": 10, "excerpts": 6},
+        QUERY_DEBUG: {"nodes": max(default_limit, requested_limit), "relations": 32, "source": 10, "excerpts": 6},
+        QUERY_CONCEPT: {"nodes": max(default_limit, requested_limit), "relations": 24, "source": 8, "excerpts": 6},
+    }
+    budget = budgets.get(query_type, budgets[QUERY_CONCEPT])
+    return {
+        "nodes": max(1, budget["nodes"]),
+        "relations": max(1, budget["relations"]),
+        "source": max(0, budget["source"]),
+        "excerpts": max(1, min(budget["excerpts"], int(getattr(config, "excerpt_nodes", budget["excerpts"]) or budget["excerpts"]))),
+    }
+
+
+def fast_context_sufficient(query_type: str, context_nodes: list[dict], context_relations: list[dict]) -> bool:
+    nodes_with_source = [
+        node for node in context_nodes
+        if node.get("source_file")
+        and node.get("source_file") != "unknown"
+        and node.get("source_location")
+        and node.get("source_location") != "?"
+    ]
+    if query_type in {QUERY_EXACT_SYMBOL, QUERY_DEFINITION}:
+        return bool(nodes_with_source)
+    if query_type == QUERY_CALLERS:
+        return bool(nodes_with_source and context_relations)
+    if query_type == QUERY_CALLEES:
+        return bool(nodes_with_source and context_relations)
+    if query_type == QUERY_REFERENCES:
+        return bool(nodes_with_source and (context_relations or len(context_nodes) > 1))
+    return False
+
+
 def build_context(
     question: str,
     limit: int = 12,
@@ -1572,6 +1685,181 @@ def build_context(
         t for t in raw_tokens
         if len(t) > 2 and t not in SOURCE_QUERY_STOPWORDS
     ]
+
+    query_type = route_query_type(question)
+    budget = query_type_budget(query_type, limit, config)
+
+    def attach_source_excerpts(context_nodes: list[dict], excerpt_limit: int) -> None:
+        for node in context_nodes[:excerpt_limit]:
+            excerpt = read_source_excerpt(
+                node.get("source_file", ""), node.get("source_location", ""),
+                source_root, max_lines=config.excerpt_max_lines,
+                max_chars=config.excerpt_max_chars,
+            )
+            if excerpt:
+                node["source_excerpt"] = excerpt["code"]
+                node["excerpt_range"] = f"L{excerpt['start_line']}-L{excerpt['end_line']}"
+
+    def source_hits_from_nodes(context_nodes: list[dict]) -> list[dict]:
+        hits_by_path = {}
+        for node in context_nodes:
+            source_file = node.get("source_file")
+            if not source_file or source_file == "unknown":
+                continue
+            hit = hits_by_path.setdefault(source_file, {
+                "path": source_file,
+                "score": float(node.get("score") or 0),
+                "snippets": [],
+            })
+            hit["score"] = max(hit["score"], float(node.get("score") or 0))
+            if node.get("source_excerpt"):
+                match = re.search(r"L(\d+)(?:\s*[-–]\s*L?(\d+))?", node.get("excerpt_range") or "")
+                start_line = int(match.group(1)) if match else 1
+                end_line = int(match.group(2)) if match and match.group(2) else start_line
+                hit["snippets"].append({
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "code": node["source_excerpt"],
+                    "score": round(float(node.get("score") or 1), 2),
+                })
+        hits = list(hits_by_path.values())
+        hits.sort(key=lambda item: (-item["score"], item["path"]))
+        return hits[:max(1, LLM_PREVIEW_SOURCE_HITS)]
+
+    def assemble_context(context_nodes: list[dict], context_relations: list[dict], source_hits: list[dict]) -> dict:
+        preview_nodes = context_nodes[:LLM_PREVIEW_NODE_LIMIT]
+        preview_source_hits = source_hits[:LLM_PREVIEW_SOURCE_HITS]
+        return {
+            "question": question,
+            "query_terms": query_terms,
+            "context_nodes": context_nodes,
+            "context_relations": context_relations,
+            "source_hits": source_hits,
+            "llm_context_preview": {
+                "instruction": "Answer the user's codebase question using the repo overview, graph context, relations, and source search snippets. Cite source files and line numbers. Prefer evidence from source snippets over names. If the evidence is incomplete, say exactly what could not be verified.",
+                "pre_search_instruction": config.pre_search_instruction,
+                "question": question,
+                "repo_overview": _repo_overview(nodes, links),
+                "nodes": [
+                    {
+                        "name": n["name"],
+                        "source": f'{n.get("source_file", "")} {n.get("source_location", "")}',
+                        **({"code": n["source_excerpt"][:LLM_PREVIEW_SNIPPET_CHARS]} if n.get("source_excerpt") else {}),
+                    }
+                    for n in preview_nodes
+                ],
+                "relations": [
+                    {
+                        "from": r["source_name"],
+                        "relation": r["relation_label"],
+                        "to": r["target_name"],
+                        "source": f'{r.get("source_file", "")} {r.get("source_location", "")}',
+                    }
+                    for r in context_relations[:24]
+                ],
+                "source_search_hits": [
+                    {
+                        "path": hit["path"],
+                        "score": hit["score"],
+                        "snippets": [
+                            {
+                                "range": f"L{snippet['start_line']}-L{snippet['end_line']}",
+                                "code": snippet["code"][:LLM_PREVIEW_SNIPPET_CHARS],
+                            }
+                            for snippet in hit["snippets"][:1]
+                        ],
+                    }
+                    for hit in preview_source_hits
+                ],
+            },
+        }
+
+    def add_context_node(context_nodes: list[dict], seen_names: set, seen_nodes: set, item: dict) -> None:
+        if not item or item.get("name") in seen_names or item.get("node") in seen_nodes:
+            return
+        context_nodes.append(item)
+        seen_names.add(item.get("name"))
+        seen_nodes.add(item.get("node"))
+
+    def relation_allowed_for_fast_path(formatted: dict, selected_node_ids: set, selected_source_files: set) -> bool:
+        source_file = formatted.get("source_file") or ""
+        if "/src/test/" in source_file or "/src/androidTest/" in source_file:
+            return False
+        if formatted.get("context") in {"generic_arg", "return_type", "parameter_type"}:
+            return False
+        source_selected = formatted.get("source") in selected_node_ids
+        target_selected = formatted.get("target") in selected_node_ids
+        if query_type == QUERY_CALLERS:
+            return target_selected and formatted.get("relation") in {"calls", "references"}
+        if query_type == QUERY_CALLEES:
+            return source_selected and formatted.get("relation") in {"calls", "references"}
+        return source_selected or target_selected or source_file in selected_source_files
+
+    if query_type in FAST_QUERY_TYPES:
+        emit_activity("searching_source", {
+            "question": question,
+            "query_terms": query_terms,
+        })
+        context_nodes = []
+        seen_names = set()
+        seen_nodes = set()
+        for candidate in query_symbol_candidates(question) + query_terms:
+            for item in search_nodes(candidate, nodes, links, limit=budget["nodes"] * 2):
+                add_context_node(context_nodes, seen_names, seen_nodes, item)
+                if len(context_nodes) >= budget["nodes"]:
+                    break
+            if len(context_nodes) >= budget["nodes"]:
+                break
+
+        emit_activity("ranking_graph_nodes", {
+            "question": question,
+            "query_terms": query_terms,
+            "context_nodes": context_nodes,
+            "source_hits": [],
+        })
+        selected_node_ids = {item["node"] for item in context_nodes}
+        selected_source_files = {
+            item.get("source_file") for item in context_nodes
+            if item.get("source_file") and item.get("source_file") != "unknown"
+        }
+        context_relations = []
+        seen_relations = set()
+        for link in links:
+            formatted = format_link(link)
+            if not relation_allowed_for_fast_path(formatted, selected_node_ids, selected_source_files):
+                continue
+            relation_key = (
+                formatted.get("source"),
+                formatted.get("target"),
+                formatted.get("relation"),
+                formatted.get("source_location"),
+            )
+            if relation_key in seen_relations:
+                continue
+            context_relations.append(formatted)
+            seen_relations.add(relation_key)
+            if len(context_relations) >= budget["relations"]:
+                break
+
+        emit_activity("expanding_relations", {
+            "question": question,
+            "query_terms": query_terms,
+            "context_nodes": context_nodes,
+            "context_relations": context_relations,
+            "source_hits": [],
+        })
+        if fast_context_sufficient(query_type, context_nodes, context_relations):
+            attach_source_excerpts(context_nodes, budget["excerpts"])
+            source_hits = source_hits_from_nodes(context_nodes)
+            emit_activity("reading_source", {
+                "question": question,
+                "query_terms": query_terms,
+                "context_nodes": context_nodes,
+                "context_relations": context_relations,
+                "source_hits": source_hits,
+            })
+            return assemble_context(context_nodes, context_relations, source_hits)
+
     emit_activity("searching_source", {
         "question": question,
         "query_terms": query_terms,
@@ -1741,15 +2029,7 @@ def build_context(
     # Attach real source code for the most relevant nodes so the LLM can explain
     # actual behavior (e.g. what a feature enforces), not just node names. Kept
     # small (top few nodes, short excerpts) so the prompt stays fast.
-    for node in context_nodes[:config.excerpt_nodes]:
-        excerpt = read_source_excerpt(
-            node.get("source_file", ""), node.get("source_location", ""),
-            source_root, max_lines=config.excerpt_max_lines,
-            max_chars=config.excerpt_max_chars,
-        )
-        if excerpt:
-            node["source_excerpt"] = excerpt["code"]
-            node["excerpt_range"] = f"L{excerpt['start_line']}-L{excerpt['end_line']}"
+    attach_source_excerpts(context_nodes, config.excerpt_nodes)
     emit_activity("reading_source", {
         "question": question,
         "query_terms": query_terms,
@@ -1758,53 +2038,7 @@ def build_context(
         "source_hits": source_hits,
     })
 
-    preview_nodes = context_nodes[:LLM_PREVIEW_NODE_LIMIT]
-    preview_source_hits = source_hits[:LLM_PREVIEW_SOURCE_HITS]
-
-    return {
-        "question": question,
-        "query_terms": query_terms,
-        "context_nodes": context_nodes,
-        "context_relations": context_relations,
-        "source_hits": source_hits,
-        "llm_context_preview": {
-            "instruction": "Answer the user's codebase question using the repo overview, graph context, relations, and source search snippets. Cite source files and line numbers. Prefer evidence from source snippets over names. If the evidence is incomplete, say exactly what could not be verified.",
-            "pre_search_instruction": config.pre_search_instruction,
-            "question": question,
-            "repo_overview": _repo_overview(nodes, links),
-            "nodes": [
-                {
-                    "name": n["name"],
-                    "source": f'{n.get("source_file", "")} {n.get("source_location", "")}',
-                    **({"code": n["source_excerpt"][:LLM_PREVIEW_SNIPPET_CHARS]} if n.get("source_excerpt") else {}),
-                }
-                for n in preview_nodes
-            ],
-            "relations": [
-                {
-                    "from": r["source_name"],
-                    "relation": r["relation_label"],
-                    "to": r["target_name"],
-                    "source": f'{r.get("source_file", "")} {r.get("source_location", "")}',
-                }
-                for r in context_relations[:24]
-            ],
-            "source_search_hits": [
-                {
-                    "path": hit["path"],
-                    "score": hit["score"],
-                    "snippets": [
-                        {
-                            "range": f"L{snippet['start_line']}-L{snippet['end_line']}",
-                            "code": snippet["code"][:LLM_PREVIEW_SNIPPET_CHARS],
-                        }
-                        for snippet in hit["snippets"][:1]
-                    ],
-                }
-                for hit in preview_source_hits
-            ],
-        },
-    }
+    return assemble_context(context_nodes, context_relations, source_hits)
 
 
 FOLLOW_UP_EVIDENCE_CHARS = max(
