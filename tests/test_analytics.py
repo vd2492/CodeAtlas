@@ -71,6 +71,46 @@ class TokenAnalyticsTests(unittest.TestCase):
             self.assertEqual(providers["shared:mimo"]["total_tokens"], 150)
             self.assertEqual(providers["user:openai"]["llm_requests"], 2)
 
+    def test_records_slack_token_usage_with_source_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
+        ):
+            db.init_db()
+
+            self.assertTrue(db.record_token_usage(
+                user_id=-42,
+                username="slack:T123:U123",
+                repo_slug="sample",
+                workspace="sample",
+                endpoint="repo.ask",
+                source="slack",
+                slack_user_id="U123",
+                slack_team_id="T123",
+                slack_channel_id="C123",
+                ask_type="single_branch",
+                branch="main",
+                provider_used="shared:mimo",
+                token_usage={
+                    "available": True,
+                    "input_tokens": 120,
+                    "output_tokens": 30,
+                    "total_tokens": 150,
+                    "requests": 1,
+                },
+            ))
+
+            analytics = db.token_usage_analytics(days=7)
+
+            self.assertEqual(analytics["totals"]["total_tokens"], 150)
+            self.assertEqual(analytics["by_user"][0]["username"], "slack:T123:U123")
+            self.assertEqual(analytics["by_user"][0]["source"], "slack")
+            self.assertEqual(analytics["by_source"], [{
+                "source": "slack",
+                "total_tokens": 150,
+                "llm_requests": 1,
+                "event_count": 1,
+            }])
+
     def test_records_unique_marketing_page_visitors(self):
         with tempfile.TemporaryDirectory() as temp_dir, patch.object(
             db, "DB_PATH", Path(temp_dir) / "codeatlas.db"
@@ -200,6 +240,43 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertEqual(payload["token_usage"]["total_tokens"], 15)
         self.assertEqual(payload["repo_slug"], "sample")
 
+    def test_answer_token_usage_schedules_slack_metadata(self):
+        response = {
+            "provider_used": "shared:mimo",
+            "token_usage": {
+                "available": True,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "requests": 1,
+            },
+        }
+        with patch.object(ask_service._ANALYTICS_EXECUTOR, "submit") as submit:
+            scheduled = ask_service.schedule_answer_token_usage(
+                {"id": -7, "username": "slack:T123:U123"},
+                "sample-workspace",
+                "repo.ask",
+                response,
+                repo={"slug": "sample"},
+                analytics_context={
+                    "source": "slack",
+                    "slack_user_id": "U123",
+                    "slack_team_id": "T123",
+                    "slack_channel_id": "C123",
+                    "ask_type": "single_branch",
+                    "branch": "main",
+                },
+            )
+
+        self.assertTrue(scheduled)
+        payload = submit.call_args.args[1]
+        self.assertEqual(payload["source"], "slack")
+        self.assertEqual(payload["slack_user_id"], "U123")
+        self.assertEqual(payload["slack_team_id"], "T123")
+        self.assertEqual(payload["slack_channel_id"], "C123")
+        self.assertEqual(payload["ask_type"], "single_branch")
+        self.assertEqual(payload["branch"], "main")
+
     def test_admin_page_contains_analytics_dashboard_entry_point(self):
         html = (Path(__file__).resolve().parents[1] / "app/static/admin.html").read_text()
         self.assertIn('id="analyticsBtn"', html)
@@ -213,6 +290,8 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn("analyticsUserTable", html)
         self.assertIn('id="siteVisitedUsers"', html)
         self.assertIn("Total site visitors", html)
+        self.assertIn("<th>Source</th>", html)
+        self.assertIn("formatSourceLabel", html)
         self.assertIn("<th>Queries</th>", html)
         self.assertIn("provider-total", html)
         self.assertIn('id="dailyBarChartBtn"', html)

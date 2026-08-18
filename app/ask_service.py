@@ -54,17 +54,25 @@ def schedule_answer_token_usage(
     response: dict,
     *,
     repo: Optional[dict] = None,
+    analytics_context: Optional[dict] = None,
 ) -> bool:
     """Schedule analytics storage from the response's existing usage payload."""
     usage = (response or {}).get("token_usage") or {}
     if not usage.get("available"):
         return False
+    context = analytics_context or {}
     payload = {
         "user_id": user.get("id"),
         "username": user.get("username"),
         "repo_slug": repo.get("slug") if repo else None,
         "workspace": workspace,
         "endpoint": endpoint,
+        "source": context.get("source") or "web",
+        "slack_user_id": context.get("slack_user_id"),
+        "slack_team_id": context.get("slack_team_id"),
+        "slack_channel_id": context.get("slack_channel_id"),
+        "ask_type": context.get("ask_type"),
+        "branch": context.get("branch"),
         "provider_used": (response or {}).get("provider_used"),
         "token_usage": dict(usage),
     }
@@ -100,6 +108,7 @@ def answer_single_request(
     user: dict,
     *,
     enforce_limit: bool = True,
+    analytics_context: Optional[dict] = None,
 ) -> dict:
     """Run the existing single-repository ask flow for any authenticated surface."""
     main = _main()
@@ -257,6 +266,7 @@ def answer_single_request(
                     "repo.ask.follow_up",
                     response,
                     repo=repo,
+                    analytics_context=analytics_context,
                 )
                 return response
 
@@ -309,6 +319,7 @@ def answer_single_request(
                 "repo.ask",
                 response,
                 repo=repo,
+                analytics_context=analytics_context,
             )
             return response
     except LLMCapacityError as error:
@@ -332,6 +343,7 @@ def answer_compare_request(
     left: Optional[dict] = None,
     right: Optional[dict] = None,
     enforce_limit: bool = True,
+    analytics_context: Optional[dict] = None,
 ) -> dict:
     """Run the existing branch-comparison ask flow for any authenticated surface."""
     main = _main()
@@ -449,6 +461,7 @@ def answer_compare_request(
                     "repo.compare.follow_up",
                     response,
                     repo=repo,
+                    analytics_context=analytics_context,
                 )
                 return response
 
@@ -493,6 +506,7 @@ def answer_compare_request(
                 "repo.compare",
                 response,
                 repo=repo,
+                analytics_context=analytics_context,
             )
             return response
     except LLMCapacityError as error:

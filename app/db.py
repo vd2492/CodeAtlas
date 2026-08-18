@@ -117,6 +117,12 @@ CREATE TABLE IF NOT EXISTS token_usage_events (
     repo_slug           TEXT,
     workspace           TEXT,
     endpoint            TEXT,
+    source              TEXT NOT NULL DEFAULT 'web',
+    slack_user_id       TEXT,
+    slack_team_id       TEXT,
+    slack_channel_id    TEXT,
+    ask_type            TEXT,
+    branch              TEXT,
     provider_used       TEXT,
     input_tokens        INTEGER NOT NULL DEFAULT 0,
     output_tokens       INTEGER NOT NULL DEFAULT 0,
@@ -207,6 +213,23 @@ def init_db() -> None:
                 "ALTER TABLE repo_branches "
                 "ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
             )
+        token_usage_columns = {
+            row["name"] for row in conn.execute(
+                "PRAGMA table_info(token_usage_events)"
+            ).fetchall()
+        }
+        token_usage_migrations = {
+            "source": "ALTER TABLE token_usage_events "
+            "ADD COLUMN source TEXT NOT NULL DEFAULT 'web'",
+            "slack_user_id": "ALTER TABLE token_usage_events ADD COLUMN slack_user_id TEXT",
+            "slack_team_id": "ALTER TABLE token_usage_events ADD COLUMN slack_team_id TEXT",
+            "slack_channel_id": "ALTER TABLE token_usage_events ADD COLUMN slack_channel_id TEXT",
+            "ask_type": "ALTER TABLE token_usage_events ADD COLUMN ask_type TEXT",
+            "branch": "ALTER TABLE token_usage_events ADD COLUMN branch TEXT",
+        }
+        for column, statement in token_usage_migrations.items():
+            if column not in token_usage_columns:
+                conn.execute(statement)
 
 
 def user_count() -> int:
@@ -953,6 +976,12 @@ def record_token_usage(
     repo_slug: str = None,
     workspace: str = None,
     endpoint: str = None,
+    source: str = "web",
+    slack_user_id: str = None,
+    slack_team_id: str = None,
+    slack_channel_id: str = None,
+    ask_type: str = None,
+    branch: str = None,
     provider_used: str = None,
     token_usage: dict = None,
     created_at: str = None,
@@ -976,6 +1005,12 @@ def record_token_usage(
         "repo_slug",
         "workspace",
         "endpoint",
+        "source",
+        "slack_user_id",
+        "slack_team_id",
+        "slack_channel_id",
+        "ask_type",
+        "branch",
         "provider_used",
         "input_tokens",
         "output_tokens",
@@ -989,6 +1024,12 @@ def record_token_usage(
         repo_slug,
         workspace,
         endpoint,
+        source or "web",
+        slack_user_id,
+        slack_team_id,
+        slack_channel_id,
+        ask_type,
+        branch,
         provider_used,
         input_tokens,
         output_tokens,
@@ -1060,6 +1101,11 @@ def token_usage_analytics(
         current_user_rows = [
             dict(row) for row in conn.execute(
                 "SELECT u.id AS user_id, u.username, u.email, "
+                "CASE "
+                "WHEN COUNT(t.id) = 0 THEN 'web' "
+                "WHEN COUNT(DISTINCT COALESCE(NULLIF(t.source, ''), 'web')) = 1 "
+                "THEN COALESCE(MAX(NULLIF(t.source, '')), 'web') "
+                "ELSE 'mixed' END AS source, "
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.cached_input_tokens), 0) AS cached_input_tokens, "
@@ -1079,6 +1125,10 @@ def token_usage_analytics(
                 "SELECT NULL AS user_id, "
                 "COALESCE(NULLIF(t.username, ''), 'Unknown user') AS username, "
                 "NULL AS email, "
+                "CASE "
+                "WHEN COUNT(DISTINCT COALESCE(NULLIF(t.source, ''), 'web')) = 1 "
+                "THEN COALESCE(MAX(NULLIF(t.source, '')), 'web') "
+                "ELSE 'mixed' END AS source, "
                 "COALESCE(SUM(t.input_tokens), 0) AS input_tokens, "
                 "COALESCE(SUM(t.output_tokens), 0) AS output_tokens, "
                 "COALESCE(SUM(t.cached_input_tokens), 0) AS cached_input_tokens, "
@@ -1122,6 +1172,19 @@ def token_usage_analytics(
                 period_params,
             ).fetchall()
         ]
+        source_rows = [
+            dict(row) for row in conn.execute(
+                "SELECT COALESCE(NULLIF(source, ''), 'web') AS source, "
+                "COALESCE(SUM(total_tokens), 0) AS total_tokens, "
+                "COALESCE(SUM(llm_requests), 0) AS llm_requests, "
+                "COUNT(*) AS event_count "
+                "FROM token_usage_events "
+                f"WHERE {period_filter} "
+                "GROUP BY COALESCE(NULLIF(source, ''), 'web') "
+                "ORDER BY total_tokens DESC, source",
+                period_params,
+            ).fetchall()
+        ]
     by_user = current_user_rows + archived_user_rows
     by_user.sort(key=lambda row: (-row["total_tokens"], row["username"] or ""))
     by_day = []
@@ -1150,4 +1213,5 @@ def token_usage_analytics(
         "by_user": by_user,
         "by_day": by_day,
         "by_provider": provider_rows,
+        "by_source": source_rows,
     }

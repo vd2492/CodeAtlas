@@ -354,6 +354,74 @@ class SlackIntegrationTests(unittest.TestCase):
 
         ephemeral.assert_called_once_with("C123", "U123", "Working", None)
 
+    def test_answer_failure_detail_hides_shared_llm_auth_errors(self):
+        error = RuntimeError(
+            "No LLM provider succeeded. Tried -> shared: [401] "
+            "{\"error\":{\"message\":\"Invalid API Key\",\"code\":\"401\",\"type\":\"invalid_key\"}}"
+        )
+
+        detail = slack_routes._answer_failure_detail(error)
+
+        self.assertEqual(
+            detail,
+            "CodeAtlas could not generate an answer because the shared LLM quota "
+            "is unavailable. Please contact an admin.",
+        )
+        self.assertNotIn("Invalid API Key", detail)
+
+    def test_answer_failure_detail_keeps_non_llm_errors(self):
+        detail = slack_routes._answer_failure_detail(
+            HTTPException(status_code=404, detail="Repository not found.")
+        )
+
+        self.assertEqual(detail, "Repository not found.")
+
+    def test_single_answer_passes_slack_analytics_context(self):
+        values = {
+            "team_id": "T123",
+            "channel_id": "C123",
+            "slack_user_id": "U123",
+            "user_id": "U123",
+            "repo_slug": "payments",
+            "repo_name": "Payments",
+            "branch": "main",
+            "branch_workspace": "payments-main",
+            "ask_type": slack_routes.ASK_SINGLE,
+            "user_type": slack_routes.USER_PRODUCT,
+            "question": "How does login work?",
+        }
+        repo = {
+            "id": 1,
+            "name": "Payments",
+            "slug": "payments",
+            "workspace": "payments",
+            "status": "published",
+        }
+        response = {
+            "answer": "Login uses sessions.",
+            "question": values["question"],
+            "conversation_id": "conv-1",
+            "investigate_deeply_available": False,
+        }
+        actor = {"id": -1, "username": "slack:T123:U123", "role": "admin"}
+        with patch.object(slack_routes, "_repo_by_slug", return_value=repo), \
+                patch.object(slack_routes.ask_service, "slack_actor_user", return_value=actor), \
+                patch.object(slack_routes, "_send_user_message"), \
+                patch.object(
+                    slack_routes.ask_service,
+                    "answer_single_request",
+                    return_value=response,
+                ) as answer:
+            slack_routes._run_single_answer(values)
+
+        analytics_context = answer.call_args.kwargs["analytics_context"]
+        self.assertEqual(analytics_context["source"], "slack")
+        self.assertEqual(analytics_context["slack_user_id"], "U123")
+        self.assertEqual(analytics_context["slack_team_id"], "T123")
+        self.assertEqual(analytics_context["slack_channel_id"], "C123")
+        self.assertEqual(analytics_context["ask_type"], slack_routes.ASK_SINGLE)
+        self.assertEqual(analytics_context["branch"], "main")
+
     def test_view_submission_dispatches_answer_job(self):
         payload = {
             "type": "view_submission",

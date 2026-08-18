@@ -625,6 +625,29 @@ def _http_detail(exc: Exception) -> str:
     return str(exc)
 
 
+def _answer_failure_detail(exc: Exception) -> str:
+    detail = _http_detail(exc)
+    lowered = detail.lower()
+    if (
+        "no llm provider succeeded" in lowered
+        and "shared:" in lowered
+        and (
+            "invalid api key" in lowered
+            or "invalid_key" in lowered
+            or "401" in lowered
+            or "quota" in lowered
+            or "rate limit" in lowered
+            or "insufficient" in lowered
+            or "exhaust" in lowered
+        )
+    ):
+        return (
+            "CodeAtlas could not generate an answer because the shared LLM quota "
+            "is unavailable. Please contact an admin."
+        )
+    return detail
+
+
 def _answer_topic_payload(values: dict, response: dict, branch_context: dict) -> dict:
     topic = {
         **values,
@@ -634,6 +657,17 @@ def _answer_topic_payload(values: dict, response: dict, branch_context: dict) ->
     }
     topic["topic_label"] = _topic_label(topic)
     return topic
+
+
+def _slack_analytics_context(values: dict, branch: str = None) -> dict:
+    return {
+        "source": "slack",
+        "slack_user_id": _slack_user_id(values),
+        "slack_team_id": values.get("team_id"),
+        "slack_channel_id": values.get("channel_id"),
+        "ask_type": values.get("ask_type") or ASK_SINGLE,
+        "branch": branch or values.get("branch"),
+    }
 
 
 def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = False) -> None:
@@ -676,7 +710,15 @@ def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = Fa
         "Generating answer",
         [{"type": "section", "text": _mrkdwn("Searching repository context and generating the answer...")}],
     )
-    response = ask_service.answer_single_request(request, workspace, actor)
+    response = ask_service.answer_single_request(
+        request,
+        workspace,
+        actor,
+        analytics_context=_slack_analytics_context(
+            values,
+            branch_context.get("branch") or values.get("branch"),
+        ),
+    )
     topic = _answer_topic_payload(values, response, branch_context)
     _send_user_message(
         topic,
@@ -755,6 +797,10 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
         repo=repo,
         left=left,
         right=right,
+        analytics_context=_slack_analytics_context(
+            values,
+            f"{base['name']}..{compare['name']}",
+        ),
     )
     topic = _answer_topic_payload(values, response, branch_context)
     _send_user_message(
@@ -777,7 +823,7 @@ def _run_answer_job(values: dict, *, follow_up: bool = False, deep: bool = False
                 "CodeAtlas could not answer",
                 [{
                     "type": "section",
-                    "text": _mrkdwn(f"I couldn't complete that request.\n\nReason: {_http_detail(exc)}"),
+                    "text": _mrkdwn(f"I couldn't complete that request.\n\nReason: {_answer_failure_detail(exc)}"),
                 }],
             )
         except Exception:

@@ -897,7 +897,7 @@
     <div class="panel analytics-scroll">
       <table id="analyticsUserTable">
         <thead>
-          <tr><th>User name</th><th>Email</th><th>Token consumption</th><th>Queries</th><th>LLM requests</th><th>Last used</th></tr>
+          <tr><th>User name</th><th>Email</th><th>Source</th><th>Token consumption</th><th>Queries</th><th>LLM requests</th><th>Last used</th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -946,6 +946,13 @@ function formatLocalTimestamp(value, fallback = "") {
 
 function formatNumber(value) {
   return numberFormatter.format(Number(value) || 0);
+}
+
+function formatSourceLabel(value) {
+  const source = String(value || "web").toLowerCase();
+  if (source === "slack") return "Slack";
+  if (source === "mixed") return "Mixed";
+  return "Web";
 }
 
 function formatShortDate(day) {
@@ -1159,6 +1166,7 @@ function renderAnalyticsUsers(rows) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${esc(row.username || "Unknown user")}</td>`
       + `<td class="muted">${esc(row.email || "")}</td>`
+      + `<td class="muted">${esc(formatSourceLabel(row.source))}</td>`
       + `<td>${formatNumber(row.total_tokens)}</td>`
       + `<td class="muted">${formatNumber(row.event_count)}</td>`
       + `<td class="muted">${formatNumber(row.llm_requests)}</td>`
