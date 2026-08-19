@@ -583,8 +583,14 @@ def _topic_label(values: dict) -> str:
 
 def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
     answer = str(response.get("answer") or "No answer was returned.").strip()
+    question = str(response.get("question") or topic.get("question") or "").strip()
     header = _topic_label(topic)
     blocks = [{"type": "section", "text": _mrkdwn(header)}]
+    if question:
+        blocks.append({
+            "type": "section",
+            "text": _mrkdwn(f"*Question asked:*\n{question}"),
+        })
     chunks = [answer[index:index + 2900] for index in range(0, len(answer), 2900)] or [answer]
     for chunk in chunks[:8]:
         blocks.append({"type": "section", "text": _mrkdwn(chunk)})

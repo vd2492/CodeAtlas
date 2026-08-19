@@ -422,6 +422,26 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(analytics_context["ask_type"], slack_routes.ASK_SINGLE)
         self.assertEqual(analytics_context["branch"], "main")
 
+    def test_answer_blocks_include_question_asked(self):
+        topic = {
+            "repo_name": "Payments",
+            "branch": "main",
+            "user_type": slack_routes.USER_PRODUCT,
+            "question": "How does login work?",
+        }
+        response = {
+            "answer": "Login creates a session.",
+            "investigate_deeply_available": False,
+        }
+
+        blocks = slack_routes._answer_text_blocks(response, topic)
+
+        self.assertEqual(
+            blocks[1]["text"]["text"],
+            "*Question asked:*\nHow does login work?",
+        )
+        self.assertEqual(blocks[2]["text"]["text"], "Login creates a session.")
+
     def test_view_submission_dispatches_answer_job(self):
         payload = {
             "type": "view_submission",
