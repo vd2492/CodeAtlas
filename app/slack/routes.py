@@ -676,6 +676,93 @@ def _slack_analytics_context(values: dict, branch: str = None) -> dict:
     }
 
 
+def _current_branch(repo: dict, branch_name: str) -> Optional[dict]:
+    if not repo or not branch_name:
+        return None
+    try:
+        return db.get_repo_branch_by_name(repo["id"], branch_name)
+    except Exception:
+        return None
+
+
+def _branch_is_ready(branch: Optional[dict]) -> bool:
+    return bool(
+        branch
+        and branch.get("workspace")
+        and branch.get("index_status") == "ready"
+    )
+
+
+def _single_branch_preparation_notice(branch: Optional[dict]) -> tuple[str, bool]:
+    status = (branch or {}).get("index_status")
+    freshness = (branch or {}).get("freshness_status")
+    if status == "indexing":
+        return (
+            "Branch is still being prepared. I'll notify you when the answer is ready...",
+            False,
+        )
+    if status == "failed":
+        return (
+            "Re-indexing the selected branch because the previous index failed or is stale...",
+            False,
+        )
+    if status == "never_indexed" or (branch and not branch.get("workspace")):
+        return ("Indexing the selected branch for the first time...", False)
+    if freshness in {"behind", "diverged"}:
+        return (
+            "Updating the selected branch index because new commits were found...",
+            False,
+        )
+    if freshness == "checking":
+        return ("Syncing the selected branch because new commits may be available...", False)
+    if _branch_is_ready(branch):
+        return (
+            "Branch is ready. Searching repository context and generating the answer...",
+            True,
+        )
+    return ("Preparing the selected branch and checking index status...", False)
+
+
+def _compare_branch_preparation_notice(
+    branches: list[Optional[dict]],
+) -> tuple[str, bool]:
+    known = [branch for branch in branches if branch]
+    statuses = {(branch or {}).get("index_status") for branch in branches}
+    freshnesses = {(branch or {}).get("freshness_status") for branch in branches}
+    if "indexing" in statuses:
+        return (
+            "One or both selected branches are still being prepared. "
+            "I'll notify you when the comparison is ready...",
+            False,
+        )
+    if "failed" in statuses:
+        return (
+            "Re-indexing one or both selected branches because a previous index failed "
+            "or is stale...",
+            False,
+        )
+    if "never_indexed" in statuses or any(
+        branch and not branch.get("workspace") for branch in branches
+    ):
+        return ("Indexing one or both selected branches before comparison...", False)
+    if freshnesses & {"behind", "diverged"}:
+        return (
+            "Updating one or both selected branch indexes because new commits were found...",
+            False,
+        )
+    if "checking" in freshnesses:
+        return (
+            "Syncing the selected branches because new commits may be available...",
+            False,
+        )
+    if known and all(_branch_is_ready(branch) for branch in known):
+        return (
+            "Branches are ready. Searching both branches and generating the comparison...",
+            True,
+        )
+    return ("Preparing the selected branches and checking index status...", False)
+
+
 def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = False) -> None:
     from .. import main
 
@@ -686,11 +773,15 @@ def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = Fa
     actor = ask_service.slack_actor_user(values["team_id"], slack_user, values.get("user_type"))
     workspace = values.get("branch_workspace")
     branch_context = {}
+    generating_announced = False
     if not workspace:
+        notice, generating_announced = _single_branch_preparation_notice(
+            _current_branch(repo, values.get("branch"))
+        )
         _send_user_message(
             values,
             "Preparing branch",
-            [{"type": "section", "text": _mrkdwn("Syncing and indexing the selected branch...")}],
+            [{"type": "section", "text": _mrkdwn(notice)}],
         )
         branch = ask_service.resolve_existing_ready_branch(
             repo,
@@ -711,11 +802,12 @@ def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = Fa
         deep_investigation=deep,
         answer_user_type=values.get("user_type") or USER_DEV,
     )
-    _send_user_message(
-        values,
-        "Generating answer",
-        [{"type": "section", "text": _mrkdwn("Searching repository context and generating the answer...")}],
-    )
+    if not generating_announced:
+        _send_user_message(
+            values,
+            "Generating answer",
+            [{"type": "section", "text": _mrkdwn("Searching repository context and generating the answer...")}],
+        )
     response = ask_service.answer_single_request(
         request,
         workspace,
@@ -744,11 +836,16 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
     branch_context = {}
     base_workspace = values.get("base_branch_workspace")
     compare_workspace = values.get("compare_branch_workspace")
+    generating_announced = False
     if not base_workspace or not compare_workspace:
+        notice, generating_announced = _compare_branch_preparation_notice([
+            _current_branch(repo, values.get("base_branch")),
+            _current_branch(repo, values.get("compare_branch")),
+        ])
         _send_user_message(
             values,
             "Preparing comparison",
-            [{"type": "section", "text": _mrkdwn("Syncing and indexing the selected branches...")}],
+            [{"type": "section", "text": _mrkdwn(notice)}],
         )
         base = ask_service.resolve_existing_ready_branch(
             repo,
@@ -791,11 +888,12 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
         deep_investigation=deep,
         answer_user_type=values.get("user_type") or USER_DEV,
     )
-    _send_user_message(
-        values,
-        "Generating comparison",
-        [{"type": "section", "text": _mrkdwn("Searching both branches and generating the comparison...")}],
-    )
+    if not generating_announced:
+        _send_user_message(
+            values,
+            "Generating comparison",
+            [{"type": "section", "text": _mrkdwn("Searching both branches and generating the comparison...")}],
+        )
     response = ask_service.answer_compare_request(
         request,
         repo["workspace"],
@@ -875,11 +973,8 @@ def _prepare_selected_branch(metadata: dict, action_id: str, branch_name: str) -
             branch_name,
             actor=f"slack:{metadata.get('team_id')}:{metadata.get('slack_user_id')}",
         )
-        status = (
-            "Ready"
-            if branch.get("workspace") and branch.get("index_status") == "ready"
-            else "Syncing and indexing..."
-        )
+        notice, ready = _single_branch_preparation_notice(branch)
+        status = "Ready" if ready else notice
     except Exception as exc:
         status = f"Could not prepare branch: {_http_detail(exc)}"
     if action_id == ACTION_BASE_BRANCH:

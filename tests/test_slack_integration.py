@@ -258,7 +258,7 @@ class SlackIntegrationTests(unittest.TestCase):
         remote.assert_not_called()
         self.assertEqual(api.call_args.args[0], "views.update")
         updated_view = api.call_args.args[1]["view"]
-        self.assertIn("Syncing and indexing", updated_view["private_metadata"])
+        self.assertIn("Branch is still being prepared", updated_view["private_metadata"])
         branch_block = next(
             block for block in updated_view["blocks"]
             if block.get("block_id") == slack_routes.BLOCK_BRANCH
@@ -421,6 +421,103 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(analytics_context["slack_channel_id"], "C123")
         self.assertEqual(analytics_context["ask_type"], slack_routes.ASK_SINGLE)
         self.assertEqual(analytics_context["branch"], "main")
+
+    def test_single_answer_uses_ready_branch_status_message(self):
+        values = {
+            "team_id": "T123",
+            "channel_id": "C123",
+            "slack_user_id": "U123",
+            "user_id": "U123",
+            "repo_slug": "payments",
+            "repo_name": "Payments",
+            "branch": "main",
+            "ask_type": slack_routes.ASK_SINGLE,
+            "user_type": slack_routes.USER_PRODUCT,
+            "question": "How does login work?",
+        }
+        repo = {
+            "id": 1,
+            "name": "Payments",
+            "slug": "payments",
+            "workspace": "payments",
+            "status": "published",
+        }
+        branch = {
+            "id": 11,
+            "name": "main",
+            "workspace": "payments-main",
+            "index_status": "ready",
+        }
+        response = {
+            "answer": "Login uses sessions.",
+            "question": values["question"],
+            "conversation_id": "conv-1",
+            "investigate_deeply_available": False,
+        }
+        actor = {"id": -1, "username": "slack:T123:U123", "role": "admin"}
+        with patch.object(slack_routes, "_repo_by_slug", return_value=repo), \
+                patch.object(slack_routes, "_current_branch", return_value=branch), \
+                patch.object(
+                    slack_routes.ask_service,
+                    "resolve_existing_ready_branch",
+                    return_value=branch,
+                ), \
+                patch.object(slack_routes.ask_service, "slack_actor_user", return_value=actor), \
+                patch.object(
+                    slack_routes.ask_service,
+                    "answer_single_request",
+                    return_value=response,
+                ), \
+                patch.object(slack_routes, "_send_user_message") as send:
+            slack_routes._run_single_answer(values)
+
+        messages = [
+            call.args[2][0]["text"]["text"]
+            for call in send.call_args_list
+            if call.args[2]
+        ]
+        self.assertIn(
+            "Branch is ready. Searching repository context and generating the answer...",
+            messages,
+        )
+        self.assertNotIn(
+            "Searching repository context and generating the answer...",
+            messages,
+        )
+
+    def test_branch_preparation_notice_covers_index_states(self):
+        self.assertEqual(
+            slack_routes._single_branch_preparation_notice({
+                "workspace": "payments-main",
+                "index_status": "ready",
+            }),
+            (
+                "Branch is ready. Searching repository context and generating the answer...",
+                True,
+            ),
+        )
+        self.assertEqual(
+            slack_routes._single_branch_preparation_notice({
+                "workspace": None,
+                "index_status": "never_indexed",
+            })[0],
+            "Indexing the selected branch for the first time...",
+        )
+        self.assertEqual(
+            slack_routes._single_branch_preparation_notice({
+                "workspace": None,
+                "index_status": "failed",
+            })[0],
+            "Re-indexing the selected branch because the previous index failed or is stale...",
+        )
+        self.assertEqual(
+            slack_routes._single_branch_preparation_notice({
+                "workspace": "payments-main",
+                "index_status": "ready",
+                "freshness_status": "behind",
+            })[0],
+            "Updating the selected branch index because new commits were found...",
+        )
 
     def test_answer_blocks_include_question_asked(self):
         topic = {
