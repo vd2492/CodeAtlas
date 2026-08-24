@@ -597,31 +597,32 @@ def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
     mode = response.get("retrieval_mode")
     if mode:
         blocks.append({"type": "context", "elements": [_mrkdwn(f"Retrieval: `{mode}`")]})
+    value = _private_metadata(topic)
+    actions = [
+        {
+            "type": "button",
+            "text": _plain("Ask follow-up"),
+            "action_id": ACTION_FOLLOW_UP,
+            "value": value,
+        },
+    ]
     if response.get("investigate_deeply_available", True):
-        value = _private_metadata(topic)
-        blocks.append({
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": _plain("Ask follow-up"),
-                    "action_id": ACTION_FOLLOW_UP,
-                    "value": value,
-                },
-                {
-                    "type": "button",
-                    "text": _plain("Investigate deeply"),
-                    "action_id": ACTION_DEEP,
-                    "value": value,
-                },
-                {
-                    "type": "button",
-                    "text": _plain("New question"),
-                    "action_id": ACTION_NEW,
-                    "value": value,
-                },
-            ],
+        actions.append({
+            "type": "button",
+            "text": _plain("Investigate deeply"),
+            "action_id": ACTION_DEEP,
+            "value": value,
         })
+    actions.append({
+        "type": "button",
+        "text": _plain("New question"),
+        "action_id": ACTION_NEW,
+        "value": value,
+    })
+    blocks.append({
+        "type": "actions",
+        "elements": actions,
+    })
     return blocks
 
 

@@ -538,6 +538,32 @@ class SlackIntegrationTests(unittest.TestCase):
             "*Question asked:*\nHow does login work?",
         )
         self.assertEqual(blocks[2]["text"]["text"], "Login creates a session.")
+        action_ids = [item["action_id"] for item in blocks[-1]["elements"]]
+        self.assertEqual(action_ids, [
+            slack_routes.ACTION_FOLLOW_UP,
+            slack_routes.ACTION_NEW,
+        ])
+
+    def test_answer_blocks_include_deep_action_when_available(self):
+        topic = {
+            "repo_name": "Payments",
+            "branch": "main",
+            "user_type": slack_routes.USER_PRODUCT,
+            "question": "How does login work?",
+        }
+        response = {
+            "answer": "Login creates a session.",
+            "investigate_deeply_available": True,
+        }
+
+        blocks = slack_routes._answer_text_blocks(response, topic)
+
+        action_ids = [item["action_id"] for item in blocks[-1]["elements"]]
+        self.assertEqual(action_ids, [
+            slack_routes.ACTION_FOLLOW_UP,
+            slack_routes.ACTION_DEEP,
+            slack_routes.ACTION_NEW,
+        ])
 
     def test_view_submission_dispatches_answer_job(self):
         payload = {
