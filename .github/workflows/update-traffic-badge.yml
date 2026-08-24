@@ -1,0 +1,33 @@
+name: Update traffic badge
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-traffic-badge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Update README traffic badge
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN || github.token }}
+        run: python3 tools/update_repo_traffic_badge.py --repo "$GITHUB_REPOSITORY"
+
+      - name: Commit README update
+        run: |
+          if git diff --quiet README.md; then
+            echo "Traffic badge is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "Update repo traffic badge"
+          git push

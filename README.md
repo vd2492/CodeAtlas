@@ -1,5 +1,9 @@
 # CodeAtlas
 
+<!-- repo-traffic:start -->
+![Unique visitors in the last 14 days](https://img.shields.io/badge/unique%20visitors%20%2814d%29-3-blue)
+<!-- repo-traffic:end -->
+
 **Self-hostable codebase intelligence.** Host private repositories, index them
 into a queryable graph, safely tune retrieval per repo, control who can access
 each one, and let PMs, QAs, developers, and stakeholders ask grounded questions
