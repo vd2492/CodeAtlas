@@ -112,5 +112,68 @@ class RepositoryCloneRetryTests(unittest.TestCase):
         clone.assert_not_called()
 
 
+class RepositoryGrantTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.db_patch = patch.object(db, "DB_PATH", self.root / "codeatlas.db")
+        self.workspace_patch = patch.object(
+            config, "WORKSPACES_DIR", self.root / "workspaces"
+        )
+        self.db_patch.start()
+        self.workspace_patch.start()
+        db.init_db()
+        self.admin = {"username": "admin"}
+        self.repo = db.create_repo(
+            "roadmap",
+            "Roadmap",
+            "https://example.test/roadmap.git",
+            "https",
+            "roadmap",
+            status="published",
+        )
+
+    def tearDown(self):
+        self.workspace_patch.stop()
+        self.db_patch.stop()
+        self.temp.cleanup()
+
+    def create_user(self, username, user_type="dev_team", role="user"):
+        return db.create_user(
+            username,
+            "pbkdf2_sha256$stub",
+            role=role,
+            user_type=user_type,
+        )
+
+    def test_grant_product_users_adds_current_product_users_only(self):
+        product = self.create_user("product", user_type="product_team")
+        self.create_user("developer", user_type="dev_team")
+        self.create_user("product-admin", user_type="product_team", role="admin")
+
+        result = repo_routes.grant_product_users("roadmap", self.admin)
+
+        self.assertEqual(result["matched_count"], 1)
+        self.assertEqual(result["granted_count"], 1)
+        self.assertEqual(result["already_granted_count"], 0)
+        self.assertTrue(db.user_has_repo(product["id"], "roadmap"))
+        members = db.list_repo_members(self.repo["id"])
+        self.assertEqual([member["username"] for member in members], ["product"])
+
+    def test_grant_product_users_is_repeatable_for_new_product_users(self):
+        first = self.create_user("first-product", user_type="product_team")
+
+        first_result = repo_routes.grant_product_users("roadmap", self.admin)
+        second = self.create_user("second-product", user_type="product_team")
+        second_result = repo_routes.grant_product_users("roadmap", self.admin)
+
+        self.assertEqual(first_result["granted_count"], 1)
+        self.assertEqual(second_result["matched_count"], 2)
+        self.assertEqual(second_result["granted_count"], 1)
+        self.assertEqual(second_result["already_granted_count"], 1)
+        self.assertTrue(db.user_has_repo(first["id"], "roadmap"))
+        self.assertTrue(db.user_has_repo(second["id"], "roadmap"))
+
+
 if __name__ == "__main__":
     unittest.main()

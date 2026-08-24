@@ -306,6 +306,33 @@ def grant_access(slug: str, req: GrantRequest, admin: dict = Depends(require_adm
     return {"granted": {"username": req.username, "slug": slug}}
 
 
+@router.post("/{slug}/grant-product-users")
+def grant_product_users(slug: str, admin: dict = Depends(require_admin)):
+    """Grant this repo to all current non-admin Product users.
+
+    This is a point-in-time bulk grant: future Product users are included when
+    an admin clicks the action again.
+    """
+    repo = _require_repo(slug)
+    users = db.list_users_by_type("product_team", role="user")
+    granted_count = db.grant_access_to_users(
+        [user["id"] for user in users],
+        repo["id"],
+    )
+    db.record_audit(
+        admin["username"],
+        "grant_product_users",
+        slug,
+        f"granted={granted_count}; matched={len(users)}",
+    )
+    return {
+        "slug": slug,
+        "matched_count": len(users),
+        "granted_count": granted_count,
+        "already_granted_count": len(users) - granted_count,
+    }
+
+
 @router.post("/{slug}/revoke")
 def revoke_access(slug: str, req: GrantRequest, admin: dict = Depends(require_admin)):
     """Revoke a user's access to this repo. Takes effect on their next page load

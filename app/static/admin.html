@@ -479,6 +479,25 @@
     </div>
   </div>
 
+  <div id="grantModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
+    <form id="grantForm" class="panel" style="width:420px;max-width:92vw;margin:0;">
+      <h2 id="grantTitle" style="margin:0 0 8px;color:var(--fg);">Grant access</h2>
+      <p class="muted" style="font-size:13px;margin:0 0 10px;">
+        Grant one user by username or Google email, or grant all current Product users.
+      </p>
+      <label for="grantIdentifier">Username or Google email</label>
+      <input id="grantIdentifier" autocomplete="off" />
+      <div id="grantError" class="user-edit-error" style="margin-top:8px;"></div>
+      <div style="display:flex;gap:10px;justify-content:space-between;align-items:center;margin-top:16px;flex-wrap:wrap;">
+        <button type="button" class="ghost" id="grantProductUsers">Grant all existing Product users</button>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button type="button" class="ghost" id="grantCancel">Cancel</button>
+          <button type="submit" id="grantSave">Grant user</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
   <div id="userEditModal" style="display:none;position:fixed;inset:0;z-index:100;place-items:center;background:rgba(3,6,12,0.72);">
     <form id="userEditForm" class="panel" style="width:400px;max-width:92vw;margin:0;">
       <h2 style="margin:0 0 8px;color:var(--fg);">Edit user</h2>
@@ -1882,6 +1901,9 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && $("repoActivityModal").style.display === "grid") {
     closeRepoActivityDialog();
   }
+  if (event.key === "Escape" && $("grantModal").style.display === "grid") {
+    closeGrantDialog();
+  }
 });
 
 async function doDeleteUser(username) {
@@ -2025,12 +2047,83 @@ async function doPublish(slug) {
   try { await api(`/admin/repos/${slug}/publish`, { method: "POST" }); flash("Published " + slug, true); refreshRepos(); }
   catch (e) { flash(e.message); }
 }
-async function doGrant(slug) {
-  const username = await modalPrompt(`Grant access to ${slug}`, "Username or Google email", "");
-  if (!username || !username.trim()) return;
-  try { await api(`/admin/repos/${slug}/grant`, { method: "POST", body: JSON.stringify({ username }) }); flash(`Granted ${username} → ${slug}`, true); refreshAudit(); if (curMembersSlug === slug) showMembers(slug); }
-  catch (e) { flash(e.message); }
+
+let grantRepoSlug = null;
+
+function openGrantDialog(slug) {
+  grantRepoSlug = slug;
+  $("grantTitle").textContent = `Grant access to ${slug}`;
+  $("grantIdentifier").value = "";
+  $("grantError").textContent = "";
+  $("grantSave").disabled = false;
+  $("grantProductUsers").disabled = false;
+  $("grantModal").style.display = "grid";
+  setTimeout(() => $("grantIdentifier").focus(), 30);
 }
+
+function closeGrantDialog() {
+  $("grantModal").style.display = "none";
+  grantRepoSlug = null;
+}
+
+async function refreshGrantViews(slug) {
+  await refreshAudit();
+  if (curMembersSlug === slug) await showMembers(slug);
+}
+
+async function doGrant(slug) {
+  openGrantDialog(slug);
+}
+
+$("grantCancel").onclick = closeGrantDialog;
+$("grantForm").onsubmit = async event => {
+  event.preventDefault();
+  const slug = grantRepoSlug;
+  const username = $("grantIdentifier").value.trim();
+  if (!slug) return;
+  if (!username) {
+    $("grantError").textContent = "Enter a username or Google email.";
+    return;
+  }
+  $("grantSave").disabled = true;
+  $("grantError").textContent = "";
+  try {
+    await api(`/admin/repos/${slug}/grant`, {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
+    closeGrantDialog();
+    flash(`Granted ${username} -> ${slug}`, true);
+    await refreshGrantViews(slug);
+  } catch (e) {
+    $("grantError").textContent = e.message;
+  } finally {
+    $("grantSave").disabled = false;
+  }
+};
+
+$("grantProductUsers").onclick = async () => {
+  const slug = grantRepoSlug;
+  if (!slug) return;
+  $("grantProductUsers").disabled = true;
+  $("grantError").textContent = "";
+  try {
+    const result = await api(`/admin/repos/${slug}/grant-product-users`, { method: "POST" });
+    closeGrantDialog();
+    const granted = result.granted_count || 0;
+    const matched = result.matched_count || 0;
+    const already = result.already_granted_count || 0;
+    flash(
+      `Granted ${granted} Product users to ${slug} (${already} already had access, ${matched} matched).`,
+      true,
+    );
+    await refreshGrantViews(slug);
+  } catch (e) {
+    $("grantError").textContent = e.message;
+  } finally {
+    $("grantProductUsers").disabled = false;
+  }
+};
 
 let curMembersSlug = null;
 async function showMembers(slug) {

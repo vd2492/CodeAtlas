@@ -310,6 +310,21 @@ def list_users() -> List[dict]:
         return [dict(r) for r in rows]
 
 
+def list_users_by_type(user_type: str, role: Optional[str] = None) -> List[dict]:
+    query = (
+        "SELECT id, username, email, display_name, role, user_type, created_at "
+        "FROM users WHERE user_type = ?"
+    )
+    values = [user_type]
+    if role is not None:
+        query += " AND role = ?"
+        values.append(role)
+    query += " ORDER BY username"
+    with connect() as conn:
+        rows = conn.execute(query, values).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_user_by_login_identifier(identifier: str) -> Optional[dict]:
     """Resolve an admin-entered username or Google email to a user row."""
     user = get_user_by_username(identifier)
@@ -888,6 +903,18 @@ def grant_access(user_id: int, repo_id: int) -> None:
             "INSERT OR IGNORE INTO repo_access (user_id, repo_id) VALUES (?, ?)",
             (user_id, repo_id),
         )
+
+
+def grant_access_to_users(user_ids: List[int], repo_id: int) -> int:
+    granted = 0
+    with connect() as conn:
+        for user_id in user_ids:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO repo_access (user_id, repo_id) VALUES (?, ?)",
+                (user_id, repo_id),
+            )
+            granted += cur.rowcount
+    return granted
 
 
 def revoke_access(user_id: int, repo_id: int) -> None:
