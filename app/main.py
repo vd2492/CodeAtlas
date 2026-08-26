@@ -2363,6 +2363,102 @@ def _session_cached_answer_response(
     return response
 
 
+def answer_from_cached_audience_evidence(
+    question: str,
+    cached_response: dict,
+    workspace: str = DEFAULT_WORKSPACE,
+    user_llm: dict = None,
+    allow_shared_fallback: bool = True,
+    llm_mode: str = None,
+    user_type: str = "product_team",
+    activity_request_id: str = None,
+    activity_user_id: int = None,
+) -> dict:
+    """Render an audience-specific answer from a prior grounded answer/context.
+
+    This is intentionally used for Product-from-Dev reuse only by the request
+    orchestrator. If the compact renderer decides the cached evidence is not
+    enough, it raises FollowUpNeedsEvidence and the caller runs the normal full
+    investigation path.
+    """
+    started_at = time.perf_counter()
+    context = copy.deepcopy((cached_response or {}).get("context") or {})
+    preview = context.setdefault("llm_context_preview", {})
+    response_style_instruction = (
+        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        if user_type == "product_team"
+        else ""
+    )
+    llm_question = (
+        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        if user_type == "product_team"
+        else question
+    )
+    context["question"] = question
+    context["response_style_instruction"] = response_style_instruction
+    preview["question"] = llm_question
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=workspace,
+            question=question,
+            status="using_conversation_evidence",
+            context=context,
+        )
+
+    state = ConversationState(
+        conversation_id="audience-cache",
+        user_id=0,
+        session_key="",
+        workspace=workspace,
+        llm_mode=llm_mode or "auto",
+        user_type=str((cached_response or {}).get("answer_user_type") or "dev_team"),
+        repository_revision="",
+        context=context,
+        turns=[
+            {
+                "question": (cached_response or {}).get("question") or question,
+                "answer": (cached_response or {}).get("answer") or "",
+            }
+        ],
+    )
+    evidence = compact_follow_up_evidence(state)
+    if activity_request_id and activity_user_id is not None:
+        update_answer_activity(
+            activity_request_id,
+            user_id=activity_user_id,
+            workspace=workspace,
+            question=question,
+            status="generating_answer",
+            context=context,
+        )
+
+    generation_started_at = time.perf_counter()
+    result = generate_fast_follow_up(
+        context,
+        evidence,
+        user_llm=user_llm,
+        allow_shared_fallback=allow_shared_fallback,
+        llm_mode=llm_mode,
+        question=llm_question,
+    )
+    generation_ms = round((time.perf_counter() - generation_started_at) * 1000, 1)
+    response = _answer_response(question, result, context, workspace)
+    response["retrieval_mode"] = "audience_cache"
+    response["audience_cache_hit"] = True
+    response["follow_up_reused"] = False
+    response["follow_up_fallback"] = False
+    response["deep_investigation"] = False
+    response["investigate_deeply_available"] = True
+    response["timings_ms"] = {
+        "retrieval": 0.0,
+        "generation": generation_ms,
+        "total": round((time.perf_counter() - started_at) * 1000, 1),
+    }
+    return response
+
+
 def _remember_session_answer(
     *,
     user: dict,

@@ -568,6 +568,155 @@ class ConversationEndpointTests(unittest.TestCase):
         self.assertEqual(result["answer"], first_answer["answer"])
         self.assertTrue(result["session_cache_hit"])
 
+    def test_product_answer_reuses_cached_dev_evidence_without_full_retrieval(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        user = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-a",
+        }
+        dev_answer = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "agentic",
+            "context": {
+                "llm_context_preview": {
+                    "question": "How does login work?",
+                    "nodes": [{"name": "Auth", "source": "src/auth.py L1-L20"}],
+                }
+            },
+        }
+        product_answer = {
+            "question": "How does login work?",
+            "answer": "The app checks the person's sign-in details before continuing.",
+            "provider_used": "shared:mimo-v2.5",
+            "retrieval_mode": "audience_cache",
+            "audience_cache_hit": True,
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+
+        common_patches = (
+            patch.object(main, "conversation_store", store),
+            patch.object(main, "enforce_rate_limit"),
+            patch.object(main, "enforce_strict_branch_freshness"),
+            patch.object(
+                main.db,
+                "get_repo_by_workspace",
+                return_value={"allow_shared_fallback": 1},
+            ),
+            patch.object(main, "load_user_llm", return_value=None),
+            patch.object(main, "repository_revision", return_value="branch:abc123"),
+            patch.object(main, "repository_version_payload", return_value=None),
+        )
+        for item in common_patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        with patch.object(main, "answer_question", return_value=dev_answer):
+            main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                user,
+            )
+
+        with patch.object(main, "answer_question") as full, patch.object(
+            main,
+            "answer_from_cached_audience_evidence",
+            return_value=product_answer,
+        ) as audience:
+            result = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                    answer_user_type="product_team",
+                ),
+                "repo-main",
+                user,
+            )
+
+        full.assert_not_called()
+        audience.assert_called_once()
+        cached_source = audience.call_args.args[1]
+        self.assertEqual(cached_source["answer"], dev_answer["answer"])
+        self.assertEqual(result["answer"], product_answer["answer"])
+        self.assertTrue(result["audience_cache_hit"])
+        self.assertEqual(result["answer_user_type"], "product_team")
+
+    def test_product_cached_evidence_fallback_runs_full_retrieval_when_needed(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        user = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-a",
+        }
+        dev_answer = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+        full_product_answer = {
+            "question": "How does login work?",
+            "answer": "A fresh product answer was generated.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {"llm_context_preview": {"question": "How does login work?"}},
+        }
+
+        common_patches = (
+            patch.object(main, "conversation_store", store),
+            patch.object(main, "enforce_rate_limit"),
+            patch.object(main, "enforce_strict_branch_freshness"),
+            patch.object(
+                main.db,
+                "get_repo_by_workspace",
+                return_value={"allow_shared_fallback": 1},
+            ),
+            patch.object(main, "load_user_llm", return_value=None),
+            patch.object(main, "repository_revision", return_value="branch:abc123"),
+        )
+        for item in common_patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        with patch.object(main, "answer_question", return_value=dev_answer):
+            main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                user,
+            )
+
+        with patch.object(
+            main,
+            "answer_from_cached_audience_evidence",
+            side_effect=main.FollowUpNeedsEvidence("more evidence"),
+        ) as audience, patch.object(
+            main,
+            "answer_question",
+            return_value=full_product_answer,
+        ) as full:
+            result = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="How does login work?",
+                    llm_mode="mimo",
+                    answer_user_type="product_team",
+                ),
+                "repo-main",
+                user,
+            )
+
+        audience.assert_called_once()
+        full.assert_called_once()
+        self.assertEqual(full.call_args.kwargs["user_type"], "product_team")
+        self.assertEqual(result["answer"], full_product_answer["answer"])
+        self.assertNotIn("audience_cache_hit", result)
+
     def test_repeated_personal_key_question_stays_scoped_to_session(self):
         """BYOK answers must never be shared with a different user/session —
         that would hand another person content generated by someone else's

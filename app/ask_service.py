@@ -215,6 +215,85 @@ def answer_single_request(
 
     try:
         with main.llm_admission.slot(), collect_token_usage() as token_usage:
+            if (
+                user_type == "product_team"
+                and not request.follow_up
+                and not request.deep_investigation
+                and not image_attachments
+            ):
+                source_cached_response = None
+                if use_session_cache:
+                    source_cached_response = main.conversation_store.get_cached_answer(
+                        session_key=session_key,
+                        user_id=user["id"],
+                        workspace=workspace,
+                        llm_mode=llm_mode,
+                        user_type="dev_team",
+                        repository_revision=revision,
+                        question=request.question,
+                    )
+                if source_cached_response is None and use_repo_cache:
+                    source_cached_response = main.conversation_store.get_repo_cached_answer(
+                        workspace=workspace,
+                        user_type="dev_team",
+                        repository_revision=revision,
+                        question=request.question,
+                    )
+                if source_cached_response:
+                    try:
+                        response = main.answer_from_cached_audience_evidence(
+                            request.question,
+                            source_cached_response,
+                            workspace=workspace,
+                            user_llm=user_llm,
+                            allow_shared_fallback=allow_shared,
+                            llm_mode=llm_mode,
+                            user_type=user_type,
+                            activity_request_id=getattr(request, "activity_request_id", None),
+                            activity_user_id=user["id"],
+                        )
+                    except main.FollowUpNeedsEvidence:
+                        response = None
+                    if response is not None:
+                        state = main._create_conversation_from_response(
+                            user=user,
+                            workspace=workspace,
+                            llm_mode=llm_mode,
+                            user_type=user_type,
+                            repository_revision=revision,
+                            question=request.question,
+                            response=response,
+                        )
+                        response["conversation_id"] = state.conversation_id
+                        response["token_usage"] = token_usage_payload(token_usage)
+                        response["answer_user_type"] = user_type
+                        main._remember_session_answer(
+                            user=user,
+                            workspace=workspace,
+                            llm_mode=llm_mode,
+                            user_type=user_type,
+                            repository_revision=revision,
+                            question=request.question,
+                            response=response,
+                        )
+                        if use_repo_cache:
+                            main._remember_repo_answer(
+                                workspace=workspace,
+                                user_type=user_type,
+                                repository_revision=revision,
+                                question=request.question,
+                                response=response,
+                            )
+                        schedule_answer_token_usage(
+                            user,
+                            workspace,
+                            "repo.ask.audience_cache",
+                            response,
+                            repo=repo,
+                            analytics_context=analytics_context,
+                        )
+                        return response
+
             state = None
             if request.follow_up and request.conversation_id:
                 state = main.conversation_store.get(
