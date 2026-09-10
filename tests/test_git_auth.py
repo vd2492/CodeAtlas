@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.repos import branches
 from app.repos.cloning import clone_repo
@@ -132,25 +132,24 @@ class GitAuthTests(unittest.TestCase):
         self.assertEqual(env["CODEATLAS_GIT_ASKPASS_TOKEN"], "github-secret")
 
     def test_branch_git_passes_auth_environment(self):
-        completed = subprocess.CompletedProcess(
-            ["git"],
-            0,
-            stdout="",
-            stderr="",
-        )
+        process = MagicMock()
+        process.args = ["git", "fetch", "origin"]
+        process.returncode = 0
+        process.communicate.return_value = ("", "")
         with tempfile.TemporaryDirectory() as temp_dir, patch(
             "app.repos.branches.git_env_for_repo",
             return_value={"PATH": "/usr/bin", "CODEATLAS_GIT_ASKPASS_TOKEN": "secret"},
         ), patch(
-            "app.repos.branches.subprocess.run",
-            return_value=completed,
-        ) as run:
+            "app.repos.branches.subprocess.Popen",
+            return_value=process,
+        ) as popen:
             branches._git(Path(temp_dir), "fetch", "origin", check=False)
 
         self.assertEqual(
-            run.call_args.kwargs["env"]["CODEATLAS_GIT_ASKPASS_TOKEN"],
+            popen.call_args.kwargs["env"]["CODEATLAS_GIT_ASKPASS_TOKEN"],
             "secret",
         )
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
 
     def test_repo_origin_with_embedded_credentials_is_rejected(self):
         with patch(

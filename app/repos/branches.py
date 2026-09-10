@@ -6,9 +6,13 @@ workspace pointer changes only after Graphify completes successfully.
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
+import signal
 import subprocess
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +33,12 @@ from .indexing import index_repo
 from .git_auth import git_env_for_repo, sanitize_git_error
 
 GIT_TIMEOUT = 300
+GIT_TERMINATE_GRACE_SECONDS = 5
+GIT_LOCK_STALE_SECONDS = GIT_TIMEOUT + 60
+_LOCK_ERROR_RE = re.compile(
+    r"\.lock': File exists|Another git process seems to be running",
+    re.IGNORECASE,
+)
 _git_locks: dict[str, threading.Lock] = {}
 _git_locks_guard = threading.Lock()
 
@@ -45,21 +55,112 @@ def _git_lock(repo: Path) -> threading.Lock:
         return _git_locks[key]
 
 
+def _lock_candidates(git_dir: Path):
+    """Yield Git lock file paths without walking the object store."""
+    yield from git_dir.glob("*.lock")
+    yield from (git_dir / "refs").rglob("*.lock")
+    yield from (git_dir / "logs").rglob("*.lock")
+    yield from (git_dir / "worktrees").glob("*/*.lock")
+
+
+def _remove_git_locks(repo: Path, older_than: float | None = None) -> list[Path]:
+    """Delete leftover Git lock files, optionally only ones older than a cutoff.
+
+    A command killed mid-flight leaves files such as .git/shallow.lock behind,
+    and every later fetch then fails with "Another git process seems to be
+    running" until someone removes them by hand. Callers hold the per-repo
+    lock, so no CodeAtlas Git process is running for this clone; the age cutoff
+    is what keeps a Git process started outside the application from losing its
+    lock mid-operation.
+    """
+    git_dir = repo / ".git"
+    if not git_dir.is_dir():
+        return []
+    removed = []
+    for path in _lock_candidates(git_dir):
+        try:
+            if older_than is not None and path.stat().st_mtime > older_than:
+                continue
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    """Stop a timed-out Git command and every helper process it started.
+
+    Git delegates to children such as git-remote-https and index-pack. Killing
+    only the direct child leaves those running and still writing into .git, so
+    the whole process group is signalled. SIGTERM goes first because Git
+    removes its own lock files on it, which it cannot do for the SIGKILL that
+    follows.
+    """
+    try:
+        group = os.getpgid(process.pid)
+    except OSError:
+        process.kill()
+        return
+    try:
+        os.killpg(group, signal.SIGTERM)
+        process.wait(timeout=GIT_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
 def _git(repo: Path, *args: str, timeout: int = GIT_TIMEOUT, check: bool = True):
     env = git_env_for_repo(repo)
     with _git_lock(repo):
-        result = subprocess.run(
+        _remove_git_locks(repo, older_than=time.time() - GIT_LOCK_STALE_SECONDS)
+        process = subprocess.Popen(
             ["git", *args],
             cwd=str(repo),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=env,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process)
+            try:
+                process.communicate(timeout=GIT_TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+            _remove_git_locks(repo)
+            raise RuntimeError(
+                f"git {args[0]} timed out after {timeout} seconds."
+            ) from None
+        result = subprocess.CompletedProcess(
+            process.args, process.returncode, stdout, stderr
         )
     if check and result.returncode != 0:
         detail = _safe_git_error(result.stderr or result.stdout)
         raise RuntimeError(detail or f"git {' '.join(args)} failed")
     return result
+
+
+def _git_with_lock_recovery(repo: Path, *args: str):
+    """Run a Git command, clearing leftover lock files once and retrying."""
+    result = _git(repo, *args, check=False)
+    if result.returncode == 0:
+        return result
+    detail = _safe_git_error(result.stderr or result.stdout)
+    if not _LOCK_ERROR_RE.search(detail):
+        raise RuntimeError(detail or f"git {args[0]} failed")
+    with _git_lock(repo):
+        removed = _remove_git_locks(repo)
+    if not removed:
+        raise RuntimeError(detail or f"git {args[0]} failed")
+    return _git(repo, *args)
 
 
 def _current_branch_and_commit(repo: Path) -> tuple[str, str | None]:
@@ -211,7 +312,9 @@ def _fetch_branch(branch: dict) -> str:
     source = repo_clone_dir(branch["repo_workspace"])
     remote_ref = f"refs/remotes/origin/{branch['name']}"
     source_ref = f"+refs/heads/{branch['name']}:{remote_ref}"
-    _git(source, "fetch", "--no-tags", "--depth", "50", "origin", source_ref)
+    _git_with_lock_recovery(
+        source, "fetch", "--no-tags", "--depth", "50", "origin", source_ref
+    )
     result = _git(source, "rev-parse", remote_ref)
     return result.stdout.strip()
 

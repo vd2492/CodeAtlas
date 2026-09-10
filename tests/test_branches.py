@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tempfile
@@ -364,6 +365,62 @@ class BranchIndexingTests(unittest.TestCase):
     def test_invalid_branch_name_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Invalid"):
             branches.approve_repo_branch(self.repo, "../escape")
+
+    def test_stale_lock_file_is_cleared_before_fetching(self):
+        commit = self.add_remote_branch_commit("main", "main-v2")
+        lock = config.repo_clone_dir("sample") / ".git" / "shallow.lock"
+        lock.write_text("")
+        stale = time.time() - branches.GIT_LOCK_STALE_SECONDS - 60
+        os.utime(lock, (stale, stale))
+
+        branch = branches.check_branch_freshness(self.legacy["id"])
+
+        self.assertFalse(lock.exists())
+        self.assertIsNone(branch["last_error"])
+        self.assertEqual(branch["remote_commit_sha"], commit)
+
+    def test_fetch_recovers_from_lock_left_by_a_killed_command(self):
+        commit = self.add_remote_branch_commit("main", "main-v3")
+        lock = config.repo_clone_dir("sample") / ".git" / "shallow.lock"
+        lock.write_text("")
+
+        branch = branches.check_branch_freshness(self.legacy["id"])
+
+        self.assertFalse(lock.exists())
+        self.assertIsNone(branch["last_error"])
+        self.assertEqual(branch["remote_commit_sha"], commit)
+
+    def test_timed_out_command_stops_helpers_and_clears_locks(self):
+        clone = config.repo_clone_dir("sample")
+        lock = clone / ".git" / "shallow.lock"
+        lock.write_text("")
+        process = subprocess.Popen(
+            ["sh", "-c", "sleep 60 & echo $!; sleep 60"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        self.addCleanup(process.kill)
+        helper_pid = int(process.stdout.readline().strip())
+
+        with patch(
+            "app.repos.branches.git_env_for_repo",
+            return_value={"PATH": os.environ.get("PATH", "")},
+        ), patch("app.repos.branches.subprocess.Popen", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                branches._git(clone, "fetch", "origin", timeout=0.2)
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.kill(helper_pid, 0)
+            except OSError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("helper process outlived the timed-out command")
+        self.assertFalse(lock.exists())
 
 
 if __name__ == "__main__":
