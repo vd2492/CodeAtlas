@@ -15,14 +15,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check for traffic analytics token
+        id: traffic-token
+        env:
+          TRAFFIC_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+        run: |
+          if [ -n "$TRAFFIC_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Update README traffic badge
-        if: ${{ secrets.TRAFFIC_TOKEN != '' }}
+        if: steps.traffic-token.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
         run: python3 tools/update_repo_traffic_badge.py --repo "$GITHUB_REPOSITORY"
 
       - name: Skip traffic badge update without analytics token
-        if: ${{ secrets.TRAFFIC_TOKEN == '' }}
+        if: steps.traffic-token.outputs.available == 'false'
         run: echo "::notice::Traffic badge update skipped. Add a fine-grained TRAFFIC_TOKEN secret with read-only Administration permission to enable it."
 
       - name: Commit README update
