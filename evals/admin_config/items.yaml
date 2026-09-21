@@ -593,31 +593,104 @@ items:
   must_not_contain: [".py", "line "]
   evidence_paths: ["**/RMS/**"]
 
-- id: s2-duplicate-geo-fields
-  status: gold_pending
-  blocked_on: not yet asked - which coordinate pair does the code read
+- id: s2-geo-both-pairs-read
+  status: grounded
   scope_class: S2
-  band: B4
+  kind: admin_vs_code
+  band: B3
+  priority: critical
   question: "How do I correct the location of the Indore training centre?"
   expect:
-    admin_page: "City referral configs"
+    answer: >-
+      update BOTH coordinate pairs on the row, the text one and the numeric
+      one, because nothing keeps them in sync
     must_mention:
-      - there are two pairs of coordinate fields, one text and one numeric
-      - all four are required, so both must be kept consistent
-    flag_ambiguity: which pair the code reads is not yet confirmed
+      - there are two pairs and both are used
+      - the numeric pair decides which centres are considered for a rider
+      - the text pair decides the distance shown and is what the app displays
+      - editing one and not the other leaves the record internally inconsistent
+    must_not: treat either pair as obsolete or safe to skip
+  gold_citations:
+    - jobs/models.py:123-134
+    - common/helper.py:265-267
+    - jobs/serializers.py:367
+    - jobs/serializers.py:328-329
+    - "no save() sync, no signals: jobs/models.py:162-167"
+  notes: >-
+    The failure is silent and the UI actively hides it - the app shows the
+    new, correct coordinates from the text pair while the centre was matched
+    to riders using the stale numeric pair.
+  evidence_paths: ["**/jobs/**", "**/common/**"]
+
+- id: s2-geo-newer-field-does-not-win
+  status: grounded
+  scope_class: S2
+  kind: admin_vs_code
+  band: B4
+  priority: critical
+  question: >-
+    The training centre has both a text and a numeric latitude. The numeric
+    one looks like the newer field - can I just use that?
+  expect:
+    answer: no - the older text pair is still the primary read path
+    must_mention:
+      - the numeric pair was added later but only one query uses it
+      - the text pair drives distance, sorting and the API response
+      - the migration that added the numeric pair was never completed
+    must_not: >-
+      apply the convention that the newer field supersedes the older one
+  paired_with: kv-new-suffix
+  gold_citations:
+    - jobs/migrations/0060_auto_20221010_0125.py:15-17
+    - jobs/scripts/latitude_longitude_migration.py:1-13
+  notes: >-
+    Deliberate trap for a rule learned elsewhere in this same set. In
+    kv-new-suffix the newer key wins cleanly; here the newer field lost.
+    Score this against kv-new-suffix - passing both means the rule was
+    checked rather than generalised. Same shape as s3-client-axis-exists.
   evidence_paths: ["**/jobs/**"]
+
+- id: s2-geo-partial-blast-radius
+  status: grounded
+  scope_class: S2
+  kind: admin_vs_code
+  band: B3
+  priority: high
+  question: >-
+    We moved a training centre and updated its address and coordinates.
+    The lead portal shows it correctly but riders nearby are told there
+    is no centre near them. Why?
+  expect:
+    answer: >-
+      only the numeric coordinate pair feeds the rider-facing proximity
+      search, and it was left at the old position
+    must_mention:
+      - the lead portal paths never read the numeric pair, so they stay correct
+      - the rider proximity search filters on a box built from the numeric pair
+      - a centre outside that box is invisible with no error raised
+    should_mention: riders fall back to a default centre instead
+    must_not: suggest a cache or an indexing delay
+  gold_citations:
+    - common/helper.py:265-278
+    - rider_training/core/training_task.py:102
+    - lead_portal/helpers/lead_helper.py:1600-1605
+  notes: >-
+    One edit produces a bug in one flow and correct behaviour in another,
+    simultaneously. "It works over here" is the misleading evidence a PM
+    will bring to the question.
+  evidence_paths: ["**/common/**", "**/lead_portal/**", "**/rider_training/**"]
 
 scorecard_template: |
   Fill in after each run. n = items per row.
 
   class                    retrieval  facets  audience  abstain   n
-  admin_vs_code                ?        ?        ?        ?        5
+  admin_vs_code                ?        ?        ?        ?       11
   K1  key-value                ?        ?        ?        ?        8
   S3  city override            ?        ?        ?        -        7
   S3b referral surge           ?        ?        ?        ?        4
   C   content                  ?        ?        ?        ?        6
   L   lookup                   ?        ?        ?        ?        2
-  S2  per-entity               ?        ?        ?        -        1
+  S2  per-entity               ?        ?        ?        ?        3
 
   band                     retrieval  facets
   B1  verbatim                 ?        ?
