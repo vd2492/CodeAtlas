@@ -14,7 +14,7 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import db
 from ..llm.client import sniff_provider
@@ -66,6 +66,9 @@ LOGIN_RATE_WINDOW_SECONDS = int(
 )
 _login_failures: "dict[str, list[float]]" = defaultdict(list)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
+MAX_CHAT_PAYLOAD_BYTES = 2 * 1024 * 1024
+MAX_CHAT_TURNS = 200
 
 
 def enforce_login_rate_limit(username: str) -> None:
@@ -238,6 +241,79 @@ class LlmCredsRequest(BaseModel):
     provider: Optional[str] = None   # auto-sniffed from the key if omitted
     base_url: Optional[str] = None
     model: Optional[str] = None
+
+
+class ChatTurnPayload(BaseModel):
+    id: str
+    question: str
+    type: str = "Question"
+    answer: str = ""
+    answeredAt: Optional[str] = None
+    createdAt: Optional[str] = None
+
+
+class UserChatRequest(BaseModel):
+    title: str
+    preview: str = ""
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+    conversationId: Optional[str] = None
+    askMode: str = "single"
+    workspace: Optional[str] = None
+    branchId: Optional[int] = None
+    compareBranchA: Optional[int] = None
+    compareBranchB: Optional[int] = None
+    llmMode: Optional[str] = None
+    answerUserType: Optional[str] = None
+    turns: List[ChatTurnPayload] = Field(default_factory=list)
+
+
+def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
+    """Return a bounded, plain-data chat payload safe to retain in SQLite."""
+    if not CHAT_ID_RE.fullmatch(chat_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid chat id.")
+    title = request.title.strip()
+    if not title or len(title) > 160:
+        raise HTTPException(
+            status_code=400,
+            detail="Chat title must be between 1 and 160 characters.",
+        )
+    if request.askMode not in {"single", "compare"}:
+        raise HTTPException(status_code=400, detail="Invalid chat mode.")
+    if len(request.preview) > 20_000:
+        raise HTTPException(status_code=400, detail="Chat preview is too long.")
+    if len(request.turns) > MAX_CHAT_TURNS:
+        raise HTTPException(status_code=400, detail="Chat has too many turns.")
+
+    bounded_fields = {
+        "conversationId": (request.conversationId, 256),
+        "workspace": (request.workspace, 512),
+        "llmMode": (request.llmMode, 64),
+        "answerUserType": (request.answerUserType, 64),
+        "createdAt": (request.createdAt, 64),
+        "updatedAt": (request.updatedAt, 64),
+    }
+    if any(value is not None and len(value) > limit for value, limit in bounded_fields.values()):
+        raise HTTPException(status_code=400, detail="Chat metadata is too long.")
+    for turn in request.turns:
+        if not turn.id or len(turn.id) > 128:
+            raise HTTPException(status_code=400, detail="Invalid chat turn id.")
+        if not turn.question.strip() or len(turn.question) > 20_000:
+            raise HTTPException(status_code=400, detail="Invalid chat question.")
+        if len(turn.type) > 64 or len(turn.answer) > 20_000:
+            raise HTTPException(status_code=400, detail="Chat turn is too long.")
+        if (
+            (turn.createdAt is not None and len(turn.createdAt) > 64)
+            or (turn.answeredAt is not None and len(turn.answeredAt) > 64)
+        ):
+            raise HTTPException(status_code=400, detail="Invalid chat turn timestamp.")
+
+    payload = request.model_dump()
+    payload["title"] = title
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > MAX_CHAT_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Chat is too large to save.")
+    return payload
 
 
 def validate_llm_key_endpoint(api_key: str, base_url: str) -> None:
@@ -414,6 +490,36 @@ def me(user: Optional[dict] = Depends(get_current_user)):
     if user["role"] == "admin":
         payload["site_visitors"] = db.site_visitor_count()
     return payload
+
+
+@router.get("/me/chats")
+def get_my_chats(user: dict = Depends(require_user)):
+    """Return only the authenticated user's saved Ask conversations."""
+    return {"chats": db.list_user_chats(user["id"])}
+
+
+@router.put("/me/chats/{chat_id}")
+def save_my_chat(
+    chat_id: str,
+    request: UserChatRequest,
+    user: dict = Depends(require_user),
+):
+    payload = validated_chat_payload(chat_id, request)
+    db.upsert_user_chat(
+        user["id"],
+        chat_id,
+        payload["title"],
+        payload.get("preview") or "",
+        payload,
+    )
+    return {"saved": chat_id}
+
+
+@router.delete("/me/chats/{chat_id}")
+def delete_my_chat(chat_id: str, user: dict = Depends(require_user)):
+    if not CHAT_ID_RE.fullmatch(chat_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid chat id.")
+    return {"deleted": db.delete_user_chat(user["id"], chat_id)}
 
 
 @router.get("/admin/users")

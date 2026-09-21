@@ -1549,8 +1549,10 @@
       flex-direction: column;
       flex-wrap: nowrap;
     }
-    .workspace-sidebar .branch-status { order: 2; }
-    .workspace-sidebar .llm-card { order: 3; }
+    .workspace-sidebar .new-chat-button { order: 1; }
+    .workspace-sidebar .chat-sidebar-section { order: 2; }
+    .workspace-sidebar .branch-status { order: 3; }
+    .workspace-sidebar .llm-card { order: 4; }
     .workspace-sidebar .ask-mode-tab.active {
       color: var(--text);
       background: var(--accent-soft);
@@ -1589,6 +1591,102 @@
       font-size: 12px;
     }
     .workspace-sidebar .personal-llm .btn-primary { max-width: none; }
+    .chat-sidebar-section {
+      min-width: 0;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .chat-sidebar-heading {
+      margin: 0 8px 8px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .chat-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .chat-list-empty {
+      padding: 9px 10px;
+      color: var(--faint);
+      font-size: 12px;
+    }
+    .chat-list-item {
+      position: relative;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      border-radius: 9px;
+    }
+    .chat-list-item:hover,
+    .chat-list-item.active { background: rgba(148, 163, 184, 0.09); }
+    .chat-list-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+    .chat-list-open,
+    .chat-list-delete {
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .chat-list-open {
+      padding: 9px 8px 9px 11px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      text-align: left;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-list-item.active .chat-list-open { color: var(--text); }
+    .chat-list-delete {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--faint);
+      opacity: 0;
+    }
+    .chat-list-item:hover .chat-list-delete,
+    .chat-list-item:focus-within .chat-list-delete { opacity: 1; }
+    .chat-list-open:hover,
+    .chat-list-delete:hover { border: 0; background: rgba(148, 163, 184, 0.10); transform: none; }
+    .chat-list-delete:hover { color: var(--danger); }
+    .chat-hover-preview {
+      position: fixed;
+      z-index: 110;
+      width: min(330px, calc(100vw - 32px));
+      padding: 14px 16px;
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      background: var(--card-solid);
+      box-shadow: var(--shadow);
+      pointer-events: none;
+    }
+    .chat-preview-title {
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-preview-snippet {
+      display: -webkit-box;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
     .conversation-pane {
       position: relative;
       min-width: 0;
@@ -1679,14 +1777,47 @@
     .conversation-content .result-card {
       width: 100%;
       margin: 0;
-      padding: 24px 26px;
-      border-color: var(--border);
-      background: var(--card);
+      padding: 0;
+      border: 0;
+      background: transparent;
       box-shadow: none;
     }
     .conversation-content .result-card:has(#result > .empty-state) {
       display: none;
     }
+    .conversation-turn {
+      width: 100%;
+      min-width: 0;
+      padding: 8px 0 28px;
+      border-bottom: 1px solid var(--border);
+    }
+    .conversation-turn + .conversation-turn { padding-top: 26px; }
+    .conversation-turn:last-child { border-bottom: 0; }
+    .conversation-user {
+      width: fit-content;
+      max-width: min(78%, 680px);
+      margin-left: auto;
+      padding: 12px 15px;
+      border: 1px solid var(--border);
+      border-radius: 16px 16px 4px 16px;
+      color: var(--text);
+      background: var(--accent-soft);
+      overflow-wrap: anywhere;
+    }
+    #result .conversation-user p { margin: 0; }
+    .conversation-speaker {
+      margin-bottom: 4px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .conversation-assistant {
+      min-width: 0;
+      padding: 18px 4px 0;
+    }
+    .conversation-restored .conversation-assistant { padding-top: 14px; }
 
     .composer-dock {
       position: relative;
@@ -1768,6 +1899,18 @@
       min-width: 74px;
       align-self: center;
     }
+    .composer-dock .ask-box > .chat-submit-button,
+    .composer-dock .compare-box .chat-submit-button,
+    .chat-submit-button {
+      width: 42px;
+      min-width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 50%;
+    }
+    .composer-dock .compare-box .chat-submit-button { flex: none; }
     .composer-dock .ask-box:has(#mainAskCancelBtn:not([hidden])) > .btn-primary {
       display: none;
     }
@@ -1778,6 +1921,17 @@
       background: var(--card-solid);
     }
     .composer-dock .compare-card .answer-style-selector { margin-left: auto; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
 
     @media (max-width: 900px) {
       body { overflow: auto; }
@@ -1816,7 +1970,13 @@
       .composer-context .answer-style-selector { gap: 5px; }
       .composer-context .answer-style-option { font-size: 9px; }
       .composer-dock .ask-box { grid-template-columns: auto 1fr auto auto; }
-      .composer-dock .ask-box > .btn-primary { min-width: 64px; padding-inline: 15px; }
+      .composer-dock .ask-box > .chat-submit-button { min-width: 42px; padding: 0; }
+      .composer-dock .compare-box .chat-submit-button {
+        width: 42px;
+        min-width: 42px;
+        padding: 0;
+        align-self: flex-end;
+      }
     }
   </style>
   <script>
@@ -1923,6 +2083,13 @@
       </div>
       <div class="header-spacer"></div>
     </header>
+    <button type="button" class="ask-mode-tab new-chat-button" onclick="startNewChat()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 20h9"></path>
+        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"></path>
+      </svg>
+      New chat
+    </button>
     <div id="branchStatusBar" class="branch-status hidden single-repo-flow">
       <div class="branch-status-copy">
         <div id="branchStatusTitle" class="branch-status-title"></div>
@@ -2012,6 +2179,10 @@
       <button id="adminReturnBtn" type="button" class="ask-mode-tab admin-return-btn"
         onclick="goBackToAdminConsole()" hidden>Go back to admin console</button>
     </div>
+    <section class="chat-sidebar-section" aria-labelledby="chatSidebarHeading">
+      <h2 id="chatSidebarHeading" class="chat-sidebar-heading">Chats</h2>
+      <div id="chatList" class="chat-list"></div>
+    </section>
     </aside>
 
     <main class="conversation-pane">
@@ -2085,7 +2256,14 @@
           </svg>
         </button>
         <button type="button" id="mainAskCancelBtn" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request" hidden>&times;</button>
-        <button class="btn-primary" onclick="ask()">Ask</button>
+        <button type="button" class="btn-primary chat-submit-button" onclick="ask()"
+          aria-label="Send message" title="Send message">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"></path>
+            <path d="m5 12 7-7 7 7"></path>
+          </svg>
+          <span class="sr-only">Send message</span>
+        </button>
       </div>
     </section>
 
@@ -2123,7 +2301,14 @@
         <textarea id="compareQuestion" rows="1"
           placeholder="Compare changes, flows, features, screens, or implementation choices…"
           autocomplete="off"></textarea>
-        <button id="compareAskBtn" type="button" class="btn-primary" onclick="compareBranches()">Compare</button>
+        <button id="compareAskBtn" type="button" class="btn-primary chat-submit-button"
+          onclick="compareBranches()" aria-label="Send comparison" title="Send comparison">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"></path>
+            <path d="m5 12 7-7 7 7"></path>
+          </svg>
+          <span class="sr-only">Send comparison</span>
+        </button>
       </div>
       <p id="compareHint" class="compare-hint"></p>
     </section>
@@ -2191,6 +2376,7 @@
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"
     aria-atomic="true"></div>
+  <div id="chatHoverPreview" class="chat-hover-preview" role="tooltip" hidden></div>
 
   <script>
     function toggleTheme() {
@@ -2221,8 +2407,16 @@
     let ACTIVE_ACTIVITY_POLL = null;
     let AUTH_CONFIG = {};
     let UI_FEATURES = {};
+    let CURRENT_USER_ID = null;
     let QUESTION_HISTORY = [];
+    let CHAT_SESSIONS = [];
+    let ACTIVE_CHAT_ID = '';
+    let CHAT_PERSISTENCE_READY = false;
+    const CHAT_SYNC_TIMERS = new Map();
     const QUESTION_HISTORY_STORAGE_KEY = 'codeatlas-question-history';
+    const ACTIVE_CHAT_STORAGE_KEY = 'codeatlas-active-chat';
+    const CHAT_SESSIONS_STORAGE_KEY = 'codeatlas-chat-sessions';
+    const CHAT_CACHE_OWNER_KEY = 'codeatlas-chat-cache-owner';
     const QUERY_IMAGE_MAX_COUNT = 3;
     const QUERY_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
     const QUERY_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -2247,12 +2441,44 @@
               answer: item.answer ? String(item.answer) : '',
               answeredAt: item.answeredAt || null,
               createdAt: item.createdAt || new Date().toISOString(),
+              chatId: String(item.chatId || 'legacy-chat'),
             }))
           : [];
+        const storedChats = JSON.parse(
+          sessionStorage.getItem(CHAT_SESSIONS_STORAGE_KEY) || '[]'
+        );
+        CHAT_SESSIONS = Array.isArray(storedChats)
+          ? storedChats.filter(chat => chat && chat.id).map(chat => ({
+              id: String(chat.id),
+              title: String(chat.title || 'New chat'),
+              preview: String(chat.preview || ''),
+              createdAt: chat.createdAt || new Date().toISOString(),
+              updatedAt: chat.updatedAt || chat.createdAt || new Date().toISOString(),
+              conversationId: chat.conversationId ? String(chat.conversationId) : null,
+              askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+              workspace: chat.workspace || null,
+              branchId: Number(chat.branchId) || null,
+              compareBranchA: Number(chat.compareBranchA) || null,
+              compareBranchB: Number(chat.compareBranchB) || null,
+              llmMode: chat.llmMode || null,
+              answerUserType: chat.answerUserType || null,
+            }))
+          : [];
+        migrateHistoryChats();
+        const savedActiveChat = sessionStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
+        ACTIVE_CHAT_ID = CHAT_SESSIONS.some(chat => chat.id === savedActiveChat)
+          ? savedActiveChat
+          : mostRecentChat()?.id || createChatId();
+        ensureActiveChatSession();
+        sessionStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, ACTIVE_CHAT_ID);
       } catch (e) {
         QUESTION_HISTORY = [];
+        CHAT_SESSIONS = [];
+        ACTIVE_CHAT_ID = createChatId();
+        ensureActiveChatSession();
       }
       renderQuestionHistory();
+      restoreConversationTranscript();
     }
 
     function saveQuestionHistory() {
@@ -2261,11 +2487,531 @@
           QUESTION_HISTORY_STORAGE_KEY,
           JSON.stringify(QUESTION_HISTORY),
         );
+        sessionStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, ACTIVE_CHAT_ID);
+        sessionStorage.setItem(
+          CHAT_SESSIONS_STORAGE_KEY,
+          JSON.stringify(CHAT_SESSIONS),
+        );
       } catch (e) {}
+    }
+
+    function clearLocalChatCache() {
+      QUESTION_HISTORY = [];
+      CHAT_SESSIONS = [];
+      ACTIVE_CHAT_ID = '';
+      try {
+        sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY);
+        sessionStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_SESSIONS_STORAGE_KEY);
+      } catch (e) {}
+    }
+
+    function normalizeSavedTurn(item, chatId) {
+      if (!item || !String(item.question || '').trim()) return null;
+      return {
+        id: String(item.id || `history-${Date.now()}-${Math.random().toString(36).slice(2)}`),
+        question: String(item.question || ''),
+        type: String(item.type || 'Question'),
+        answer: item.answer ? String(item.answer) : '',
+        answeredAt: item.answeredAt || null,
+        createdAt: item.createdAt || new Date().toISOString(),
+        chatId: String(chatId),
+      };
+    }
+
+    function normalizeSavedChat(chat) {
+      if (!chat || !chat.id) return null;
+      return {
+        id: String(chat.id),
+        title: String(chat.title || 'New chat'),
+        preview: String(chat.preview || ''),
+        createdAt: chat.createdAt || chat.serverCreatedAt || new Date().toISOString(),
+        updatedAt: chat.updatedAt || chat.serverUpdatedAt || chat.createdAt || new Date().toISOString(),
+        conversationId: chat.conversationId ? String(chat.conversationId) : null,
+        askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+        workspace: chat.workspace || null,
+        branchId: Number(chat.branchId) || null,
+        compareBranchA: Number(chat.compareBranchA) || null,
+        compareBranchB: Number(chat.compareBranchB) || null,
+        llmMode: chat.llmMode || null,
+        answerUserType: chat.answerUserType || null,
+      };
+    }
+
+    function chatPayloadForServer(chatId) {
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!chat) return null;
+      return {
+        title: chat.title || 'New chat',
+        preview: chat.preview || '',
+        createdAt: chat.createdAt || null,
+        updatedAt: chat.updatedAt || null,
+        conversationId: chat.conversationId || null,
+        askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+        workspace: chat.workspace || null,
+        branchId: Number(chat.branchId) || null,
+        compareBranchA: Number(chat.compareBranchA) || null,
+        compareBranchB: Number(chat.compareBranchB) || null,
+        llmMode: chat.llmMode || null,
+        answerUserType: chat.answerUserType || null,
+        turns: QUESTION_HISTORY
+          .filter(item => item.chatId === chatId)
+          .map(({ id, question, type, answer, answeredAt, createdAt }) => ({
+            id,
+            question,
+            type,
+            answer: answer || '',
+            answeredAt: answeredAt || null,
+            createdAt: createdAt || null,
+          })),
+      };
+    }
+
+    async function persistChatToServer(chatId) {
+      if (!CURRENT_USER_ID) return;
+      const payload = chatPayloadForServer(chatId);
+      if (!payload || !payload.turns.length) return;
+      try {
+        const response = await fetch(`/auth/me/chats/${encodeURIComponent(chatId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (handle401(response)) return;
+        if (!response.ok) throw new Error(`Chat save failed (${response.status})`);
+      } catch (error) {
+        console.warn('Unable to save chat to this account.', error);
+      }
+    }
+
+    function queueChatSync(chatId) {
+      if (!CHAT_PERSISTENCE_READY || !chatId) return;
+      const existing = CHAT_SYNC_TIMERS.get(chatId);
+      if (existing) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        CHAT_SYNC_TIMERS.delete(chatId);
+        persistChatToServer(chatId);
+      }, 350);
+      CHAT_SYNC_TIMERS.set(chatId, timer);
+    }
+
+    async function deleteChatFromServer(chatId) {
+      if (!CURRENT_USER_ID || !chatId) return;
+      const pending = CHAT_SYNC_TIMERS.get(chatId);
+      if (pending) window.clearTimeout(pending);
+      CHAT_SYNC_TIMERS.delete(chatId);
+      try {
+        const response = await fetch(`/auth/me/chats/${encodeURIComponent(chatId)}`, {
+          method: 'DELETE',
+        });
+        if (handle401(response)) return;
+        if (!response.ok) throw new Error(`Chat deletion failed (${response.status})`);
+      } catch (error) {
+        console.warn('Unable to delete the saved chat from this account.', error);
+      }
+    }
+
+    async function loadSavedChats(userId) {
+      const owner = String(userId);
+      let cachedOwner = '';
+      try { cachedOwner = sessionStorage.getItem(CHAT_CACHE_OWNER_KEY) || ''; } catch (e) {}
+      if (cachedOwner && cachedOwner !== owner) {
+        clearLocalChatCache();
+      }
+      try { sessionStorage.setItem(CHAT_CACHE_OWNER_KEY, owner); } catch (e) {}
+
+      const localChats = [...CHAT_SESSIONS];
+      const localTurns = [...QUESTION_HISTORY];
+      const localActiveChatId = ACTIVE_CHAT_ID;
+      try {
+        const response = await fetch('/auth/me/chats', { cache: 'no-store' });
+        if (handle401(response)) return false;
+        if (!response.ok) throw new Error(`Saved chats failed (${response.status})`);
+        const data = await response.json();
+        const remoteRows = Array.isArray(data.chats) ? data.chats : [];
+        const remoteIds = new Set();
+        const mergedChats = [];
+        const mergedTurns = [];
+        const localOnlyIds = [];
+
+        remoteRows.forEach(row => {
+          const remoteChat = normalizeSavedChat(row);
+          if (!remoteChat) return;
+          remoteIds.add(remoteChat.id);
+          const localChat = localChats.find(chat => chat.id === remoteChat.id);
+          const useLocal = localChat
+            && Date.parse(localChat.updatedAt || 0) > Date.parse(remoteChat.updatedAt || 0);
+          const selectedChat = useLocal ? normalizeSavedChat(localChat) : remoteChat;
+          mergedChats.push(selectedChat);
+          const selectedTurns = useLocal
+            ? localTurns.filter(turn => turn.chatId === remoteChat.id)
+            : (Array.isArray(row.turns) ? row.turns : []);
+          selectedTurns.forEach(turn => {
+            const normalized = normalizeSavedTurn(turn, remoteChat.id);
+            if (normalized) mergedTurns.push(normalized);
+          });
+          if (useLocal) localOnlyIds.push(remoteChat.id);
+        });
+
+        localChats.forEach(chat => {
+          if (remoteIds.has(chat.id)) return;
+          const turns = localTurns.filter(turn => turn.chatId === chat.id);
+          const isEmptyPlaceholder = !turns.length && chat.title === 'New chat';
+          if (isEmptyPlaceholder && remoteRows.length) return;
+          const normalizedChat = normalizeSavedChat(chat);
+          if (!normalizedChat) return;
+          mergedChats.push(normalizedChat);
+          turns.forEach(turn => {
+            const normalized = normalizeSavedTurn(turn, chat.id);
+            if (normalized) mergedTurns.push(normalized);
+          });
+          if (turns.length) localOnlyIds.push(chat.id);
+        });
+
+        CHAT_SESSIONS = mergedChats;
+        QUESTION_HISTORY = mergedTurns;
+        if (!CHAT_SESSIONS.length) {
+          ACTIVE_CHAT_ID = createChatId();
+          CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+        } else {
+          ACTIVE_CHAT_ID = CHAT_SESSIONS.some(chat => chat.id === localActiveChatId)
+            ? localActiveChatId
+            : mostRecentChat().id;
+        }
+        saveQuestionHistory();
+        renderQuestionHistory();
+        renderChatList();
+        CHAT_PERSISTENCE_READY = true;
+        [...new Set(localOnlyIds)].forEach(queueChatSync);
+        return true;
+      } catch (error) {
+        console.warn('Unable to load saved chats for this account.', error);
+        CHAT_PERSISTENCE_READY = false;
+        if (!CHAT_SESSIONS.length) {
+          ACTIVE_CHAT_ID = createChatId();
+          CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+        }
+        return false;
+      }
+    }
+
+    function createChatId() {
+      if (window.crypto?.randomUUID) return `chat-${window.crypto.randomUUID()}`;
+      return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+
+    function createChatSession(id = createChatId(), title = 'New chat') {
+      const now = new Date().toISOString();
+      return {
+        id,
+        title,
+        preview: '',
+        createdAt: now,
+        updatedAt: now,
+        conversationId: null,
+        askMode: ASK_MODE,
+        workspace: WORKSPACE,
+        branchId: BRANCH_ID,
+        compareBranchA: Number(document.getElementById('compareBranchA')?.value) || null,
+        compareBranchB: Number(document.getElementById('compareBranchB')?.value) || null,
+        llmMode: LLM_MODE,
+        answerUserType: effectiveAnswerUserType(),
+      };
+    }
+
+    function mostRecentChat() {
+      return [...CHAT_SESSIONS].sort(
+        (left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))
+      )[0] || null;
+    }
+
+    function migrateHistoryChats() {
+      const chatIds = [...new Set(QUESTION_HISTORY.map(item => item.chatId))];
+      chatIds.forEach(chatId => {
+        if (CHAT_SESSIONS.some(chat => chat.id === chatId)) return;
+        const turns = QUESTION_HISTORY.filter(item => item.chatId === chatId);
+        const first = turns[0];
+        const last = turns[turns.length - 1];
+        const chat = createChatSession(
+          chatId,
+          first?.question ? first.question.slice(0, 56) : 'Previous chat',
+        );
+        chat.createdAt = first?.createdAt || chat.createdAt;
+        chat.updatedAt = last?.answeredAt || last?.createdAt || chat.updatedAt;
+        chat.preview = last?.answer || last?.question || '';
+        CHAT_SESSIONS.push(chat);
+      });
+    }
+
+    function ensureActiveChatSession() {
+      let chat = CHAT_SESSIONS.find(item => item.id === ACTIVE_CHAT_ID);
+      if (!chat) {
+        chat = createChatSession(ACTIVE_CHAT_ID || createChatId());
+        ACTIVE_CHAT_ID = chat.id;
+        CHAT_SESSIONS.push(chat);
+      }
+      return chat;
+    }
+
+    function updateActiveChatSession(patch = {}) {
+      const chat = ensureActiveChatSession();
+      Object.assign(chat, {
+        askMode: ASK_MODE,
+        workspace: WORKSPACE,
+        branchId: BRANCH_ID,
+        compareBranchA: Number(document.getElementById('compareBranchA')?.value) || null,
+        compareBranchB: Number(document.getElementById('compareBranchB')?.value) || null,
+        llmMode: LLM_MODE,
+        answerUserType: effectiveAnswerUserType(),
+        updatedAt: new Date().toISOString(),
+        ...patch,
+      });
+      saveQuestionHistory();
+      renderChatList();
+      queueChatSync(chat.id);
+      return chat;
+    }
+
+    function restoredConversationTurn(item) {
+      const answer = String(item.answer || '').trim();
+      return `
+        <section class="conversation-turn conversation-restored">
+          <div class="conversation-user">
+            <div class="conversation-speaker">${escapeHtml(item.type || 'You')}</div>
+            <p>${escapeHtml(item.question)}</p>
+          </div>
+          <div class="conversation-assistant">
+            <div class="conversation-speaker">CodeAtlas</div>
+            ${
+              answer
+                ? `<div class="answer">${renderAnswer(answer)}</div>`
+                : '<p class="empty-state">This response was not completed.</p>'
+            }
+          </div>
+        </section>
+      `;
+    }
+
+    function restoreConversationTranscript() {
+      const result = document.getElementById('result');
+      const turns = QUESTION_HISTORY.filter(item => item.chatId === ACTIVE_CHAT_ID);
+      if (!result || !turns.length) return;
+      result.innerHTML = turns.map(restoredConversationTurn).join('');
+    }
+
+    function renderChatList() {
+      const list = document.getElementById('chatList');
+      if (!list) return;
+      const chats = [...CHAT_SESSIONS].sort(
+        (left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))
+      );
+      if (!chats.length) {
+        list.innerHTML = '<div class="chat-list-empty">No chats yet.</div>';
+        return;
+      }
+      list.innerHTML = chats.map(chat => `
+        <div class="chat-list-item${chat.id === ACTIVE_CHAT_ID ? ' active' : ''}"
+          data-chat-id="${escapeHtml(chat.id)}"
+          onmouseenter="showChatPreview(this, this.dataset.chatId)"
+          onmouseleave="hideChatPreview()">
+          <button type="button" class="chat-list-open"
+            onclick="switchChat(this.closest('.chat-list-item').dataset.chatId)"
+            onfocus="showChatPreview(this.closest('.chat-list-item'), this.closest('.chat-list-item').dataset.chatId)"
+            onblur="hideChatPreview()"
+            aria-label="Open chat ${escapeHtml(chat.title)}">
+            ${escapeHtml(chat.title)}
+          </button>
+          <button type="button" class="chat-list-delete"
+            onclick="deleteChat(this.closest('.chat-list-item').dataset.chatId)"
+            aria-label="Delete chat ${escapeHtml(chat.title)}" title="Delete chat">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path>
+            </svg>
+          </button>
+        </div>
+      `).join('');
+    }
+
+    function showChatPreview(source, chatId) {
+      const preview = document.getElementById('chatHoverPreview');
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!preview || !source || !chat || window.innerWidth <= 900) return;
+      const turns = QUESTION_HISTORY.filter(item => item.chatId === chatId);
+      const last = turns[turns.length - 1];
+      const snippet = last?.answer || last?.question || 'Start a conversation in this chat.';
+      preview.innerHTML = `
+        <div class="chat-preview-title">${escapeHtml(chat.title)}</div>
+        <div class="chat-preview-snippet">${escapeHtml(snippet)}</div>
+      `;
+      preview.hidden = false;
+      const sourceRect = source.getBoundingClientRect();
+      const left = Math.min(
+        sourceRect.right + 12,
+        window.innerWidth - preview.offsetWidth - 16,
+      );
+      const top = Math.max(
+        16,
+        Math.min(sourceRect.top, window.innerHeight - preview.offsetHeight - 16),
+      );
+      preview.style.left = `${left}px`;
+      preview.style.top = `${top}px`;
+    }
+
+    function hideChatPreview() {
+      const preview = document.getElementById('chatHoverPreview');
+      if (preview) preview.hidden = true;
+    }
+
+    function chatMatchesCurrentContext(chat) {
+      if (!chat) return false;
+      if (chat.askMode && chat.askMode !== ASK_MODE) return false;
+      if (chat.workspace && chat.workspace !== WORKSPACE) return false;
+      if (chat.branchId && Number(chat.branchId) !== Number(BRANCH_ID)) return false;
+      if (ASK_MODE === 'compare') {
+        const left = Number(document.getElementById('compareBranchA')?.value) || null;
+        const right = Number(document.getElementById('compareBranchB')?.value) || null;
+        if (chat.compareBranchA && Number(chat.compareBranchA) !== left) return false;
+        if (chat.compareBranchB && Number(chat.compareBranchB) !== right) return false;
+      }
+      if (chat.llmMode && chat.llmMode !== LLM_MODE) return false;
+      if (chat.answerUserType && chat.answerUserType !== effectiveAnswerUserType()) return false;
+      return true;
+    }
+
+    function switchChat(chatId, options = {}) {
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!chat) return;
+      if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
+      hideChatPreview();
+      ACTIVE_CHAT_ID = chat.id;
+      setAskMode(chat.askMode || 'single', { resetResult: false, focus: false });
+      if (ASK_MODE === 'compare') {
+        const left = document.getElementById('compareBranchA');
+        const right = document.getElementById('compareBranchB');
+        if (left && Array.from(left.options).some(option => Number(option.value) === chat.compareBranchA)) {
+          left.value = String(chat.compareBranchA);
+        }
+        if (right && Array.from(right.options).some(option => Number(option.value) === chat.compareBranchB)) {
+          right.value = String(chat.compareBranchB);
+        }
+        updateCompareBranchStatus();
+      }
+      CONVERSATION_ID = chatMatchesCurrentContext(chat)
+        ? chat.conversationId || null
+        : null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      const result = document.getElementById('result');
+      if (result) result.innerHTML = resultEmptyState(ASK_MODE);
+      restoreConversationTranscript();
+      saveQuestionHistory();
+      renderChatList();
+      if (options.focus !== false) {
+        const input = ASK_MODE === 'compare'
+          ? document.getElementById('compareQuestion')
+          : document.getElementById('question');
+        input?.focus();
+      }
+    }
+
+    function deleteChat(chatId) {
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!chat || !window.confirm(`Delete “${chat.title}”?`)) return;
+      hideChatPreview();
+      const deletingActiveChat = chat.id === ACTIVE_CHAT_ID;
+      if (deletingActiveChat && ACTIVE_REQUEST_CONTROLLER) {
+        ACTIVE_REQUEST_CONTROLLER.abort();
+      }
+      QUESTION_HISTORY = QUESTION_HISTORY.filter(item => item.chatId !== chat.id);
+      CHAT_SESSIONS = CHAT_SESSIONS.filter(item => item.id !== chat.id);
+      deleteChatFromServer(chat.id);
+      if (deletingActiveChat) {
+        const nextChat = mostRecentChat();
+        if (nextChat) {
+          ACTIVE_CHAT_ID = nextChat.id;
+          switchChat(nextChat.id, { focus: false });
+        } else {
+          ACTIVE_CHAT_ID = createChatId();
+          CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+          CONVERSATION_ID = null;
+          const result = document.getElementById('result');
+          if (result) result.innerHTML = resultEmptyState(ASK_MODE);
+        }
+      }
+      saveQuestionHistory();
+      renderQuestionHistory();
+      renderChatList();
+      showToast('Chat deleted.');
+    }
+
+    function retireConversationActions() {
+      document.querySelectorAll(
+        '#result .follow-up-panel, #result .clarification-banner, #result .investigate-actions'
+      ).forEach(element => element.remove());
+    }
+
+    function startConversationTurn(question, type = 'You') {
+      const result = document.getElementById('result');
+      if (!result) return null;
+      retireConversationActions();
+      if (Array.from(result.children).some(
+        child => !child.classList.contains('conversation-turn')
+      )) {
+        result.replaceChildren();
+      }
+      const turn = document.createElement('section');
+      turn.className = 'conversation-turn';
+      turn.innerHTML = `
+        <div class="conversation-user">
+          <div class="conversation-speaker">${escapeHtml(type)}</div>
+          <p>${escapeHtml(question)}</p>
+        </div>
+        <div class="conversation-assistant" aria-live="polite"></div>
+      `;
+      result.appendChild(turn);
+      return {
+        turn,
+        answer: turn.querySelector('.conversation-assistant'),
+      };
+    }
+
+    function startNewChat() {
+      if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      const currentChat = CHAT_SESSIONS.find(chat => chat.id === ACTIVE_CHAT_ID);
+      const currentTurns = QUESTION_HISTORY.some(item => item.chatId === ACTIVE_CHAT_ID);
+      if (!currentChat || currentTurns || currentChat.title !== 'New chat') {
+        ACTIVE_CHAT_ID = createChatId();
+        CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+      } else {
+        Object.assign(currentChat, createChatSession(currentChat.id));
+      }
+      saveQuestionHistory();
+      renderQuestionHistory();
+      renderChatList();
+      closeQuestionHistoryDialog();
+      closeQuestionHistory();
+      clearQueryImages();
+      const question = document.getElementById('question');
+      const compareQuestion = document.getElementById('compareQuestion');
+      if (question) {
+        question.value = '';
+        autoResizeTextarea(question);
+      }
+      if (compareQuestion) {
+        compareQuestion.value = '';
+        autoResizeTextarea(compareQuestion);
+      }
+      const result = document.getElementById('result');
+      if (result) result.innerHTML = resultEmptyState(ASK_MODE);
+      const focusTarget = ASK_MODE === 'compare' ? compareQuestion : question;
+      focusTarget?.focus();
+      showToast('New chat started.');
     }
 
     function renderQuestionHistory() {
       const list = document.getElementById('questionHistoryList');
+      renderChatList();
       if (!list) return;
       if (!QUESTION_HISTORY.length) {
         list.innerHTML = '<div class="question-history-empty">No questions in this session yet.</div>';
@@ -2305,9 +3051,17 @@
         answer: '',
         answeredAt: null,
         createdAt: new Date().toISOString(),
+        chatId: ACTIVE_CHAT_ID || 'legacy-chat',
       };
       QUESTION_HISTORY.push(item);
-      saveQuestionHistory();
+      const chat = ensureActiveChatSession();
+      const nextTitle = chat.title === 'New chat'
+        ? normalized.slice(0, 56)
+        : chat.title;
+      updateActiveChatSession({
+        title: nextTitle,
+        preview: normalized,
+      });
       renderQuestionHistory();
       return item.id;
     }
@@ -2318,7 +3072,10 @@
       if (!item) return;
       item.answer = String(answer || '').trim().slice(0, 20000);
       item.answeredAt = new Date().toISOString();
-      saveQuestionHistory();
+      updateActiveChatSession({
+        preview: item.answer || item.question,
+        conversationId: CONVERSATION_ID,
+      });
       renderQuestionHistory();
     }
 
@@ -3086,6 +3843,7 @@
         return false;
       }
       CURRENT_USER_TYPE = data.user.user_type || 'dev_team';
+      CURRENT_USER_ID = data.user.id;
       const adminReturnBtn = document.getElementById('adminReturnBtn');
       if (adminReturnBtn) {
         adminReturnBtn.hidden = !(ADMIN_TEST_MODE && data.user.role === 'admin');
@@ -3095,6 +3853,11 @@
       await loadBranches();
       await loadFlowButtons();
       await loadLlmStatus();
+      await loadSavedChats(data.user.id);
+      const activeChat = CHAT_SESSIONS.find(chat => chat.id === ACTIVE_CHAT_ID);
+      if (activeChat) {
+        switchChat(activeChat.id, { focus: false });
+      }
       showLogin(false);
       return true;
     }
@@ -3110,11 +3873,22 @@
       WORKSPACE = null;
       BRANCH_ID = null;
       CURRENT_USER_TYPE = 'dev_team';
+      CURRENT_USER_ID = null;
       PRODUCT_ANSWER_OVERRIDE = false;
       stopBranchPolling();
       CONVERSATION_ID = null;
       QUESTION_HISTORY = [];
-      try { sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY); } catch (e) {}
+      CHAT_SESSIONS = [];
+      ACTIVE_CHAT_ID = '';
+      CHAT_PERSISTENCE_READY = false;
+      CHAT_SYNC_TIMERS.forEach(timer => window.clearTimeout(timer));
+      CHAT_SYNC_TIMERS.clear();
+      try {
+        sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY);
+        sessionStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_SESSIONS_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_CACHE_OWNER_KEY);
+      } catch (e) {}
       renderQuestionHistory();
       window.location.href = '/';   // back to the landing page
     }
@@ -3685,15 +4459,20 @@
       const res = await fetch(wsUrl(`/repo/nodes/${encodedNodeId}`));
       if (handle401(res)) return;
       const data = await res.json();
+      const activeTurn = startConversationTurn(
+        data.name ? `Inspect ${data.name}` : 'Inspect code node',
+        'Code node',
+      );
+      const result = activeTurn?.answer || document.getElementById('result');
 
       if (!res.ok) {
-        document.getElementById('result').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        result.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
         return;
       }
 
       const links = data.connected_links || [];
 
-      document.getElementById('result').innerHTML = `
+      result.innerHTML = `
         <h2>${escapeHtml(data.name)}</h2>
         <p><b>Node:</b> ${escapeHtml(data.node)}</p>
         <div class="src">${escapeHtml(`${data.source_file || ''} ${data.source_location || ''}`.trim())}</div>
@@ -3730,7 +4509,8 @@
 
       await loadNode(node);
 
-      document.getElementById('result').scrollIntoView({
+      const result = document.getElementById('result');
+      (result.lastElementChild || result).scrollIntoView({
         behavior: 'smooth',
         block: 'start'
       });
@@ -3903,8 +4683,8 @@
       const input = document.getElementById('compareQuestion');
       const question = input ? input.value.trim() : '';
       if (!question) return;
-      CONVERSATION_ID = null;
-      await submitCompareQuestion(question);
+      const followUp = Boolean(CONVERSATION_ID);
+      await submitCompareQuestion(question, { followUp });
     }
 
     function comparisonRetrievalLabel(data) {
@@ -3929,8 +4709,7 @@
         : 'one-shot evidence';
     }
 
-    function renderCompareResult(data, requestQuestion, options = {}) {
-      const result = document.getElementById('result');
+    function renderCompareResult(data, requestQuestion, options = {}, result = document.getElementById('result')) {
       const prov = data.provider_used || '';
       const provLabel = prov.startsWith('user:') ? 'your key'
         : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
@@ -3945,7 +4724,6 @@
         : usage.available && Number.isFinite(totalTokens)
           ? ` · ${totalTokens.toLocaleString()} tokens`
           : ' · tokens unavailable';
-      const questionLabel = options.followUp ? 'Follow-up question' : 'Comparison question';
       const investigateAction = data.investigate_deeply_available
         ? `
           <div class="investigate-actions">
@@ -3960,15 +4738,15 @@
         LAST_FOLLOW_UP_QUESTION = '';
       }
       CONVERSATION_ID = data.conversation_id || null;
+      updateActiveChatSession({
+        conversationId: CONVERSATION_ID,
+        preview: data.answer || requestQuestion,
+      });
 
       result.innerHTML = `
         ${followUpComposer(data.needs_clarification)}
         <h2>CodeAtlas Branch Comparison</h2>
         <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(timingLabel)}${tokenLabel}</p>
-        <div class="follow-up-question-recap">
-          <div class="follow-up-question-recap-label">${questionLabel}</div>
-          <p>${escapeHtml(data.question || requestQuestion)}</p>
-        </div>
         <div class="answer">${renderAnswer(data.answer)}</div>
         ${investigateAction}
         ${compareEvidenceSection(data)}
@@ -3979,12 +4757,17 @@
     async function submitCompareQuestion(requestQuestion, options = {}) {
       const left = document.getElementById('compareBranchA');
       const right = document.getElementById('compareBranchB');
-      const result = document.getElementById('result');
+      const resultContainer = document.getElementById('result');
       if (!requestQuestion) return;
       if (!requireWorkspace()) return;
       if (!left.value || !right.value || left.value === right.value) {
-        result.innerHTML = '<div class="error-box"><h2>Select two branches</h2><p>Choose two different indexed branches to compare.</p></div>';
+        resultContainer.innerHTML = '<div class="error-box"><h2>Select two branches</h2><p>Choose two different indexed branches to compare.</p></div>';
         return;
+      }
+      const compareInput = document.getElementById('compareQuestion');
+      if (compareInput) {
+        compareInput.value = '';
+        autoResizeTextarea(compareInput);
       }
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
@@ -3995,6 +4778,13 @@
           options.followUp ? 'Follow-up' : 'Comparison question',
         );
       }
+      const activeTurn = startConversationTurn(
+        requestQuestion,
+        deepInvestigation
+          ? 'Deep investigation'
+          : options.followUp ? 'Follow-up' : 'You',
+      );
+      const result = activeTurn?.answer || resultContainer;
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       const activityRequestId = createActivityRequestId();
@@ -4027,7 +4817,7 @@
             </div>
             ${answerActivityPanel()}
           `;
-      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (activeTurn?.turn || result).scrollIntoView({ behavior: 'smooth', block: 'start' });
       startAnswerActivityPolling(activityRequestId);
 
       try {
@@ -4059,7 +4849,7 @@
           return;
         }
 
-        renderCompareResult(data, requestQuestion, options);
+        renderCompareResult(data, requestQuestion, options, result);
         updateQuestionHistoryAnswer(historyId, data.answer);
       } catch (error) {
         if (error && error.name === 'AbortError') {
@@ -4087,25 +4877,9 @@
 
 
     function followUpComposer(needsClarification) {
-      const clarificationBanner = needsClarification
-        ? `<div class="clarification-banner">CodeAtlas is asking a clarifying question above. Answer it in the field below to continue.</div>`
+      return needsClarification
+        ? '<div class="clarification-banner">CodeAtlas needs one detail before continuing. Reply in the main message field below.</div>'
         : '';
-      return `
-        ${clarificationBanner}
-        <div class="follow-up-panel">
-          <label class="follow-up-label" for="followUpQuestion">Ask a follow-up question</label>
-          <div class="follow-up-box">
-            <textarea
-              id="followUpQuestion"
-              rows="1"
-              placeholder="Ask about this answer, or enter a different question…"
-              autocomplete="off"
-            ></textarea>
-            <button type="button" class="btn-primary" onclick="askFollowUp()">Ask follow-up</button>
-          </div>
-          <p class="follow-up-hint">Related questions reuse verified evidence for speed. Choose Investigate deeply when you want a fresh repository check.</p>
-        </div>
-      `;
     }
 
     function bindFollowUpInput() {
@@ -4129,8 +4903,10 @@
       const question = input.value.trim();
       if (!question) return;
       if (!requireWorkspace()) return;
-      CONVERSATION_ID = null;
-      await submitQuestion(question);
+      const followUp = Boolean(CONVERSATION_ID);
+      input.value = '';
+      autoResizeTextarea(input);
+      await submitQuestion(question, { followUp });
     }
 
     async function askFollowUp() {
@@ -4162,7 +4938,7 @@
     }
 
     async function submitQuestion(requestQuestion, options = {}) {
-      const result = document.getElementById('result');
+      const resultContainer = document.getElementById('result');
       const productFlowSummary = Boolean(
         options.flowSummary && effectiveAnswerUserType() === 'product_team'
       );
@@ -4182,6 +4958,15 @@
           options.followUp ? 'Follow-up' : 'Question',
         );
       }
+      const activeTurn = startConversationTurn(
+        requestQuestion,
+        productFlowSummary
+          ? 'Flow summary'
+          : deepInvestigation
+            ? 'Deep investigation'
+            : options.followUp ? 'Follow-up' : 'You',
+      );
+      const result = activeTurn?.answer || resultContainer;
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       setMainAskCancelVisible(true);
@@ -4224,7 +5009,7 @@
           ${answerActivityPanel()}
         `;
 
-      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (activeTurn?.turn || result).scrollIntoView({ behavior: 'smooth', block: 'start' });
       startAnswerActivityPolling(activityRequestId);
 
       try {
@@ -4374,23 +5159,18 @@
             </div>
           `
           : '';
-        const followUpQuestionRecap = options.followUp
-          ? `
-            <div class="follow-up-question-recap">
-              <div class="follow-up-question-recap-label">Follow-up question</div>
-              <p>${escapeHtml(data.question || requestQuestion)}</p>
-            </div>
-          `
-          : '';
         if (data.investigate_deeply_available) {
           LAST_FOLLOW_UP_QUESTION = data.question || requestQuestion;
         } else if (!options.followUp) {
           LAST_FOLLOW_UP_QUESTION = '';
         }
         CONVERSATION_ID = data.conversation_id || null;
+        updateActiveChatSession({
+          conversationId: CONVERSATION_ID,
+          preview: data.answer || requestQuestion,
+        });
         result.innerHTML = `
           ${followUpComposer(data.needs_clarification)}
-          ${followUpQuestionRecap}
           <h2>CodeAtlas Answer</h2>
           ${answerMetadata}
           <div class="answer">${renderAnswer(data.answer)}</div>
@@ -4443,7 +5223,11 @@
     }
 
     function renderResult(data) {
-      const result = document.getElementById('result');
+      const activeTurn = startConversationTurn(
+        data.title || 'Repository summary',
+        'Repository tool',
+      );
+      const result = activeTurn?.answer || document.getElementById('result');
 
       if (data.title && data.high_level_flow) {
         result.innerHTML = `

@@ -1,15 +1,16 @@
-"""SQLite storage for users, repositories, sessions, and per-user repo access.
+"""SQLite storage for users, repositories, sessions, chats, and repo access.
 
 Phase 2 wires the auth and repo-lifecycle routers to these helpers. Per-repo
 retrieval tuning is stored as JSON on disk (see app/retrieval/config_schema.py),
 not here.
 """
 
+import json
 import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import (
     DB_PATH,
@@ -100,6 +101,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS user_chats (
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    chat_id      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    preview      TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, chat_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_chats_updated
+ON user_chats(user_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -497,6 +512,76 @@ def delete_session(token: str) -> None:
         return
     with connect() as conn:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+
+
+# --- Per-user Ask chats ------------------------------------------------------
+
+def upsert_user_chat(
+    user_id: int,
+    chat_id: str,
+    title: str,
+    preview: str,
+    payload: Dict[str, Any],
+    max_chats: int = 100,
+) -> None:
+    """Persist one authenticated user's chat and prune their oldest excess rows."""
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO user_chats "
+            "(user_id, chat_id, title, preview, payload_json) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, chat_id) DO UPDATE SET "
+            "title = excluded.title, preview = excluded.preview, "
+            "payload_json = excluded.payload_json, updated_at = datetime('now')",
+            (user_id, chat_id, title, preview, encoded),
+        )
+        stale = conn.execute(
+            "SELECT chat_id FROM user_chats WHERE user_id = ? "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT -1 OFFSET ?",
+            (user_id, max(1, int(max_chats))),
+        ).fetchall()
+        if stale:
+            conn.executemany(
+                "DELETE FROM user_chats WHERE user_id = ? AND chat_id = ?",
+                [(user_id, row["chat_id"]) for row in stale],
+            )
+
+
+def list_user_chats(user_id: int, limit: int = 100) -> List[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT chat_id, title, preview, payload_json, created_at, updated_at "
+            "FROM user_chats WHERE user_id = ? "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+            (user_id, max(1, min(int(limit), 100)),),
+        ).fetchall()
+    chats = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.update({
+            "id": row["chat_id"],
+            "title": row["title"],
+            "preview": row["preview"],
+            "serverCreatedAt": row["created_at"],
+            "serverUpdatedAt": row["updated_at"],
+        })
+        chats.append(payload)
+    return chats
+
+
+def delete_user_chat(user_id: int, chat_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM user_chats WHERE user_id = ? AND chat_id = ?",
+            (user_id, chat_id),
+        )
+        return cursor.rowcount > 0
 
 
 # --- Repos -------------------------------------------------------------------
