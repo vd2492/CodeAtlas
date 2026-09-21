@@ -27,7 +27,7 @@ from .config import (
     retrieval_config_path,
     source_index_path,
 )
-from .conversations import ConversationState, conversation_store
+from .conversations import ConversationState, ConversationStore, conversation_store
 from .retrieval.flow_map import (
     TOPICS,
     build_discovered_flow,
@@ -2160,6 +2160,15 @@ FOLLOW_UP_EVIDENCE_CHARS = max(
 FOLLOW_UP_TURN_ANSWER_CHARS = max(
     1000, int(os.environ.get("CODEATLAS_FOLLOW_UP_TURN_ANSWER_CHARS", "2500"))
 )
+# Budgets for the pinned opening turn. They are deliberately tighter than the
+# recent-turn budgets above: the root is there to keep the thread anchored, not
+# to compete with the turns the follow-up is actually about.
+FOLLOW_UP_ROOT_ANSWER_CHARS = max(
+    400, int(os.environ.get("CODEATLAS_FOLLOW_UP_ROOT_ANSWER_CHARS", "1200"))
+)
+FOLLOW_UP_ROOT_EVIDENCE_CHARS = max(
+    0, int(os.environ.get("CODEATLAS_FOLLOW_UP_ROOT_EVIDENCE_CHARS", "3000"))
+)
 FOLLOW_UP_STOPWORDS = {
     "about", "after", "again", "also", "and", "are", "can", "could", "does",
     "explain", "feature", "flow", "for", "from", "handle", "handled", "happen",
@@ -2230,23 +2239,35 @@ def is_related_follow_up(state: ConversationState, question: str) -> bool:
     }
     if not question_terms:
         return False
-    previous = state.turns[-1]
-    prior_text = (
-        f"{previous.get('question', '')} {previous.get('answer', '')}"
-    ).lower()
+    # Match against the whole thread — the pinned opening turn included — not
+    # just the previous turn. A miss here costs a full cold retrieval and a new
+    # conversation id, while a false positive only costs one no-tool call that
+    # the NEEDS_EVIDENCE sentinel already catches, so the check leans generous.
+    prior_parts = [
+        str(getattr(state, "root_question", "") or ""),
+        str(getattr(state, "root_answer", "") or ""),
+    ]
+    for turn in state.turns:
+        prior_parts.append(str(turn.get("question", "")))
+        prior_parts.append(str(turn.get("answer", "")))
+    prior_text = " ".join(prior_parts).lower()
     prior_terms = set(re.findall(r"[a-z0-9_.$/-]{3,}", prior_text))
     return bool(question_terms & prior_terms)
 
 
-def compact_follow_up_evidence(state: ConversationState) -> str:
-    turns = "\n\n".join(
-        (
-            f"Question: {str(turn.get('question', ''))[:800]}\n"
-            f"Answer: {str(turn.get('answer', ''))[:FOLLOW_UP_TURN_ANSWER_CHARS]}"
-        )
-        for turn in state.turns[-2:]
-    )
-    preview = (state.context or {}).get("llm_context_preview", {})
+def _compact_conversation_evidence(
+    preview: dict,
+    *,
+    node_limit: int = 6,
+    relation_limit: int = 12,
+    hit_limit: int = 6,
+) -> dict:
+    """Shrink an llm_context_preview to the shape follow-up prompts carry.
+
+    Handles both single-repository and two-branch comparison previews. The
+    default limits are the ones follow-ups have always used; the pinned root
+    block passes smaller ones so it stays an anchor rather than a second full
+    evidence dump."""
     def compact_single_evidence(item: dict) -> dict:
         return {
             "repo_overview": item.get("repo_overview"),
@@ -2260,9 +2281,9 @@ def compact_follow_up_evidence(state: ConversationState) -> str:
                         else {}
                     ),
                 }
-                for node in (item.get("nodes") or [])[:6]
+                for node in (item.get("nodes") or [])[:node_limit]
             ],
-            "relations": (item.get("relations") or [])[:12],
+            "relations": (item.get("relations") or [])[:relation_limit],
             "source_search_hits": [
                 {
                     "path": hit.get("path"),
@@ -2274,12 +2295,12 @@ def compact_follow_up_evidence(state: ConversationState) -> str:
                         for snippet in (hit.get("snippets") or [])[:1]
                     ],
                 }
-                for hit in (item.get("source_search_hits") or [])[:6]
+                for hit in (item.get("source_search_hits") or [])[:hit_limit]
             ],
         }
 
     if preview.get("branches"):
-        compact_preview = {
+        return {
             "comparison": "two indexed branches of one repository",
             "branches": [
                 {
@@ -2294,18 +2315,102 @@ def compact_follow_up_evidence(state: ConversationState) -> str:
                 for branch in (preview.get("branches") or [])[:2]
             ],
         }
-    else:
-        compact_preview = compact_single_evidence(preview)
+    return compact_single_evidence(preview)
+
+
+def _root_anchor_blocks(state: ConversationState, recent_turns: list[dict]) -> tuple[str, str]:
+    """Build the pinned opening-turn text and evidence for a follow-up prompt.
+
+    Both come back empty on the common path — when the opening turn is still
+    inside the recent-turn window, and when the thread is still standing on the
+    evidence it was created with. In that case the prompt is byte-for-byte what
+    it was before the root was pinned. They only fill in once the thread has
+    moved past the root: `turns` is a rolling window and `context` is replaced
+    whenever a follow-up falls back to full retrieval."""
+    root_question = str(getattr(state, "root_question", "") or "")
+    if not root_question:
+        return "", ""
+
+    normalize = ConversationStore.normalize_question
+    normalized_root = normalize(root_question)
+    already_shown = any(
+        normalize(turn.get("question", "")) == normalized_root
+        for turn in recent_turns
+    )
+    turn_block = ""
+    if not already_shown:
+        root_answer = str(getattr(state, "root_answer", "") or "")
+        turn_block = (
+            "Question that started this conversation:\n"
+            f"Question: {root_question[:800]}\n"
+            f"Answer: {root_answer[:FOLLOW_UP_ROOT_ANSWER_CHARS]}\n\n"
+        )
+
+    evidence_block = ""
+    root_preview = (getattr(state, "root_context", None) or {}).get(
+        "llm_context_preview", {}
+    ) or {}
+    current_preview = (state.context or {}).get("llm_context_preview", {}) or {}
+    if root_preview and FOLLOW_UP_ROOT_EVIDENCE_CHARS:
+        anchor_limits = {"node_limit": 4, "relation_limit": 8, "hit_limit": 3}
+        root_compact = _compact_conversation_evidence(root_preview, **anchor_limits)
+        current_compact = _compact_conversation_evidence(current_preview, **anchor_limits)
+        if root_compact != current_compact:
+            root_evidence = json.dumps(
+                root_compact,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            evidence_block = (
+                "\n\nVerified repository evidence for the question that started "
+                "this conversation, from the same indexed commit:\n"
+                f"{root_evidence[:FOLLOW_UP_ROOT_EVIDENCE_CHARS]}"
+            )
+    return turn_block, evidence_block
+
+
+def compact_follow_up_evidence(state: ConversationState) -> str:
+    recent_turns = list(state.turns[-2:])
+    turns = "\n\n".join(
+        (
+            f"Question: {str(turn.get('question', ''))[:800]}\n"
+            f"Answer: {str(turn.get('answer', ''))[:FOLLOW_UP_TURN_ANSWER_CHARS]}"
+        )
+        for turn in recent_turns
+    )
+    root_turn_block, root_evidence_block = _root_anchor_blocks(state, recent_turns)
+    preview = (state.context or {}).get("llm_context_preview", {})
+    compact_preview = _compact_conversation_evidence(preview)
     evidence = json.dumps(
         compact_preview,
         ensure_ascii=False,
         separators=(",", ":"),
     )
     return (
+        f"{root_turn_block}"
         f"Recent conversation:\n{turns}\n\n"
         "Verified repository evidence from the same indexed commit:\n"
         f"{evidence[:FOLLOW_UP_EVIDENCE_CHARS]}"
+        f"{root_evidence_block}"
     )
+
+
+def follow_up_retrieval_query(question: str, state: ConversationState) -> str:
+    """Seed repository retrieval with the topic the thread is about.
+
+    A referential follow-up ("do we have ads in this screen?") carries almost no
+    retrievable terms of its own, so build_context would never reach the screen
+    the conversation has been discussing and the answer comes back asking which
+    screen the user means. Appending the opening question puts the topic back
+    into keyword and graph lookup. Only the retrieval query changes — the
+    question shown to the user and sent to the model is untouched."""
+    root_question = str(getattr(state, "root_question", "") or "").strip()
+    if not root_question:
+        return question
+    normalize = ConversationStore.normalize_question
+    if normalize(root_question) == normalize(question):
+        return question
+    return f"{question.rstrip()} {root_question}"[:2000]
 
 
 def _answer_response(
@@ -2348,6 +2453,31 @@ def _session_cached_answer_response(
     response["question"] = question
     response["retrieval_mode"] = "session_cache"
     response["session_cache_hit"] = True
+    response["follow_up_reused"] = False
+    response["follow_up_fallback"] = False
+    response["deep_investigation"] = False
+    response["investigate_deeply_available"] = True
+    if workspace:
+        response["repository_version"] = repository_version_payload(workspace)
+    response["timings_ms"] = {
+        "retrieval": 0.0,
+        "generation": 0.0,
+        "total": 0.0,
+    }
+    response["token_usage"] = _zero_token_usage_payload()
+    return response
+
+
+def _repo_cached_answer_response(
+    cached_response: dict,
+    question: str,
+    workspace: str = None,
+) -> dict:
+    response = copy.deepcopy(cached_response or {})
+    response["question"] = question
+    response["retrieval_mode"] = "repo_cache"
+    response["repo_cache_hit"] = True
+    response.pop("session_cache_hit", None)
     response["follow_up_reused"] = False
     response["follow_up_fallback"] = False
     response["deep_investigation"] = False
@@ -2468,6 +2598,7 @@ def _remember_session_answer(
     repository_revision: str,
     question: str,
     response: dict,
+    conversation_id: str = "",
 ) -> None:
     if response.get("session_cache_hit"):
         return
@@ -2480,7 +2611,88 @@ def _remember_session_answer(
         repository_revision=repository_revision,
         question=question,
         response=response,
+        conversation_id=conversation_id,
     )
+
+
+_SHARED_CACHE_GENERIC_TERMS = {
+    "app",
+    "application",
+    "code",
+    "codebase",
+    "project",
+    "repo",
+    "repository",
+    "system",
+}
+_SHARED_CACHE_TRUSTED_FILE_RE = re.compile(
+    r"(^|/)(readme|package(-lock)?|pnpm-lock|yarn\.lock|build\.gradle|settings\.gradle|"
+    r"gradle\.properties|pom\.xml|pyproject\.toml|requirements\.txt|go\.mod|cargo\.toml|"
+    r"composer\.json|manifest|androidmanifest|dockerfile|docker-compose|makefile|"
+    r"vite\.config|next\.config|nuxt\.config|webpack\.config|tsconfig|jsconfig)",
+    re.IGNORECASE,
+)
+
+
+def _repo_cache_grounding_allows_shared_reuse(question: str, response: dict) -> bool:
+    """Cheap evidence check before promoting one answer to repo-wide reuse."""
+    context = (response or {}).get("context") or {}
+    source_hits = list(context.get("source_hits") or [])
+    context_nodes = list(context.get("context_nodes") or [])
+    preview = context.get("llm_context_preview") or {}
+    query_terms = [
+        str(term or "").strip().lower()
+        for term in (context.get("query_terms") or preview.get("query_terms") or [])
+        if str(term or "").strip()
+    ]
+    if not query_terms:
+        query_terms = re.findall(r"[a-zA-Z][a-zA-Z0-9_]{2,}", str(question or "").lower())
+    meaningful_terms = [
+        term
+        for term in query_terms
+        if len(term) >= 3 and term not in _SHARED_CACHE_GENERIC_TERMS
+    ]
+
+    source_paths = [
+        str(hit.get("path") or "").strip()
+        for hit in source_hits
+        if str(hit.get("path") or "").strip()
+    ]
+    source_paths.extend(
+        str(node.get("source_file") or "").strip()
+        for node in context_nodes
+        if str(node.get("source_file") or "").strip()
+    )
+    source_paths = list(dict.fromkeys(source_paths))
+    if not source_paths:
+        return False
+
+    trusted_file_hit = any(_SHARED_CACHE_TRUSTED_FILE_RE.search(path) for path in source_paths)
+    snippet_text = " ".join(
+        str(snippet.get("code") or "")
+        for hit in source_hits[:8]
+        for snippet in (hit.get("snippets") or [])[:2]
+    ).lower()
+    snippet_matches_question = bool(
+        meaningful_terms and any(term in snippet_text for term in meaningful_terms)
+    )
+    specific_snippet_hit = bool(meaningful_terms and snippet_matches_question)
+    strong_context = (
+        trusted_file_hit
+        or specific_snippet_hit
+        or (len(source_paths) >= 2 and len(meaningful_terms) >= 2)
+    )
+
+    answer = str((response or {}).get("answer") or "")
+    answer_lower = answer.lower()
+    cited_source = any(
+        path.lower() in answer_lower or Path(path).name.lower() in answer_lower
+        for path in source_paths[:12]
+        if path
+    )
+    cited_line = bool(re.search(r"\bL\d+(?:\s*[-–]\s*L?\d+)?\b", answer))
+
+    return bool(strong_context and cited_source and cited_line)
 
 
 def _request_uses_shared_tier_only(llm_mode: str, user_llm: Optional[dict]) -> bool:
@@ -2506,7 +2718,11 @@ def _remember_repo_answer(
     to hand to a different user without their key."""
     if response.get("session_cache_hit"):
         return
+    if response.get("repo_cache_hit"):
+        return
     if not str(response.get("provider_used") or "").startswith("shared:"):
+        return
+    if not _repo_cache_grounding_allows_shared_reuse(question, response):
         return
     conversation_store.store_repo_cached_answer(
         workspace=workspace,
@@ -2641,7 +2857,10 @@ def build_compare_context(
     right: dict,
     user_type: str,
     activity_callback=None,
+    retrieval_question: str = None,
 ) -> dict:
+    """retrieval_question, when given, is used only for the branch lookups —
+    the question shown to the user and sent to the model stays `question`."""
     def emit_activity(status: str, partial_context: dict) -> None:
         if not activity_callback:
             return
@@ -2651,14 +2870,15 @@ def build_compare_context(
             pass
 
     started_at = time.perf_counter()
-    left_context = build_context(question, limit=12, workspace=left["workspace"])
+    lookup_question = retrieval_question or question
+    left_context = build_context(lookup_question, limit=12, workspace=left["workspace"])
     left_payload = _comparison_branch_payload("Branch A", left, left_context)
     emit_activity("ranking_graph_nodes", {
         "question": question,
         "comparison_mode": True,
         "comparison_repositories": [left_payload],
     })
-    right_context = build_context(question, limit=12, workspace=right["workspace"])
+    right_context = build_context(lookup_question, limit=12, workspace=right["workspace"])
     right_payload = _comparison_branch_payload("Branch B", right, right_context)
     emit_activity("expanding_relations", {
         "question": question,
@@ -2715,6 +2935,7 @@ def answer_compare(
     user_type: str = "dev_team",
     activity_request_id: str = None,
     activity_user_id: int = None,
+    conversation_state: ConversationState = None,
 ) -> dict:
     started_at = time.perf_counter()
     activity_workspace = None
@@ -2739,12 +2960,20 @@ def answer_compare(
                 context=partial_context,
             )
 
+    # Same as the single-repo path: a comparison follow-up that falls through to
+    # full retrieval keeps its thread instead of starting cold.
+    retrieval_question = None
+    agent_context = ""
+    if conversation_state is not None:
+        retrieval_question = follow_up_retrieval_query(question, conversation_state)
+        agent_context = compact_follow_up_evidence(conversation_state)
     context = build_compare_context(
         question,
         left,
         right,
         user_type,
         activity_callback=activity_callback,
+        retrieval_question=retrieval_question,
     )
     if activity_request_id and activity_user_id is not None:
         update_answer_activity(
@@ -2768,6 +2997,7 @@ def answer_compare(
         llm_mode=llm_mode,
         question=context["llm_context_preview"]["question"],
         toolbox=toolbox,
+        agent_context=agent_context,
     )
     result_mode = result.get("retrieval_mode")
     response = {
@@ -2836,6 +3066,7 @@ def answer_compare_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            conversation_state=state,
             **activity_kwargs,
         )
         response["follow_up_reused"] = False
@@ -2903,6 +3134,7 @@ def answer_compare_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            conversation_state=state,
             **activity_kwargs,
         )
         response["follow_up_reused"] = False
@@ -2946,7 +3178,8 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                     answer_mode: str = None,
                     image_attachments: list[dict] = None,
                     activity_request_id: str = None,
-                    activity_user_id: int = None) -> dict:
+                    activity_user_id: int = None,
+                    conversation_state: ConversationState = None) -> dict:
     """Build context for a workspace and run the LLM fallback chain. Shared by
     the user ask endpoint and the admin test panel."""
     started_at = time.perf_counter()
@@ -2971,12 +3204,21 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
                 context=partial_context,
             )
 
+    # When a follow-up falls through to full retrieval, carry the thread with
+    # it: the seeded query keeps retrieval on topic, and agent_context lets the
+    # model resolve references like "this screen" instead of asking which one.
+    retrieval_question = question
+    agent_context = ""
+    if conversation_state is not None:
+        retrieval_question = follow_up_retrieval_query(question, conversation_state)
+        agent_context = compact_follow_up_evidence(conversation_state)
     context = build_context(
-        question,
+        retrieval_question,
         limit=16,
         workspace=workspace,
         activity_callback=activity_callback,
     )
+    context["question"] = question
     if activity_request_id and activity_user_id is not None:
         update_answer_activity(
             activity_request_id,
@@ -3015,6 +3257,7 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         llm_mode=llm_mode,
         question=llm_question,
         toolbox=toolbox,
+        agent_context=agent_context,
         image_attachments=image_attachments,
     )
     generation_ms = round((time.perf_counter() - generation_started_at) * 1000, 1)
@@ -3057,6 +3300,7 @@ def answer_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            conversation_state=state,
             **activity_kwargs,
         )
         response["follow_up_reused"] = False
@@ -3123,6 +3367,7 @@ def answer_follow_up(
             allow_shared_fallback=allow_shared_fallback,
             llm_mode=llm_mode,
             user_type=user_type,
+            conversation_state=state,
             **activity_kwargs,
         )
         response["follow_up_reused"] = False

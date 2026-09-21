@@ -378,6 +378,16 @@
     .provider-total { min-width:92px; text-align:right; }
     .provider-row:last-child { border-bottom:0; }
     .empty-state { min-height:120px; display:grid; place-items:center; color:var(--muted); font-size:13px; text-align:center; }
+    .insights-head {
+      display:flex; align-items:flex-start; justify-content:space-between; gap:14px; margin-bottom:14px;
+    }
+    .insights-head h2 { margin:0 0 4px; color:var(--fg); }
+    .insights-actions { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+    .insights-actions button.danger {
+      background: rgba(255,80,80,0.10);
+      border: 1px solid rgba(255,90,90,0.35);
+      color: #ff9a9a;
+    }
     .branch-detail { font-size: 11px; color: var(--muted); line-height: 1.55; margin-top: 3px; }
     .branch-settings { display:grid; gap:5px; min-width:150px; }
     .branch-settings label { display:flex; align-items:center; gap:6px; margin:0; white-space:nowrap; }
@@ -673,6 +683,20 @@
       <div id="memberEmpty" class="muted" style="font-size:12px;"></div>
     </div>
 
+    <!-- Cache panel (shown when "Cache" is clicked on a repo) -->
+    <div id="insightsPanel" class="panel hidden">
+      <div class="insights-head">
+        <div>
+          <h2>Cache for <span id="insightsRepo"></span></h2>
+          <p class="muted" style="margin:0;font-size:13px;">Shared repo answer cache.</p>
+        </div>
+        <div class="insights-actions">
+          <button id="insightsClearCacheBtn" class="danger" type="button">Clear cache</button>
+          <button id="insightsCloseBtn" class="ghost" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Branch panel (shown when "Branches" is clicked on a repo) -->
     <div id="branchPanel" class="panel hidden">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
@@ -949,6 +973,7 @@ let REPO_ACTIVITY = [];
 let REPO_ACTIVITY_SEQ = 1;
 let repoActivityTimer = null;
 let repoActivityBranchPollTimer = null;
+let curInsightsSlug = null;
 const numberFormatter = new Intl.NumberFormat();
 
 function formatLocalTimestamp(value, fallback = "") {
@@ -1729,6 +1754,7 @@ async function refreshRepos() {
     act.appendChild(btn("Branches", () => showBranches(r.slug), true));
     act.appendChild(btn("Grant", () => doGrant(r.slug), true));
     act.appendChild(btn("Members", () => showMembers(r.slug), true));
+    act.appendChild(btn("Cache", () => showInsights(r.slug), true));
     if (r.slug !== "default") act.appendChild(btn("Delete", () => doDelete(r.slug), "danger"));
     tbody.appendChild(tr);
   }
@@ -1903,6 +1929,9 @@ document.addEventListener("keydown", event => {
   }
   if (event.key === "Escape" && $("grantModal").style.display === "grid") {
     closeGrantDialog();
+  }
+  if (event.key === "Escape" && !$("insightsPanel").classList.contains("hidden")) {
+    closeInsights();
   }
 });
 
@@ -2148,6 +2177,39 @@ async function doRevoke(slug, username) {
   if (!(await modalConfirm("Revoke access", `Revoke ${username}'s access to ${slug}?`))) return;
   try { await api(`/admin/repos/${slug}/revoke`, { method: "POST", body: JSON.stringify({ username }) }); flash(`Revoked ${username} ✕ ${slug}`, true); showMembers(slug); refreshAudit(); }
   catch (e) { flash(e.message); }
+}
+
+function insightEmpty(label) {
+  return `<div class="empty-state" style="min-height:86px;">${esc(label)}</div>`;
+}
+
+async function clearInsightsCache() {
+  if (!curInsightsSlug) return;
+  const ok = window.confirm(`Clear shared cached answers for ${curInsightsSlug}?`);
+  if (!ok) return;
+  $("insightsClearCacheBtn").disabled = true;
+  try {
+    const data = await api(`/admin/repos/${curInsightsSlug}/answer-cache/clear`, {
+      method: "POST",
+    });
+    flash(`Cleared ${formatNumber(data.cleared || 0)} shared cached answer${Number(data.cleared || 0) === 1 ? "" : "s"} for ${curInsightsSlug}.`, true);
+  } catch (e) {
+    flash(e.message);
+  } finally {
+    $("insightsClearCacheBtn").disabled = false;
+  }
+}
+
+function showInsights(slug) {
+  curInsightsSlug = slug;
+  $("insightsRepo").textContent = slug;
+  $("insightsPanel").classList.remove("hidden");
+  $("insightsPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function closeInsights() {
+  $("insightsPanel").classList.add("hidden");
+  curInsightsSlug = null;
 }
 
 let curBranchesSlug = null;
@@ -2441,7 +2503,7 @@ async function doPrivacy(slug, allow) {
 async function doDelete(slug) {
   if (!(await modalConfirm("Delete repository", `Delete repository "${slug}"? This removes its clone, graph, config, and all grants. This cannot be undone.`))) return;
   try { await api(`/admin/repos/${slug}`, { method: "DELETE" }); flash(`Deleted ${slug}`, true);
-        $("memberPanel").classList.add("hidden"); refreshRepos(); refreshAudit(); }
+        $("memberPanel").classList.add("hidden"); if (curInsightsSlug === slug) closeInsights(); refreshRepos(); refreshAudit(); }
   catch (e) { flash(e.message); }
 }
 
@@ -2650,6 +2712,8 @@ $("cfgRepo").onchange = () => {
   $("cfgText").value = "";
   updateRepoToolActions();
 };
+$("insightsCloseBtn").onclick = closeInsights;
+$("insightsClearCacheBtn").onclick = clearInsightsCache;
 $("dailyBarChartBtn").onclick = () => setDailyChartType("bar");
 $("dailyLineChartBtn").onclick = () => setDailyChartType("line");
 bindDailyChartPan();

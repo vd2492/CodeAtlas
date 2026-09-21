@@ -468,6 +468,11 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("do not expose technical evidence", prompt)
         self.assertNotIn("Preserve valid source citations", prompt)
 
+    def test_fast_follow_up_asks_for_a_concise_non_repeating_answer(self):
+        prompt = client._fast_follow_up_system_prompt({})
+        self.assertIn("do not restate", prompt)
+        self.assertIn("no preamble", prompt.lower())
+
     def test_ollama_agent_executes_object_arguments(self):
         toolbox = FakeToolbox()
         responses = [

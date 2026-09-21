@@ -3454,6 +3454,7 @@
     function comparisonRetrievalLabel(data) {
       const toolCalls = data.agent_tool_calls || (data.agent_trace || []).length;
       if (data.session_cache_hit) return 'answered from session cache';
+      if (data.repo_cache_hit) return 'answered from shared repo cache';
       if (data.deep_investigation) {
         return data.retrieval_mode === 'compare_agentic'
           ? `comparison deep investigation · ${toolCalls} tool calls`
@@ -3483,7 +3484,7 @@
         : '';
       const usage = data.token_usage || {};
       const totalTokens = Number(usage.total_tokens);
-      const tokenLabel = data.session_cache_hit
+      const tokenLabel = (data.session_cache_hit || data.repo_cache_hit)
         ? ' · <span title="No new LLM request was made.">0 new tokens</span>'
         : usage.available && Number.isFinite(totalTokens)
           ? ` · ${totalTokens.toLocaleString()} tokens`
@@ -3862,6 +3863,8 @@
         const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
         const retrievalLabel = data.session_cache_hit
           ? 'answered from session cache'
+          : data.repo_cache_hit
+          ? 'answered from shared repo cache'
           : data.deep_investigation
             ? data.retrieval_mode === 'agentic'
               ? `follow-up deep investigation · ${followUpToolCalls} tool calls`
@@ -3893,7 +3896,7 @@
             `Cached input ${Number(usage.cached_input_tokens).toLocaleString()}`,
           );
         }
-        const tokenLabel = data.session_cache_hit
+        const tokenLabel = (data.session_cache_hit || data.repo_cache_hit)
           ? ' · <span title="No new LLM request was made.">0 new tokens</span>'
           : usage.available && Number.isFinite(totalTokens)
           ? ` · <span title="${escapeHtml(tokenBreakdown.join(' · '))}">${totalTokens.toLocaleString()} tokens</span>`

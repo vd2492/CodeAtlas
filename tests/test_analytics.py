@@ -298,6 +298,9 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn('id="dailyLineChartBtn"', html)
         self.assertIn("renderDailyLineChart", html)
         self.assertIn("Hourly tokens", html)
+        self.assertIn('id="insightsPanel"', html)
+        self.assertIn('id="insightsClearCacheBtn"', html)
+        self.assertIn("/admin/repos/${curInsightsSlug}/answer-cache/clear", html)
 
 
 if __name__ == "__main__":

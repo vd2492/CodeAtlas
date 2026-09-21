@@ -135,6 +135,12 @@ def answer_single_request(
         or (llm_mode == "mimo" and not allow_shared)
         or image_attachments
     )
+    # A follow-up's text only means something inside its own thread, so it is
+    # looked up (and later stored) under a thread-scoped key. Standalone
+    # questions keep the session-wide key they have always used.
+    cache_conversation_id = (
+        str(request.conversation_id or "") if request.follow_up else ""
+    )
     if use_session_cache:
         cached_response = main.conversation_store.get_cached_answer(
             session_key=session_key,
@@ -144,6 +150,7 @@ def answer_single_request(
             user_type=user_type,
             repository_revision=revision,
             question=request.question,
+            conversation_id=cache_conversation_id,
         )
         if cached_response:
             response = main._session_cached_answer_response(
@@ -187,7 +194,7 @@ def answer_single_request(
             question=request.question,
         )
         if repo_cached_response:
-            response = main._session_cached_answer_response(
+            response = main._repo_cached_answer_response(
                 repo_cached_response,
                 request.question,
                 workspace,
@@ -338,6 +345,7 @@ def answer_single_request(
                     repository_revision=revision,
                     question=request.question,
                     response=response,
+                    conversation_id=state.conversation_id,
                 )
                 schedule_answer_token_usage(
                     user,
@@ -449,6 +457,10 @@ def answer_compare_request(
         request.deep_investigation
         or (llm_mode == "mimo" and not allow_shared)
     )
+    # Same thread scoping as the ask path above.
+    cache_conversation_id = (
+        str(request.conversation_id or "") if request.follow_up else ""
+    )
     if use_session_cache:
         cached_response = main.conversation_store.get_cached_answer(
             session_key=session_key,
@@ -458,6 +470,7 @@ def answer_compare_request(
             user_type=user_type,
             repository_revision=comparison_revision,
             question=request.question,
+            conversation_id=cache_conversation_id,
         )
         if cached_response:
             response = main._session_cached_answer_response(
@@ -533,6 +546,7 @@ def answer_compare_request(
                     repository_revision=comparison_revision,
                     question=request.question,
                     response=response,
+                    conversation_id=state.conversation_id,
                 )
                 schedule_answer_token_usage(
                     user,

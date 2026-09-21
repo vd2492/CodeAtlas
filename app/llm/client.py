@@ -1338,6 +1338,12 @@ def _fast_follow_up_system_prompt(context: dict) -> str:
         f"evidence. {evidence_output_rule} "
         "If the evidence is incomplete, ambiguous, stale, or about a different "
         f"topic, output exactly {FOLLOW_UP_NEEDS_EVIDENCE} and nothing else."
+        "\n\nThe reader has already read the earlier answers in this "
+        "conversation. Answer only what this follow-up adds: do not restate "
+        "prior answers, re-introduce components already described, or re-explain "
+        "background that has been covered. Open with the answer itself, with no "
+        "preamble and no restatement of the question. Keep it to a few sentences "
+        "or a short list unless the question genuinely requires more."
         + (
             "\n\nAudience-specific final-answer requirements:\n"
             f"{audience_instruction}"
