@@ -26,6 +26,7 @@ from .config import (
     repo_clone_dir,
     retrieval_config_path,
     source_index_path,
+    ui_feature_flags,
 )
 from .conversations import ConversationState, ConversationStore, conversation_store
 from .retrieval.flow_map import (
@@ -1250,6 +1251,13 @@ class CompareRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "codeatlas-api"}
+
+
+@app.get("/ui-config")
+def ui_config():
+    """Remote config for optional UI surfaces. Public, like /auth/config: it
+    carries no repository data, only which surfaces the client should hide."""
+    return {"features": ui_feature_flags()}
 
 
 @app.get("/repo/summary")

@@ -35,6 +35,33 @@ BRANCH_VERSION_RETENTION_SECONDS = max(
     3600, int(os.environ.get("CODEATLAS_BRANCH_VERSION_RETENTION_SECONDS", "86400"))
 )
 
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Optional UI surfaces, hidden by default because they are not in use yet.
+# Each is remote config: set the env var to false and restart to bring one
+# back, without a code or frontend change.
+UI_FEATURE_ENV = {
+    "repo_summary_hidden": "CODEATLAS_HIDE_REPO_SUMMARY",
+    "flow_explorer_hidden": "CODEATLAS_HIDE_FLOW_EXPLORER",
+    "graph_search_hidden": "CODEATLAS_HIDE_GRAPH_SEARCH",
+}
+
+
+def ui_feature_flags() -> dict:
+    """Which optional UI surfaces the client should hide. Read per call so the
+    served value always reflects the current environment."""
+    return {
+        key: _env_flag(env_name, True)
+        for key, env_name in UI_FEATURE_ENV.items()
+    }
+
+
 # The default workspace lets the tool run as the current single-repo app until
 # the multi-tenant repo registry (Phase 2) is wired in.
 DEFAULT_WORKSPACE = os.environ.get("CODEATLAS_DEFAULT_WORKSPACE", "default")

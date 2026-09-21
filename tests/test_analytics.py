@@ -1,9 +1,10 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import ask_service, db
+from app import ask_service, config, db, main
 from app.auth import routes as auth_routes
 from app.auth.security import hash_password
 
@@ -301,6 +302,45 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn('id="insightsPanel"', html)
         self.assertIn('id="insightsClearCacheBtn"', html)
         self.assertIn("/admin/repos/${curInsightsSlug}/answer-cache/clear", html)
+
+
+class UiFeatureFlagTests(unittest.TestCase):
+    def test_optional_surfaces_are_hidden_by_default(self):
+        with patch.dict(os.environ, {}, clear=False):
+            for name in config.UI_FEATURE_ENV.values():
+                os.environ.pop(name, None)
+            flags = config.ui_feature_flags()
+        self.assertEqual(
+            flags,
+            {
+                "repo_summary_hidden": True,
+                "flow_explorer_hidden": True,
+                "graph_search_hidden": True,
+            },
+        )
+
+    def test_env_var_can_bring_a_surface_back(self):
+        with patch.dict(os.environ, {"CODEATLAS_HIDE_FLOW_EXPLORER": "false"}):
+            flags = config.ui_feature_flags()
+        self.assertFalse(flags["flow_explorer_hidden"])
+        # The other surfaces are unaffected.
+        self.assertTrue(flags["repo_summary_hidden"])
+        self.assertTrue(flags["graph_search_hidden"])
+
+    def test_ui_config_endpoint_serves_the_flags(self):
+        self.assertEqual(main.ui_config(), {"features": config.ui_feature_flags()})
+
+    def test_ask_page_reads_the_remote_config(self):
+        html = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
+        self.assertIn("/ui-config", html)
+        self.assertIn(".feature-off { display: none !important; }", html)
+        for element_id in (
+            "repoSummaryCard",
+            "flowExplorerCard",
+            "graphSearchCard",
+            "secondaryTools",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
 
 
 if __name__ == "__main__":

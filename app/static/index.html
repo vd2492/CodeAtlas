@@ -538,6 +538,9 @@
       color: var(--danger);
     }
     [hidden] { display: none !important; }
+    /* Remote-config hiding. Kept separate from [hidden] because setAskMode
+       toggles that attribute on .single-repo-flow when switching ask modes. */
+    .feature-off { display: none !important; }
 
     .compare-card {
       margin: 0 0 16px;
@@ -1736,21 +1739,21 @@
     </section>
 
     <!-- Secondary tools -->
-    <div class="tools single-repo-flow">
-      <section class="card">
+    <div class="tools single-repo-flow" id="secondaryTools">
+      <section class="card" id="repoSummaryCard">
         <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Repo Summary</h2></div>
         <button onclick="loadSummary()">Load Summary</button>
         <div id="summary"></div>
       </section>
 
-      <section class="card">
+      <section class="card" id="flowExplorerCard">
         <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Flow Explorer</h2></div>
         <div id="flowButtons" class="row">
           <span class="src">Select a repository to load flows.</span>
         </div>
       </section>
 
-      <details class="card advanced-card span-2">
+      <details class="card advanced-card span-2" id="graphSearchCard">
         <summary>
           <span class="card-dot"></span>
           <h2 class="card-title">Advanced graph search</h2>
@@ -1796,6 +1799,7 @@
     let ACTIVE_REQUEST_CONTROLLER = null;
     let ACTIVE_ACTIVITY_POLL = null;
     let AUTH_CONFIG = {};
+    let UI_FEATURES = {};
     let QUESTION_HISTORY = [];
     const QUESTION_HISTORY_STORAGE_KEY = 'codeatlas-question-history';
     const QUERY_IMAGE_MAX_COUNT = 3;
@@ -2615,12 +2619,42 @@
         : 'You do not have access to this repository. Please contact admin to get access.';
     }
 
-    async function initAuth() {
-      try {
-        AUTH_CONFIG = await (await fetch('/auth/config', { cache: 'no-store' })).json();
-      } catch (e) {
-        AUTH_CONFIG = {};
+    // Remote config: which optional surfaces to hide. Defaults to hiding them
+    // so a failed fetch never flashes a surface that is meant to be off.
+    const UI_FEATURE_TARGETS = {
+      repo_summary_hidden: 'repoSummaryCard',
+      flow_explorer_hidden: 'flowExplorerCard',
+      graph_search_hidden: 'graphSearchCard',
+    };
+
+    function featureHidden(key) {
+      return UI_FEATURES[key] !== false;
+    }
+
+    function applyUiFeatureFlags() {
+      Object.entries(UI_FEATURE_TARGETS).forEach(([key, elementId]) => {
+        const element = document.getElementById(elementId);
+        if (element) element.classList.toggle('feature-off', featureHidden(key));
+      });
+      const tools = document.getElementById('secondaryTools');
+      if (tools) {
+        const allHidden = Object.keys(UI_FEATURE_TARGETS).every(featureHidden);
+        tools.classList.toggle('feature-off', allHidden);
       }
+    }
+
+    async function initAuth() {
+      const [authConfig, uiConfig] = await Promise.all([
+        fetch('/auth/config', { cache: 'no-store' })
+          .then(res => res.json())
+          .catch(() => ({})),
+        fetch('/ui-config', { cache: 'no-store' })
+          .then(res => res.json())
+          .catch(() => ({})),
+      ]);
+      AUTH_CONFIG = authConfig;
+      UI_FEATURES = (uiConfig && uiConfig.features) || {};
+      applyUiFeatureFlags();
       const res = await fetch('/auth/me');
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
@@ -3319,6 +3353,7 @@
     }
 
     async function loadFlowButtons() {
+      if (featureHidden('flow_explorer_hidden')) return;
       const target = document.getElementById('flowButtons');
       if (!target) return;
       if (!WORKSPACE) {
