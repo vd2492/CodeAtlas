@@ -1543,16 +1543,16 @@
     }
     .workspace-sidebar .ask-mode-tab svg { flex: none; }
     .workspace-sidebar .ask-mode-switch {
-      order: 1;
+      order: 2;
       margin: 0;
       gap: 4px;
       flex-direction: column;
       flex-wrap: nowrap;
     }
     .workspace-sidebar .new-chat-button { order: 1; }
-    .workspace-sidebar .chat-sidebar-section { order: 2; }
     .workspace-sidebar .branch-status { order: 3; }
     .workspace-sidebar .llm-card { order: 4; }
+    .workspace-sidebar .chat-sidebar-section { order: 5; }
     .workspace-sidebar .ask-mode-tab.active {
       color: var(--text);
       background: var(--accent-soft);
@@ -1592,7 +1592,12 @@
     }
     .workspace-sidebar .personal-llm .btn-primary { max-width: none; }
     .chat-sidebar-section {
+      flex: 1 1 0;
       min-width: 0;
+      min-height: 96px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
       padding-top: 12px;
       border-top: 1px solid var(--border);
     }
@@ -1605,9 +1610,16 @@
       text-transform: uppercase;
     }
     .chat-list {
+      flex: 1;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       gap: 3px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding-right: 3px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-strong) transparent;
     }
     .chat-list-empty {
       padding: 9px 10px;
@@ -1818,6 +1830,81 @@
       padding: 18px 4px 0;
     }
     .conversation-restored .conversation-assistant { padding-top: 14px; }
+    .answer-feedback {
+      margin-top: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .answer-feedback-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .answer-feedback-button {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      border-radius: 9px;
+      color: var(--faint);
+      background: transparent;
+      box-shadow: none;
+    }
+    .answer-feedback-button:hover {
+      color: var(--text);
+      border: 0;
+      background: rgba(148, 163, 184, 0.10);
+      transform: none;
+    }
+    .answer-feedback-button.active[data-rating="liked"] {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .answer-feedback-button.active[data-rating="disliked"] {
+      color: var(--danger);
+      background: rgba(255, 107, 107, 0.10);
+    }
+    .answer-feedback-reasons {
+      max-width: min(100%, 520px);
+      padding: 10px;
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 7px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card-solid);
+    }
+    .answer-feedback-reasons span {
+      width: 100%;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+    .answer-feedback-reason {
+      padding: 7px 10px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(148, 163, 184, 0.08);
+      font-size: 11px;
+      box-shadow: none;
+    }
+    .answer-feedback-reason:hover,
+    .answer-feedback-reason.active {
+      color: var(--text);
+      border-color: rgba(95, 227, 154, 0.36);
+      background: var(--accent-soft);
+      transform: none;
+    }
+    .answer-feedback-status {
+      min-height: 15px;
+      color: var(--faint);
+      font-size: 11px;
+    }
 
     .composer-dock {
       position: relative;
@@ -1868,28 +1955,20 @@
     }
     .composer-dock .ask-box {
       display: grid;
-      grid-template-columns: auto 1fr auto auto;
-      grid-template-areas:
-        "input input input input"
-        "search space attach submit";
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-areas: "input attach submit";
+      align-items: end;
       gap: 8px;
-      padding: 12px;
+      padding: 10px 12px;
       border-radius: 0 0 19px 19px;
       background: var(--card-solid);
       box-shadow: 0 22px 54px -30px rgba(0, 0, 0, 0.85);
     }
     .composer-dock .ask-input-stack { grid-area: input; }
-    .composer-dock .ask-icon {
-      grid-area: search;
-      width: 38px;
-      height: 38px;
-      border-radius: 11px;
-      color: var(--muted);
-      background: rgba(148, 163, 184, 0.07);
-    }
     .composer-dock #question {
-      min-height: 62px;
-      padding: 8px 7px;
+      min-height: 42px;
+      max-height: 160px;
+      padding: 9px 4px 8px;
       font-size: 16px;
     }
     .composer-dock .image-attach-btn { grid-area: attach; }
@@ -1952,6 +2031,12 @@
       .workspace-sidebar .ask-mode-tab { width: auto; flex: 1 1 160px; }
       .workspace-sidebar .ask-mode-switch { flex: 1 1 100%; flex-direction: row; }
       .workspace-sidebar .llm-card { width: 100%; }
+      .workspace-sidebar .chat-sidebar-section {
+        flex: none;
+        min-height: 0;
+        overflow: visible;
+      }
+      .workspace-sidebar .chat-list { max-height: 260px; }
       .conversation-pane { min-height: 72vh; overflow: visible; }
       .conversation-scroll { overflow: visible; padding: 70px 18px 20px; }
       .ask-welcome { min-height: 280px; }
@@ -1969,7 +2054,7 @@
       .ask-welcome h1 { font-size: 28px; }
       .composer-context .answer-style-selector { gap: 5px; }
       .composer-context .answer-style-option { font-size: 9px; }
-      .composer-dock .ask-box { grid-template-columns: auto 1fr auto auto; }
+      .composer-dock .ask-box { grid-template-columns: minmax(0, 1fr) auto auto; }
       .composer-dock .ask-box > .chat-submit-button { min-width: 42px; padding: 0; }
       .composer-dock .compare-box .chat-submit-button {
         width: 42px;
@@ -2234,14 +2319,8 @@
       </div>
       </div>
       <div class="ask-box">
-        <span class="ask-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="7"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-        </span>
         <div class="ask-input-stack">
-          <textarea id="question" rows="1" placeholder="Ask anything about this codebase…" autocomplete="off"></textarea>
+          <textarea id="question" rows="1" placeholder="Ask about a feature, risk, or roadmap decision…" autocomplete="off"></textarea>
           <div id="queryImagePreview" class="query-image-preview" hidden></div>
         </div>
         <input id="queryImageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
@@ -2326,8 +2405,8 @@
                   <path d="m14 5-4 14"></path>
                 </svg>
               </div>
-              <h1 id="askWelcomeTitle">What should we explore in your codebase?</h1>
-              <p>Ask about architecture, trace a feature, compare branches, or attach a screenshot for grounded answers.</p>
+              <h1 id="askWelcomeTitle">Turn product questions into confident decisions.</h1>
+              <p>Trace a feature, assess impact, compare branches, or attach a screenshot for grounded answers from your codebase.</p>
             </div>
           </section>
 
@@ -2442,6 +2521,20 @@
               answeredAt: item.answeredAt || null,
               createdAt: item.createdAt || new Date().toISOString(),
               chatId: String(item.chatId || 'legacy-chat'),
+              feedbackId: String(item.feedbackId || createAnswerFeedbackId()),
+              feedbackRating: item.feedbackRating === 'liked'
+                || (
+                  item.feedbackRating === 'disliked'
+                  && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+                    .includes(item.feedbackReason)
+                )
+                ? item.feedbackRating
+                : null,
+              feedbackReason: item.feedbackRating === 'disliked'
+                && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+                  .includes(item.feedbackReason)
+                ? item.feedbackReason
+                : null,
             }))
           : [];
         const storedChats = JSON.parse(
@@ -2516,6 +2609,20 @@
         answeredAt: item.answeredAt || null,
         createdAt: item.createdAt || new Date().toISOString(),
         chatId: String(chatId),
+        feedbackId: String(item.feedbackId || createAnswerFeedbackId()),
+        feedbackRating: item.feedbackRating === 'liked'
+          || (
+            item.feedbackRating === 'disliked'
+            && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+              .includes(item.feedbackReason)
+          )
+          ? item.feedbackRating
+          : null,
+        feedbackReason: item.feedbackRating === 'disliked'
+          && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+            .includes(item.feedbackReason)
+          ? item.feedbackReason
+          : null,
       };
     }
 
@@ -2556,13 +2663,26 @@
         answerUserType: chat.answerUserType || null,
         turns: QUESTION_HISTORY
           .filter(item => item.chatId === chatId)
-          .map(({ id, question, type, answer, answeredAt, createdAt }) => ({
+          .map(({
+            id,
+            question,
+            type,
+            answer,
+            answeredAt,
+            createdAt,
+            feedbackId,
+            feedbackRating,
+            feedbackReason,
+          }) => ({
             id,
             question,
             type,
             answer: answer || '',
             answeredAt: answeredAt || null,
             createdAt: createdAt || null,
+            feedbackId: feedbackId || null,
+            feedbackRating: feedbackRating || null,
+            feedbackReason: feedbackReason || null,
           })),
       };
     }
@@ -2700,6 +2820,11 @@
       return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
     }
 
+    function createAnswerFeedbackId() {
+      if (window.crypto?.randomUUID) return `feedback-${window.crypto.randomUUID()}`;
+      return `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+
     function createChatSession(id = createChatId(), title = 'New chat') {
       const now = new Date().toISOString();
       return {
@@ -2784,12 +2909,147 @@
             <div class="conversation-speaker">CodeAtlas</div>
             ${
               answer
-                ? `<div class="answer">${renderAnswer(answer)}</div>`
+                ? `<div class="answer">${renderAnswer(answer)}</div>
+                  ${answerFeedbackControls(item.id, item.question)}`
                 : '<p class="empty-state">This response was not completed.</p>'
             }
           </div>
         </section>
       `;
+    }
+
+    const ANSWER_FEEDBACK_REASON_LABELS = {
+      too_vague: 'Too vague',
+      too_simple: 'Too simple',
+      too_complex: 'Too complex',
+      not_relevant: 'Out of context',
+    };
+
+    function answerFeedbackControls(historyId, question) {
+      const item = historyId
+        ? QUESTION_HISTORY.find(entry => entry.id === historyId)
+        : null;
+      const feedbackId = item?.feedbackId || createAnswerFeedbackId();
+      const rating = item?.feedbackRating || '';
+      const reason = item?.feedbackReason || '';
+      const chat = item
+        ? CHAT_SESSIONS.find(entry => entry.id === item.chatId)
+        : null;
+      const workspace = chat?.workspace || WORKSPACE || '';
+      const savedQuestion = item?.question || String(question || '');
+      return `
+        <div class="answer-feedback"
+          data-feedback-id="${escapeHtml(feedbackId)}"
+          data-history-id="${escapeHtml(historyId || '')}"
+          data-workspace="${escapeHtml(workspace)}"
+          data-question="${escapeHtml(savedQuestion)}">
+          <div class="answer-feedback-actions" role="group" aria-label="Rate this answer">
+            <button type="button"
+              class="answer-feedback-button${rating === 'liked' ? ' active' : ''}"
+              data-rating="liked" aria-label="Like this answer" title="Like"
+              aria-pressed="${rating === 'liked'}"
+              onclick="submitAnswerFeedback(this, 'liked')">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 10v12H3V10h4Z"></path><path d="M7 10l5-8 2 1v6h5a2 2 0 0 1 2 2l-2 9a2 2 0 0 1-2 2H7"></path>
+              </svg>
+            </button>
+            <button type="button"
+              class="answer-feedback-button${rating === 'disliked' ? ' active' : ''}"
+              data-rating="disliked" aria-label="Dislike this answer" title="Dislike"
+              aria-pressed="${rating === 'disliked'}" aria-expanded="false"
+              onclick="showAnswerFeedbackReasons(this)">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 14V2h4v12h-4Z"></path><path d="m17 14-5 8-2-1v-6H5a2 2 0 0 1-2-2l2-9a2 2 0 0 1 2-2h10"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="answer-feedback-reasons" hidden>
+            <span>What could be improved?</span>
+            ${Object.entries(ANSWER_FEEDBACK_REASON_LABELS).map(([value, label]) => `
+              <button type="button"
+                class="answer-feedback-reason${reason === value ? ' active' : ''}"
+                data-reason="${value}"
+                onclick="submitAnswerFeedback(this, 'disliked', '${value}')">
+                ${escapeHtml(label)}
+              </button>
+            `).join('')}
+          </div>
+          <div class="answer-feedback-status" role="status" aria-live="polite">${
+            rating ? 'Feedback saved anonymously.' : ''
+          }</div>
+        </div>
+      `;
+    }
+
+    function showAnswerFeedbackReasons(button) {
+      const wrapper = button.closest('.answer-feedback');
+      const reasons = wrapper?.querySelector('.answer-feedback-reasons');
+      if (!wrapper || !reasons) return;
+      const willOpen = reasons.hidden;
+      reasons.hidden = !willOpen;
+      button.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) reasons.querySelector('button')?.focus();
+    }
+
+    function applyAnswerFeedbackState(wrapper, satisfaction, reason) {
+      wrapper.querySelectorAll('.answer-feedback-button').forEach(button => {
+        const active = button.dataset.rating === satisfaction;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      wrapper.querySelectorAll('.answer-feedback-reason').forEach(button => {
+        button.classList.toggle('active', button.dataset.reason === reason);
+      });
+      const reasons = wrapper.querySelector('.answer-feedback-reasons');
+      if (reasons) reasons.hidden = true;
+      const dislike = wrapper.querySelector('[data-rating="disliked"]');
+      if (dislike) dislike.setAttribute('aria-expanded', 'false');
+    }
+
+    async function submitAnswerFeedback(button, satisfaction, reason = null) {
+      const wrapper = button.closest('.answer-feedback');
+      if (!wrapper) return;
+      const status = wrapper.querySelector('.answer-feedback-status');
+      const controls = wrapper.querySelectorAll('button');
+      controls.forEach(control => { control.disabled = true; });
+      if (status) status.textContent = 'Saving feedback…';
+      try {
+        const response = await fetch('/auth/me/answer-feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          keepalive: true,
+          body: JSON.stringify({
+            feedback_id: wrapper.dataset.feedbackId,
+            workspace: wrapper.dataset.workspace,
+            question: wrapper.dataset.question,
+            satisfaction,
+            reason,
+          }),
+        });
+        if (handle401(response)) return;
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Unable to save feedback.');
+        applyAnswerFeedbackState(wrapper, satisfaction, reason);
+        const historyId = wrapper.dataset.historyId;
+        const item = QUESTION_HISTORY.find(entry => entry.id === historyId);
+        if (item) {
+          item.feedbackId = wrapper.dataset.feedbackId;
+          item.feedbackRating = satisfaction;
+          item.feedbackReason = reason;
+          saveQuestionHistory();
+          queueChatSync(item.chatId);
+        }
+        if (status) status.textContent = 'Feedback saved anonymously.';
+      } catch (error) {
+        if (status) status.textContent = error.message || 'Unable to save feedback.';
+      } finally {
+        controls.forEach(control => { control.disabled = false; });
+      }
+    }
+
+    function feedbackIdForHistory(historyId) {
+      if (!historyId) return null;
+      return QUESTION_HISTORY.find(entry => entry.id === historyId)?.feedbackId || null;
     }
 
     function restoreConversationTranscript() {
@@ -3052,6 +3312,9 @@
         answeredAt: null,
         createdAt: new Date().toISOString(),
         chatId: ACTIVE_CHAT_ID || 'legacy-chat',
+        feedbackId: createAnswerFeedbackId(),
+        feedbackRating: null,
+        feedbackReason: null,
       };
       QUESTION_HISTORY.push(item);
       const chat = ensureActiveChatSession();
@@ -4709,7 +4972,13 @@
         : 'one-shot evidence';
     }
 
-    function renderCompareResult(data, requestQuestion, options = {}, result = document.getElementById('result')) {
+    function renderCompareResult(
+      data,
+      requestQuestion,
+      options = {},
+      result = document.getElementById('result'),
+      historyId = null,
+    ) {
       const prov = data.provider_used || '';
       const provLabel = prov.startsWith('user:') ? 'your key'
         : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
@@ -4750,6 +5019,7 @@
         <div class="answer">${renderAnswer(data.answer)}</div>
         ${investigateAction}
         ${compareEvidenceSection(data)}
+        ${answerFeedbackControls(historyId, requestQuestion)}
       `;
       bindFollowUpInput();
     }
@@ -4778,6 +5048,8 @@
           options.followUp ? 'Follow-up' : 'Comparison question',
         );
       }
+      const feedbackHistoryId = historyId || options.feedbackHistoryId || null;
+      const feedbackId = feedbackIdForHistory(feedbackHistoryId);
       const activeTurn = startConversationTurn(
         requestQuestion,
         deepInvestigation
@@ -4827,6 +5099,7 @@
           signal: controller.signal,
           body: JSON.stringify({
             question: requestQuestion,
+            feedback_id: feedbackId,
             left_branch: Number(left.value),
             right_branch: Number(right.value),
             llm_mode: LLM_MODE,
@@ -4849,7 +5122,13 @@
           return;
         }
 
-        renderCompareResult(data, requestQuestion, options, result);
+        renderCompareResult(
+          data,
+          requestQuestion,
+          options,
+          result,
+          historyId || options.feedbackHistoryId || null,
+        );
         updateQuestionHistoryAnswer(historyId, data.answer);
       } catch (error) {
         if (error && error.name === 'AbortError') {
@@ -4924,16 +5203,22 @@
     async function investigateDeeply() {
       if (!LAST_FOLLOW_UP_QUESTION) return;
       if (!requireWorkspace()) return;
+      const sourceTurn = [...QUESTION_HISTORY].reverse().find(item => (
+        item.chatId === ACTIVE_CHAT_ID
+        && item.question === LAST_FOLLOW_UP_QUESTION
+      ));
       if (ASK_MODE === 'compare') {
         await submitCompareQuestion(LAST_FOLLOW_UP_QUESTION, {
           followUp: true,
           deepInvestigation: true,
+          feedbackHistoryId: sourceTurn?.id || null,
         });
         return;
       }
       await submitQuestion(LAST_FOLLOW_UP_QUESTION, {
         followUp: true,
         deepInvestigation: true,
+        feedbackHistoryId: sourceTurn?.id || null,
       });
     }
 
@@ -4958,6 +5243,8 @@
           options.followUp ? 'Follow-up' : 'Question',
         );
       }
+      const feedbackHistoryId = historyId || options.feedbackHistoryId || null;
+      const feedbackId = feedbackIdForHistory(feedbackHistoryId);
       const activeTurn = startConversationTurn(
         requestQuestion,
         productFlowSummary
@@ -5025,6 +5312,7 @@
                 }
               : {
                   question: requestQuestion,
+                  feedback_id: feedbackId,
                   llm_mode: LLM_MODE,
                   answer_user_type: effectiveAnswerUserType(),
                   follow_up: Boolean(options.followUp),
@@ -5176,6 +5464,10 @@
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${investigateAction}
           ${contextSection}
+          ${answerFeedbackControls(
+            historyId || options.feedbackHistoryId || null,
+            requestQuestion,
+          )}
         `;
         if (imageAttachments.length) {
           clearQueryImages();

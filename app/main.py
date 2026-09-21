@@ -71,7 +71,7 @@ from .repos.branches import (
 from .repos.routes import router as repos_router
 from .slack.routes import router as slack_router
 
-app = FastAPI(title="CodeAtlas", version="0.2.0")
+app = FastAPI(title="CodeAtlas", version="2.0.0")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 VISITOR_COOKIE_NAME = "ca_site_visitor"
@@ -1159,6 +1159,7 @@ def public_catalog():
 
 class AskRequest(BaseModel):
     question: str
+    feedback_id: Optional[str] = None
     llm_mode: Optional[str] = None
     conversation_id: Optional[str] = None
     follow_up: bool = False
@@ -1237,6 +1238,7 @@ class FlowSummaryRequest(BaseModel):
 
 class CompareRequest(BaseModel):
     question: str
+    feedback_id: Optional[str] = None
     left_branch: int
     right_branch: int
     llm_mode: Optional[str] = None

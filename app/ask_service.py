@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -32,12 +33,41 @@ _ANALYTICS_EXECUTOR = ThreadPoolExecutor(
     max_workers=max(1, int(os.environ.get("CODEATLAS_ANALYTICS_MAX_WORKERS", "1"))),
     thread_name_prefix="codeatlas-analytics",
 )
+_FEEDBACK_ID_RE = re.compile(r"^feedback-[A-Za-z0-9_-]{12,119}$")
 
 
 def _main():
     from . import main
 
     return main
+
+
+def _record_anonymous_question(request, repo: Optional[dict]) -> str:
+    """Persist an accepted question without recording the authenticated actor."""
+    if not repo:
+        return ""
+    supplied_id = str(getattr(request, "feedback_id", None) or "").strip()
+    if not supplied_id:
+        # Backward-compatible API clients can omit feedback tracking entirely.
+        return ""
+    if supplied_id and not _FEEDBACK_ID_RE.fullmatch(supplied_id):
+        raise HTTPException(status_code=400, detail="Invalid feedback id.")
+    feedback_id = supplied_id
+    question = str(getattr(request, "question", "") or "").strip()
+    if not question or len(question) > 20_000:
+        raise HTTPException(status_code=400, detail="Invalid feedback question.")
+    try:
+        db.upsert_answer_feedback(
+            feedback_id,
+            repo["slug"],
+            repo["name"],
+            question,
+            "unrated",
+        )
+    except Exception:
+        # Feedback collection must never break the established answer path.
+        logger.exception("Unable to record anonymous answer feedback")
+    return feedback_id
 
 
 def _record_token_usage_event(payload: dict) -> None:
@@ -114,8 +144,9 @@ def answer_single_request(
     main = _main()
     if enforce_limit:
         main.enforce_rate_limit(user["id"])
-    main.enforce_strict_branch_freshness(workspace)
     repo = db.get_repo_by_workspace(workspace)
+    _record_anonymous_question(request, repo)
+    main.enforce_strict_branch_freshness(workspace)
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
     user_llm = request.user_llm or main.load_user_llm(user["id"])
     llm_mode = (request.llm_mode or "auto").lower()
@@ -437,6 +468,7 @@ def answer_compare_request(
     if enforce_limit:
         main.enforce_rate_limit(user["id"])
     repo = repo or main._resolve_compare_base_repo(workspace, user)
+    _record_anonymous_question(request, repo)
     left = left or main._resolve_compare_branch(repo, request.left_branch, "Branch A")
     right = right or main._resolve_compare_branch(repo, request.right_branch, "Branch B")
     if left["branch"]["id"] == right["branch"]["id"]:

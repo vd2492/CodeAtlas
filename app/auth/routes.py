@@ -67,8 +67,15 @@ LOGIN_RATE_WINDOW_SECONDS = int(
 _login_failures: "dict[str, list[float]]" = defaultdict(list)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
+FEEDBACK_ID_RE = re.compile(r"^feedback-[A-Za-z0-9_-]{12,119}$")
 MAX_CHAT_PAYLOAD_BYTES = 2 * 1024 * 1024
 MAX_CHAT_TURNS = 200
+ANSWER_FEEDBACK_REASONS = {
+    "too_vague": "Too vague",
+    "too_simple": "Too simple",
+    "too_complex": "Too complex",
+    "not_relevant": "Out of context",
+}
 
 
 def enforce_login_rate_limit(username: str) -> None:
@@ -250,6 +257,9 @@ class ChatTurnPayload(BaseModel):
     answer: str = ""
     answeredAt: Optional[str] = None
     createdAt: Optional[str] = None
+    feedbackId: Optional[str] = None
+    feedbackRating: Optional[str] = None
+    feedbackReason: Optional[str] = None
 
 
 class UserChatRequest(BaseModel):
@@ -266,6 +276,14 @@ class UserChatRequest(BaseModel):
     llmMode: Optional[str] = None
     answerUserType: Optional[str] = None
     turns: List[ChatTurnPayload] = Field(default_factory=list)
+
+
+class AnswerFeedbackRequest(BaseModel):
+    feedback_id: str
+    workspace: str
+    question: str
+    satisfaction: str
+    reason: Optional[str] = None
 
 
 def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
@@ -307,6 +325,16 @@ def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
             or (turn.answeredAt is not None and len(turn.answeredAt) > 64)
         ):
             raise HTTPException(status_code=400, detail="Invalid chat turn timestamp.")
+        if turn.feedbackId is not None and not FEEDBACK_ID_RE.fullmatch(turn.feedbackId):
+            raise HTTPException(status_code=400, detail="Invalid answer feedback id.")
+        if turn.feedbackRating not in {None, "liked", "disliked"}:
+            raise HTTPException(status_code=400, detail="Invalid answer feedback rating.")
+        if turn.feedbackReason not in {None, *ANSWER_FEEDBACK_REASONS}:
+            raise HTTPException(status_code=400, detail="Invalid answer feedback reason.")
+        if turn.feedbackRating == "disliked" and turn.feedbackReason is None:
+            raise HTTPException(status_code=400, detail="Disliked answers require a reason.")
+        if turn.feedbackRating != "disliked" and turn.feedbackReason is not None:
+            raise HTTPException(status_code=400, detail="Unexpected answer feedback reason.")
 
     payload = request.model_dump()
     payload["title"] = title
@@ -522,6 +550,51 @@ def delete_my_chat(chat_id: str, user: dict = Depends(require_user)):
     return {"deleted": db.delete_user_chat(user["id"], chat_id)}
 
 
+@router.post("/me/answer-feedback")
+def save_answer_feedback(
+    request: AnswerFeedbackRequest,
+    user: dict = Depends(require_user),
+):
+    if not FEEDBACK_ID_RE.fullmatch(request.feedback_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid feedback id.")
+    workspace = request.workspace.strip()
+    question = request.question.strip()
+    if not workspace or len(workspace) > 512:
+        raise HTTPException(status_code=400, detail="Invalid repository workspace.")
+    if not question or len(question) > 20_000:
+        raise HTTPException(status_code=400, detail="Invalid feedback question.")
+    if request.satisfaction not in {"unrated", "liked", "disliked"}:
+        raise HTTPException(status_code=400, detail="Invalid satisfaction value.")
+    reason = request.reason if request.satisfaction == "disliked" else None
+    if request.satisfaction == "disliked" and reason not in ANSWER_FEEDBACK_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a reason for the negative feedback.",
+        )
+
+    repo = db.get_repo_by_workspace(workspace)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    if user["role"] != "admin" and not db.user_has_repo(user["id"], repo["workspace"]):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this repository.",
+        )
+    db.upsert_answer_feedback(
+        request.feedback_id,
+        repo["slug"],
+        repo["name"],
+        question,
+        request.satisfaction,
+        reason,
+    )
+    return {
+        "saved": True,
+        "satisfaction": request.satisfaction,
+        "reason": reason,
+    }
+
+
 @router.get("/admin/users")
 def list_users(admin: dict = Depends(require_admin)):
     users = []
@@ -533,6 +606,20 @@ def list_users(admin: dict = Depends(require_admin)):
 @router.get("/admin/audit")
 def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
     return {"audit": db.list_audit(limit)}
+
+
+@router.get("/admin/answer-feedback")
+def get_answer_feedback(
+    admin: dict = Depends(require_admin),
+    limit: int = 500,
+    offset: int = 0,
+):
+    """Anonymous question-level ratings; deliberately contains no user fields."""
+    return {
+        "feedback": db.list_answer_feedback(limit=limit, offset=offset),
+        "total": db.answer_feedback_count(),
+        "reason_labels": ANSWER_FEEDBACK_REASONS,
+    }
 
 
 @router.get("/admin/analytics")

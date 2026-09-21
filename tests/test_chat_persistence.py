@@ -100,6 +100,21 @@ class UserChatPersistenceTests(unittest.TestCase):
 
         self.assertEqual(db.list_user_chats(self.alice["id"]), [])
 
+    def test_schema_upgrade_preserves_existing_users_and_sessions(self):
+        token = db.create_session(self.alice["id"])
+        with db.connect() as connection:
+            connection.execute("DROP TABLE user_chats")
+            connection.execute("DROP TABLE answer_feedback")
+
+        db.init_db()
+
+        restored_user = db.get_user_by_email("alice@example.com")
+        session_user = db.get_session_user(token)
+        self.assertEqual(restored_user["id"], self.alice["id"])
+        self.assertEqual(session_user["id"], self.alice["id"])
+        self.assertEqual(db.list_user_chats(self.alice["id"]), [])
+        self.assertEqual(db.list_answer_feedback(), [])
+
     def test_invalid_chat_id_and_payload_are_rejected(self):
         with self.assertRaises(HTTPException) as invalid_id:
             auth_routes.save_my_chat("not/a/chat", self.chat_request(), self.alice)

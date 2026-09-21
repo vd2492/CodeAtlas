@@ -116,6 +116,21 @@ CREATE TABLE IF NOT EXISTS user_chats (
 CREATE INDEX IF NOT EXISTS idx_user_chats_updated
 ON user_chats(user_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS answer_feedback (
+    feedback_id  TEXT PRIMARY KEY,
+    repo_slug    TEXT NOT NULL,
+    repo_name    TEXT NOT NULL,
+    question     TEXT NOT NULL,
+    satisfaction TEXT NOT NULL DEFAULT 'unrated'
+                 CHECK (satisfaction IN ('unrated', 'liked', 'disliked')),
+    reason       TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_answer_feedback_repo
+ON answer_feedback(repo_slug, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_username  TEXT,                        -- who performed the action
@@ -208,6 +223,38 @@ def init_db() -> None:
         }
         if "expires_at" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+        feedback_schema = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'answer_feedback'"
+        ).fetchone()
+        if feedback_schema and "'unrated'" not in (feedback_schema["sql"] or ""):
+            # SQLite cannot widen a CHECK constraint in place. Rebuild only this
+            # additive, identity-free table while preserving any existing ratings.
+            conn.execute("DROP INDEX IF EXISTS idx_answer_feedback_repo")
+            conn.execute(
+                "ALTER TABLE answer_feedback RENAME TO answer_feedback_legacy"
+            )
+            conn.execute(
+                "CREATE TABLE answer_feedback ("
+                "feedback_id TEXT PRIMARY KEY, repo_slug TEXT NOT NULL, "
+                "repo_name TEXT NOT NULL, question TEXT NOT NULL, "
+                "satisfaction TEXT NOT NULL DEFAULT 'unrated' "
+                "CHECK (satisfaction IN ('unrated', 'liked', 'disliked')), "
+                "reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+                "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            )
+            conn.execute(
+                "INSERT INTO answer_feedback "
+                "(feedback_id, repo_slug, repo_name, question, satisfaction, reason, "
+                "created_at, updated_at) SELECT feedback_id, repo_slug, repo_name, "
+                "question, satisfaction, reason, created_at, updated_at "
+                "FROM answer_feedback_legacy"
+            )
+            conn.execute("DROP TABLE answer_feedback_legacy")
+            conn.execute(
+                "CREATE INDEX idx_answer_feedback_repo "
+                "ON answer_feedback(repo_slug, created_at DESC)"
+            )
         branch_columns = {
             row["name"] for row in conn.execute(
                 "PRAGMA table_info(repo_branches)"
@@ -582,6 +629,64 @@ def delete_user_chat(user_id: int, chat_id: str) -> bool:
             (user_id, chat_id),
         )
         return cursor.rowcount > 0
+
+
+# --- Anonymous answer feedback ----------------------------------------------
+
+def upsert_answer_feedback(
+    feedback_id: str,
+    repo_slug: str,
+    repo_name: str,
+    question: str,
+    satisfaction: str,
+    reason: str = None,
+) -> None:
+    """Store answer feedback without retaining an account or user identifier."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO answer_feedback "
+            "(feedback_id, repo_slug, repo_name, question, satisfaction, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(feedback_id) DO UPDATE SET "
+            "satisfaction = CASE "
+            "WHEN excluded.satisfaction = 'unrated' "
+            "AND answer_feedback.satisfaction != 'unrated' "
+            "THEN answer_feedback.satisfaction ELSE excluded.satisfaction END, "
+            "reason = CASE "
+            "WHEN excluded.satisfaction = 'unrated' "
+            "AND answer_feedback.satisfaction != 'unrated' "
+            "THEN answer_feedback.reason ELSE excluded.reason END, "
+            "updated_at = datetime('now')",
+            (
+                feedback_id,
+                repo_slug,
+                repo_name,
+                question,
+                satisfaction,
+                reason,
+            ),
+        )
+
+
+def list_answer_feedback(limit: int = 500, offset: int = 0) -> List[dict]:
+    """Return anonymous feedback grouped by repository ordering for admins."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT repo_slug, repo_name, question, satisfaction, reason, "
+            "created_at, updated_at FROM answer_feedback "
+            "ORDER BY lower(repo_name), repo_slug, created_at DESC, feedback_id "
+            "LIMIT ? OFFSET ?",
+            (
+                max(1, min(int(limit), 1000)),
+                max(0, int(offset)),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def answer_feedback_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM answer_feedback").fetchone()[0]
 
 
 # --- Repos -------------------------------------------------------------------

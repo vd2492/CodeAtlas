@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from typing import Optional
@@ -797,6 +798,7 @@ def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = Fa
         }
     request = main.AskRequest(
         question=values["question"],
+        feedback_id=f"feedback-{uuid.uuid4()}",
         llm_mode=_llm_mode(),
         conversation_id=values.get("conversation_id") if follow_up else None,
         follow_up=follow_up,
@@ -881,6 +883,7 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
     })
     request = main.CompareRequest(
         question=values["question"],
+        feedback_id=f"feedback-{uuid.uuid4()}",
         left_branch=base["id"],
         right_branch=compare["id"],
         llm_mode=_llm_mode(),
