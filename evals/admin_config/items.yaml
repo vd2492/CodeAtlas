@@ -1,0 +1,521 @@
+# CodeAtlas - PM admin-config eval set
+# Service: frodo (riderappcontent), Django admin at /riderappcontent/
+#
+# PROVENANCE
+#   Schema facts  : read off live staging ADD forms (unbound, no records).
+#   Key names     : harvested from the two key-value changelists
+#                   (RMS.config = 194 rows, rider_app.configparams = 17 rows).
+#                   Names only. No config VALUES were read at any point.
+#
+# GRADING
+#   evidence_paths   -> retrieval recall, scored from the tool trace, no judge
+#   must_not_contain -> regex, no judge
+#   expect.*         -> one binary assertion each, judged
+#   3 reps per item; report pass rate, not pass/fail
+
+meta:
+  repo: frodo
+  admin_root: /riderappcontent/
+  revision: TODO-pin-sha
+  audience: product_team
+  caches_bypassed: [session, repo, audience_evidence]
+  run_matrix:
+    - {name: fresh,  audience_cache: off}   # compare these two to size the
+    - {name: cached, audience_cache: on}    # bc8eed1 regression risk
+
+items:
+
+# =================================================================
+# K1  key-value config  (194 keys in RMS.config, 17 in configparams)
+# =================================================================
+
+- id: kv-disabled-typo-family
+  status: grounded
+  scope_class: K1
+  band: B2
+  priority: high
+  question: "Which cities have the shirt inventory deduction switched off?"
+  expect:
+    admin_page: "Configs"
+    key_name: "shirt_inventory_deduction_disbaled_city_ids"
+    must_mention:
+      - the key is spelled "disbaled", a misspelling of disabled
+      - there are ecom_ and hl_ prefixed variants of the same setting
+    must_not: report that no such setting exists
+  notes: >-
+    THE retrieval item. Twelve keys in this table misspell "disabled" as
+    "disbaled". A PM asking in correct English, and any search that does not
+    handle the typo, finds nothing. Direct test of synonyms / fuzzy matching.
+    Variants: {,ecom_,hl_} x {other_inventory,shirt_inventory,fifty_order,
+    first_order,onboarding} _deduction_disbaled_city_ids, plus
+    platform_usage_fee_disbaled_city_ids.
+  evidence_paths: ["**/RMS/**"]
+
+- id: kv-vs-table-precedence
+  status: grounded
+  scope_class: K1xS3
+  band: B3
+  priority: high
+  question: >-
+    We want to stop charging the platform usage fee in Indore.
+    What is the right way to do that?
+  expect:
+    must_mention:
+      - there are two mechanisms, not one
+      - a per-city amount row under "Citywise policy amounts"
+        (deduction category = Platform Usage Fee)
+      - a config key listing disabled cities, platform_usage_fee_disbaled_city_ids
+    should_state: which mechanism actually wins, or that it must be confirmed in code
+    must_not: present either mechanism as the sole answer
+  notes: >-
+    The highest-value item in the set. Two independent switches for one
+    business outcome, discoverable only by finding both. Answering with one
+    is the realistic failure and the expensive one.
+  evidence_paths: ["**/RMS/**"]
+
+- id: kv-cross-table-collision
+  status: grounded
+  scope_class: K1
+  band: B4
+  priority: high
+  question: "Where do I turn on v2 RMS?"
+  expect:
+    verdict: clarify_or_disambiguate
+    must_say:
+      - the key is_v2_rms_enabled exists in BOTH key-value tables
+      - naming which one the code reads, or asking, is required
+    must_not: pick one table silently
+  notes: >-
+    Three keys collide across tables: is_v2_rms_enabled, chain_slot_config,
+    selfie_fraud_detection_config. Only the consuming code disambiguates.
+  evidence_paths: ["**/RMS/**", "**/rider_app/**"]
+
+- id: kv-new-suffix-ambiguity
+  status: grounded
+  scope_class: K1
+  band: B2
+  priority: high
+  question: "I need to update the OCR auto-activation settings. Which entry do I edit?"
+  expect:
+    verdict: clarify_or_disambiguate
+    must_say:
+      - multiple near-identical keys exist, several ending in _new
+      - which one is live cannot be determined from the admin alone
+    candidates_present:
+      - auto_activation_config
+      - ocr_auto_activation_configs_new
+      - auto_activation_config_profile_section
+      - ocr_auto_activation_config_profile_section_new
+    must_not: recommend one without evidence from the consuming code
+  notes: ~30 keys carry a _new suffix, many alongside an un-suffixed twin.
+  evidence_paths: ["**/RMS/**"]
+
+- id: kv-namespaced-family
+  status: grounded
+  scope_class: K1
+  band: B3
+  question: "Where do I adjust what counts as a long break in the command centre?"
+  expect:
+    admin_page: "Configs"
+    key_name: "command_center.long_break_threshold_minutes"
+    must_mention:
+      - command_center.* is a dotted namespace with several related keys
+      - the unit is minutes, per the key name
+    should_mention: sibling keys such as break_duration_bands, early_break_bands
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: kv-mechanism-generic
+  status: grounded
+  scope_class: K1
+  band: B2
+  question: "Where do the rider app's tunable settings live, and how do I change one?"
+  expect:
+    admin_page: "Config paramss"
+    mechanism: key-value table - find the row by name, then edit the value
+    must_mention:
+      - the value is free text with no validation on the form
+      - there are two separate key-value tables
+  must_not_contain: [".py", "ConfigParams", "line "]
+  evidence_paths: ["**/rider_app/**", "**/RMS/**"]
+
+- id: kv-type-mismatch
+  status: grounded
+  scope_class: K1
+  band: B3
+  question: >-
+    Someone changed a setting in the admin and the app started crashing.
+    What could have gone wrong?
+  expect:
+    must_mention:
+      - values are free text, unvalidated at the form level
+      - RMS configs declare a type (String/Integer/JSON/List) apart from the value
+      - a value not matching its declared type is the likely cause
+  evidence_paths: ["**/RMS/**"]
+
+- id: kv-nonexistent-abstain
+  status: grounded
+  scope_class: K1
+  band: B4
+  question: "How do I change the geofence radius for a specific client?"
+  expect:
+    verdict: not_found
+    must_say: no geofence or radius setting exists in this service
+    must_not: map the question onto an unrelated key such as a zone or city setting
+  notes: >-
+    Your original question, used as a true negative. Nothing in the 194 keys
+    or any model here concerns geofencing. Tests abstention under pressure to
+    be helpful.
+  evidence_paths: []
+
+# =================================================================
+# S3  composite override table
+# =================================================================
+
+- id: s3-platform-fee-symptom
+  status: grounded
+  scope_class: S3
+  band: B3
+  question: >-
+    Riders in Hyderabad are being charged the wrong platform fee.
+    How do I fix the amount for just that city?
+  expect:
+    admin_page: "Citywise policy amounts"
+    field: "Amount"
+    scope: per-city row keyed by city id + deduction category + payment mode
+    select_value: 'deduction_category = "Platform Usage Fee"'
+    must_mention:
+      - the city is a numeric id typed in by hand, not a dropdown
+      - payment mode (Prepaid/Postpaid) is part of the key, so two rows may exist
+    flag_ambiguity: is_active permits multiple live rows; precedence undefined
+  must_not_contain: [".py", "CityWisePolicyAmount", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-verbatim
+  status: grounded
+  scope_class: S3
+  band: B1
+  question: "How do I change the citywise policy amount for one city?"
+  expect:
+    admin_page: "Citywise policy amounts"
+    field: "Amount"
+    must_mention:
+      - deduction category and payment mode must both be chosen
+      - the row is per-city, so other cities are unaffected
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-units-gap
+  status: grounded
+  scope_class: S3
+  band: B2
+  question: "If I set the inventory deduction to 500 for Pune, is that rupees or paise?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say:
+      - the amount field carries no unit, help text or min/max
+      - the unit must be confirmed from the consuming code
+    must_not: assert a unit without evidence
+  notes: Tests calibration. The admin genuinely does not encode the unit.
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-scope-axis-mismatch
+  status: grounded
+  scope_class: S3
+  band: B4
+  question: "How do I reduce the platform usage fee for a specific client?"
+  expect:
+    verdict: clarify_or_correct
+    must_say: this table scopes by city, not by client
+    must_not: answer as though a per-client override exists
+  notes: >-
+    A plausible override table exists but on the wrong scope axis. The
+    canonical near-miss failure.
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-city-id-lookup
+  status: grounded
+  scope_class: S3
+  band: B3
+  question: "I know the city name but the form wants a number. What do I put in?"
+  expect:
+    must_mention:
+      - hl_city_id is a bare integer with no dropdown or lookup in this form
+      - where the id can be found (Citys model, or engineering)
+    must_not: claim the field accepts a city name
+  evidence_paths: ["**/RMS/**"]
+
+# =================================================================
+# C  content
+# =================================================================
+
+- id: c-carousel-image-negative
+  status: grounded
+  scope_class: C
+  band: B3
+  priority: high
+  question: >-
+    The first card riders see when they open the app is out of date.
+    How do I replace the image?
+  expect:
+    verdict: partially_configurable
+    must_say:
+      - the Rider carousal images form exposes only is_active, is_active_old
+        and sequence
+      - the image itself cannot be set from this form
+    must_mention: sequence controls ordering, is_active controls visibility
+    flag_ambiguity: is_active and is_active_old both exist; which governs is unclear
+    must_not: describe an image upload or URL field on this form
+  notes: >-
+    Strong negative. The add form has three fields and none is the image.
+    An answer describing an upload widget is fabricating the main thing asked for.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: c-notice-banner
+  status: grounded
+  scope_class: C
+  band: B3
+  question: "How do I put a banner in the rider app announcing a new policy?"
+  expect:
+    admin_page: "Rider noticess"
+    must_mention:
+      - notice_type must be set to banner
+      - sequence and end_date are required
+      - status must be Active for it to show
+    should_mention: app_intent targets where it appears
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: c-notice-date-format
+  status: grounded
+  scope_class: C
+  band: B2
+  question: "What format should the end date on a rider notice be in?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say:
+      - end_date renders as a plain text input, not a date picker
+      - no format hint or help text is given on the form
+    must_not: state a format confidently without code evidence
+  evidence_paths: ["**/rider_app/**"]
+
+- id: c-notice-vertical-pair
+  status: grounded
+  scope_class: C
+  band: B4
+  question: "How do I show a notice only to e-commerce riders in Bangalore?"
+  expect:
+    must_mention:
+      - vertical_type selects e-commerce
+      - vertical_value is a bare number whose meaning depends on vertical_type
+      - display_filter is a free-text field with no documented schema
+    flag_ambiguity: city-level targeting is not clearly expressible in this form
+    must_not: invent a city field on this form
+  evidence_paths: ["**/rider_app/**"]
+
+# =================================================================
+# L  lookup tables
+# =================================================================
+
+- id: l-zone-radius-negative
+  status: grounded
+  scope_class: L
+  band: B4
+  question: "How do I increase the zone radius for Bangalore?"
+  expect:
+    verdict: not_configurable
+    must_say: zones here have only a name, with no radius or geometry
+    must_not: invent a radius, boundary or geometry field
+  notes: RMS.zone has exactly one field, name CharField(20).
+  evidence_paths: ["**/RMS/**"]
+
+- id: l-zone-add
+  status: grounded
+  scope_class: L
+  band: B1
+  question: "How do I add a new zone?"
+  expect:
+    admin_page: "Zones"
+    must_mention:
+      - only a name is required
+      - it is limited to 20 characters
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+# =================================================================
+
+# =================================================================
+# S3b  referral surge config - the real per-client override
+#      The ONLY model in this service with help_text. It documents
+#      precedence explicitly, so gold answers here are verifiable
+#      from the admin alone.
+# =================================================================
+
+- id: rsc-client-scoping
+  status: grounded
+  scope_class: S3b
+  band: B3
+  priority: high
+  question: "How do I run a referral surge for just one client?"
+  expect:
+    admin_page: "Referral surge configs"
+    field: "Filters"
+    mechanism: >-
+      filters is a free-text field holding a dict, e.g. {'clients': [1,2,3]}
+    must_mention:
+      - clients are referenced by numeric id, not by name
+      - groups, clients and subclients are the three available levels
+      - areas is a separate field controlling cities/clusters
+    must_not: claim there is a client dropdown or picker
+  notes: >-
+    The genuine per-client override in this service, and the closest real
+    analogue to the original geofence-per-client question.
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: rsc-precedence
+  status: grounded
+  scope_class: S3b
+  band: B2
+  priority: high
+  question: >-
+    I set a referral surge for a group and also for a subclient inside
+    that group. Which one applies?
+  expect:
+    answer: the subclient takes precedence
+    must_mention: precedence order is subclient over client over group
+    should_mention: for areas, clusters take precedence over cities
+  notes: >-
+    Documented in help_text, so this is fully verifiable and any hedge is
+    a miss. Contrast with kv-vs-table-precedence, where the source is silent.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: rsc-factor-silent-noop
+  status: grounded
+  scope_class: S3b
+  band: B3
+  priority: high
+  question: >-
+    I set a surge factor on a referral surge and nothing changed
+    in the payouts. Why?
+  expect:
+    answer: surge factor only applies when surge type is GENERAL
+    must_mention:
+      - with REFERRAL_COUNT type the factor is ignored
+      - surge amount is added after the factor, if both are set
+    must_not: suggest a caching or propagation delay as the cause
+  notes: A silent no-op with a documented cause. Tests reading conditional applicability.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: rsc-count-range-opaque
+  status: grounded
+  scope_class: S3b
+  band: B2
+  question: "Which conversion count range should I pick for a count-based surge?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: >-
+      the dropdown shows only "ReferralSurgeCountRange object (1..7)" with no
+      readable label, so the ranges cannot be told apart from this form
+    should_say: the Referral surge count ranges page must be opened to see the bounds
+    must_not: guess which numbered object corresponds to which range
+  notes: Model has no __str__. A real usability defect, and a clean abstention test.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: rsc-filters-quote-style
+  status: gold_pending
+  blocked_on: frodo session Q - does filters parse as JSON or as a Python literal
+  scope_class: S3b
+  band: B2
+  question: "Does the filters field need double quotes, like proper JSON?"
+  expect:
+    must_mention: the help text example uses single quotes, which is not valid JSON
+    answer: TODO - confirm parser
+  notes: >-
+    help_text shows {'clients': [1,2,3]}. If the code json.loads() this, the
+    documented example fails. Worth confirming before shipping the item.
+  evidence_paths: ["**/rider_app/**"]
+
+# =================================================================
+# S3c  sibling override tables that disagree with each other
+# =================================================================
+
+- id: s3c-prepaid-modelling-mismatch
+  status: grounded
+  scope_class: S3
+  band: B4
+  priority: high
+  question: "How do I set a different inventory deduction for prepaid riders in Chennai?"
+  expect:
+    admin_page: "City wise inventory deduction amounts"
+    must_mention:
+      - this table has separate Amount and Prepaid amount columns on one row
+      - it is scoped by city, client (HL/ECOM/Hulk/Store) and inventory item
+    must_not: >-
+      apply the sibling table's pattern of a Payment mode dropdown, which
+      belongs to Citywise policy amounts, not this one
+  notes: >-
+    Two sibling tables model prepaid/postpaid incompatibly - one as a select
+    that splits rows, the other as two columns on one row. A strong test of
+    whether the answer is read from the right model or pattern-matched from
+    a neighbour.
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3c-client-axis-exists
+  status: grounded
+  scope_class: S3
+  band: B2
+  question: "Can I set the shirt deduction differently for ECOM versus HL?"
+  expect:
+    answer: yes
+    admin_page: "City wise inventory deduction amounts"
+    must_mention:
+      - client is a dropdown here with HL, ECOM, Hulk and Store
+      - inventory selects the item, e.g. shirt
+      - the row is also scoped by city id
+  notes: >-
+    Counterpart to s3-scope-axis-mismatch. Here a client axis DOES exist, so
+    a system that learned "this service scopes by city only" now over-refuses.
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: crc-duplicate-geo-fields
+  status: grounded
+  scope_class: S2
+  band: B4
+  question: "How do I correct the location of the Indore training centre?"
+  expect:
+    admin_page: "City referral configs"
+    must_mention:
+      - there are two pairs of coordinate fields, text latitude/longitude and
+        numeric latitude float/longitude float
+      - all four are required, so both pairs must be kept consistent
+    flag_ambiguity: which pair the code actually reads is not stated in the admin
+    must_not: mention only one pair
+  notes: Migration leftover. Updating one pair and not the other is the realistic error.
+  evidence_paths: ["**/jobs/**"]
+
+scorecard_template: |
+  Fill in after each run. n = items per row.
+
+  class                retrieval  facets  audience  abstain   n
+  K1  key-value            ?        ?        ?        ?        8
+  S3  city override        ?        ?        ?        -        5
+  S3b referral surge       ?        ?        ?        ?        5
+  S2  per-entity           ?        ?        ?        -        1
+  C   content              ?        ?        ?        ?        4
+  L   lookup               ?        ?        ?        ?        2
+
+  band                 retrieval  facets
+  B1  verbatim             ?        ?
+  B2  synonym              ?        ?
+  B3  symptom              ?        ?
+  B4  wrong-vocabulary     ?        ?
+
+  Routing:
+    B3 low while B1 high        -> vocabulary gap: synonyms, pre_search_instruction
+    retrieval high, facets low  -> found the page, missed the scoping: prompt or context size
+    abstain low                 -> inventing fields: prompt
+    K1 below S3                 -> key-value is a structural blind spot
+    S3b low but S3 fine         -> not reading help_text, which is the only
+                                   documentation this service has
