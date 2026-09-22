@@ -269,6 +269,7 @@ items:
   evidence_paths: ["**/RMS/**"]
 
 - id: kv-nonexistent-abstain
+  kind: abstention
   status: grounded
   scope_class: K1
   band: B4
@@ -420,6 +421,7 @@ items:
   evidence_paths: ["**/rider_app/**"]
 
 - id: rsc-count-range-opaque
+  kind: abstention
   status: grounded
   scope_class: S3b
   band: B2
@@ -570,6 +572,7 @@ items:
 # =================================================================
 
 - id: l-zone-radius-negative
+  kind: abstention
   status: grounded
   scope_class: L
   band: B4
@@ -680,28 +683,259 @@ items:
     will bring to the question.
   evidence_paths: ["**/common/**", "**/lead_portal/**", "**/rider_training/**"]
 
+
+# =================================================================
+# B1  verbatim baseline
+#     Deliberately easy: the question uses the admin's own label and the
+#     answer is a single verified fact. Near-100% is expected. Their job is
+#     to make a poor B2/B3 score interpretable - without them you cannot
+#     tell a vocabulary gap from a class that is simply broken.
+# =================================================================
+
+- id: b1-add-config-param
+  status: grounded
+  scope_class: K1
+  band: B1
+  question: "How do I add a new config param?"
+  expect:
+    admin_page: "Config paramss"
+    must_mention:
+      - config name is required
+      - the value and description fields are optional on the form
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: b1-config-value-types
+  status: grounded
+  scope_class: K1
+  band: B1
+  question: "What config types can I choose when adding a config?"
+  expect:
+    answer: String, Integer, JSON or List
+    admin_page: "Configs"
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: b1-client-city-mapping
+  status: grounded
+  scope_class: S2
+  band: B1
+  question: "How do I map a client to a city for bike taxi?"
+  expect:
+    admin_page: "Client city mappings"
+    must_mention:
+      - city is entered as a numeric id
+      - an identifier is required
+    should_mention: the client dropdown currently offers only one option
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/bike_taxi/**"]
+
+- id: b1-deactivate-notice
+  status: grounded
+  scope_class: C
+  band: B1
+  question: "How do I deactivate a rider notice?"
+  expect:
+    admin_page: "Rider noticess"
+    answer: set its status to Inactive
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: b1-carousel-order
+  status: grounded
+  scope_class: C
+  band: B1
+  question: "How do I change the order the carousel images appear in?"
+  expect:
+    admin_page: "Rider carousal images"
+    answer: edit the sequence number on each row
+    should_mention: sequence is editable directly from the list page
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: b1-inventory-deduction-add
+  status: grounded
+  scope_class: S3
+  band: B1
+  question: "How do I add an inventory deduction amount for a city?"
+  expect:
+    admin_page: "City wise inventory deduction amounts"
+    must_mention:
+      - city id, client and inventory item are all required
+      - both an amount and a prepaid amount must be given
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: b1-training-centre-spoc
+  status: grounded
+  scope_class: S2
+  band: B1
+  question: "How do I update the SPOC phone number for a training centre?"
+  expect:
+    admin_page: "City referral configs"
+    field: "Spoc number"
+    should_mention: it must be a valid 10 digit number or the save is rejected
+  gold_citations: ["jobs/models.py:162-167"]
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/jobs/**"]
+
+# =================================================================
+# abstention
+#     The correct answer is "this is not determinable here". Each one is
+#     verified absent or undocumented, not merely obscure.
+#
+#     A bare "I don't know" is NOT a pass. Every item requires the
+#     constructive half too - naming where the answer actually lives, or
+#     who to ask. Otherwise the metric rewards unhelpful non-answers, and
+#     you optimise straight into a system that refuses everything.
+#     Read this class against s3-units and s3-client-axis-exists, which
+#     punish exactly that over-refusal.
+# =================================================================
+
+- id: abs-notice-display-filter
+  status: grounded
+  scope_class: C
+  kind: abstention
+  band: B2
+  question: "What do I put in the display filter field on a rider notice?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: the field is free text with no documented format on the form
+    should_say: the expected structure has to come from the code or engineering
+    must_not: invent a schema or example value
+  notes: >-
+    Verified: rider notices carry no help_text on any field. Contrast
+    referral surge config, the one model here that documents its fields.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: abs-config-value-format
+  status: grounded
+  scope_class: K1
+  kind: abstention
+  band: B3
+  question: >-
+    I need to change a config whose description is blank. How do I know
+    what format the value should be in?
+  expect:
+    verdict: not_determinable_from_admin
+    must_say:
+      - the description field is optional and frequently empty
+      - the value is free text, so the form will accept anything
+    should_say: the format must be read from the code that consumes the key
+    must_not: claim the declared config type is sufficient to know the format
+  evidence_paths: ["**/RMS/**"]
+
+- id: abs-inventory-none-option
+  status: grounded
+  scope_class: S3
+  kind: abstention
+  band: B2
+  question: >-
+    The inventory dropdown has an option called None alongside shirt and
+    raincoat. What does picking None do?
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: >-
+      None is a selectable option with no explanation on the form, and it is
+      distinct from leaving the field blank
+    should_say: its meaning has to be confirmed in code
+    must_not: assume it means "no inventory" or "not applicable"
+  evidence_paths: ["**/RMS/**"]
+
+- id: abs-hulk-client-meaning
+  status: grounded
+  scope_class: S3
+  kind: abstention
+  band: B2
+  question: "The client dropdown has HL, ECOM, Hulk and Store. What is Hulk?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: the option is an internal name with no explanation in the admin
+    should_say: point to where the choices are defined, or suggest asking the owning team
+    must_not: guess at an expansion of the name
+  notes: Internal vocabulary with no gloss anywhere in the admin surface.
+  evidence_paths: ["**/RMS/**"]
+
+- id: abs-clientcitymapping-identifier
+  status: grounded
+  scope_class: S2
+  kind: abstention
+  band: B2
+  question: "What goes in the identifier field when mapping a client to a city?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: >-
+      the field is required free text with no help text, example or format
+      hint on the form
+    should_say: the expected value has to come from the integration or the code
+    must_not: invent a format such as a slug or a city code
+  evidence_paths: ["**/bike_taxi/**"]
+
+- id: abs-surge-time-timezone
+  status: grounded
+  scope_class: S3b
+  kind: abstention
+  band: B3
+  question: >-
+    I want a referral surge to end at midnight. What timezone are the
+    start and expiry times in?
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: the form shows separate date and time inputs with no timezone indicated
+    should_say: the project timezone setting determines it and should be confirmed
+    must_not: assert a timezone from the fact that the business is in India
+  evidence_paths: ["**/rider_app/**"]
+
+- id: abs-notice-slot-date
+  status: grounded
+  scope_class: C
+  kind: abstention
+  band: B3
+  question: >-
+    A rider notice has both an end date and a slot date. What is the
+    difference?
+  expect:
+    verdict: partially_determinable
+    must_say:
+      - the end date governs when the notice stops showing
+      - the slot date has no help text and its role is not stated on the form
+    should_say: the slot date's behaviour needs a code check
+    must_not: describe slot date as a second expiry
+  gold_citations: ["rider_app/helper.py:1653-1655"]
+  notes: >-
+    Half answerable, half not. Tests whether the answer separates the two
+    instead of hedging on both or asserting on both.
+  evidence_paths: ["**/rider_app/**"]
+
 scorecard_template: |
   Fill in after each run. n = items per row.
 
   class                    retrieval  facets  audience  abstain   n
   admin_vs_code                ?        ?        ?        ?       11
-  K1  key-value                ?        ?        ?        ?        8
-  S3  city override            ?        ?        ?        -        7
-  S3b referral surge           ?        ?        ?        ?        4
-  C   content                  ?        ?        ?        ?        6
+  abstention                   ?        ?        ?        ?       10
+  K1  key-value                ?        ?        ?        ?       11
+  S3  city override            ?        ?        ?        ?       13
+  S3b referral surge           ?        ?        ?        ?        6
+  C   content                  ?        ?        ?        ?       10
+  S2  per-entity               ?        ?        ?        ?        6
   L   lookup                   ?        ?        ?        ?        2
-  S2  per-entity               ?        ?        ?        ?        3
 
   band                     retrieval  facets
-  B1  verbatim                 ?        ?
+  B1  verbatim                 ?        ?      (9)
   B2  synonym                  ?        ?
   B3  symptom                  ?        ?
   B4  wrong-vocabulary         ?        ?
 
   Routing:
+    B1 below ~0.9               -> the class is broken, not the vocabulary.
+                                   Fix this before reading any other row.
     B3 low while B1 high        -> vocabulary gap: synonyms, pre_search_instruction
     retrieval high, facets low  -> found the page, missed the scoping: prompt or context
-    abstain low                 -> inventing fields: prompt
+    abstention high BUT s3-units / s3-client-axis-exists failing
+                                -> over-refusal, not calibration. Treat as a
+                                   regression, not a win.
     admin_vs_code low           -> answering from the admin surface without
                                    checking call sites. The headline number.
+    kv-new-suffix passes but s2-geo-newer-field-does-not-win fails
+                                -> a convention was generalised, not checked
     kv-aliased-constant fails   -> retrieval does not follow indirection
