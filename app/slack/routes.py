@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -594,6 +595,84 @@ def _topic_label(values: dict) -> str:
     return f"*{repo}* · `{values.get('branch')}` · {values.get('user_type')}"
 
 
+_MD_BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")
+_MD_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*\S)\s*$")
+_MD_RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_MD_BULLET_RE = re.compile(r"^(\s{0,8})[-*+]\s+(.*)$")
+_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+_INLINE_CODE_SPLIT_RE = re.compile(r"(`[^`\n]+`)")
+
+
+def _mrkdwn_inline(value: str) -> str:
+    """Inline conversions, skipping inline-code spans so their contents stay
+    exactly as written."""
+    parts = _INLINE_CODE_SPLIT_RE.split(str(value or ""))
+    converted = []
+    for part in parts:
+        if len(part) > 1 and part.startswith("`") and part.endswith("`"):
+            converted.append(part)
+            continue
+        # Slack bold is a single asterisk; `__` is left alone because it
+        # collides with dunder names in a codebase tool.
+        part = _MD_BOLD_RE.sub(r"*\1*", part)
+        part = _MD_LINK_RE.sub(r"<\2|\1>", part)
+        converted.append(part)
+    return "".join(converted)
+
+
+def markdown_to_mrkdwn(text: str) -> str:
+    """Translate the Markdown the model writes into Slack's mrkdwn.
+
+    Slack has no headings and uses single asterisks for bold, so an answer
+    posted verbatim shows literal ## and ** to the reader. Fenced code is
+    passed through untouched."""
+    lines = str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out = []
+    in_code = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            out.append(line)
+            continue
+        if in_code:
+            out.append(line)
+            continue
+        heading = _MD_HEADING_RE.match(line)
+        if heading:
+            # No heading levels in mrkdwn; bold is the closest equivalent.
+            out.append(f"*{_mrkdwn_inline(heading.group(2))}*")
+            continue
+        if _MD_RULE_RE.match(line):
+            # A literal --- reads as noise inside a Slack section.
+            out.append("")
+            continue
+        bullet = _MD_BULLET_RE.match(line)
+        if bullet:
+            out.append(f"{bullet.group(1)}\u2022 {_mrkdwn_inline(bullet.group(2))}")
+            continue
+        out.append(_mrkdwn_inline(line))
+    return "\n".join(out)
+
+
+def _mrkdwn_chunks(text: str, limit: int = 2900) -> list[str]:
+    """Split on line boundaries so a chunk never cuts through markup."""
+    chunks = []
+    current = ""
+    for line in str(text or "").split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+        while len(current) > limit:
+            chunks.append(current[:limit])
+            current = current[limit:]
+    if current:
+        chunks.append(current)
+    return chunks or [""]
+
+
 def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
     answer = str(response.get("answer") or "No answer was returned.").strip()
     question = str(response.get("question") or topic.get("question") or "").strip()
@@ -604,7 +683,7 @@ def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
             "type": "section",
             "text": _mrkdwn(f"*Question asked:*\n{question}"),
         })
-    chunks = [answer[index:index + 2900] for index in range(0, len(answer), 2900)] or [answer]
+    chunks = _mrkdwn_chunks(markdown_to_mrkdwn(answer))
     for chunk in chunks[:8]:
         blocks.append({"type": "section", "text": _mrkdwn(chunk)})
     mode = response.get("retrieval_mode")

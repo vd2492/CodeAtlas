@@ -625,3 +625,49 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(values["branch"], "main")
         self.assertEqual(values["user_type"], slack_routes.USER_PRODUCT)
         self.assertEqual(values["question"], "How does login work?")
+
+
+class SlackAnswerFormattingTests(unittest.TestCase):
+    """Slack renders mrkdwn, not Markdown: it has no headings and uses a single
+    asterisk for bold, so an answer posted verbatim showed literal ## and **."""
+
+    def test_headings_rules_bullets_and_bold_become_mrkdwn(self):
+        converted = slack_routes.markdown_to_mrkdwn(
+            "## Answer\n\n---\n\n### Step 1\n\n"
+            "The **CTA** text is not hardcoded.\n"
+            "- **Early Withdrawal** - withdraw early\n"
+            "See [the docs](https://example.com/docs)."
+        )
+        self.assertIn("*Answer*", converted)
+        self.assertIn("*Step 1*", converted)
+        self.assertIn("The *CTA* text", converted)
+        self.assertIn("• *Early Withdrawal*", converted)
+        self.assertIn("<https://example.com/docs|the docs>", converted)
+        self.assertNotIn("##", converted)
+        self.assertNotIn("**", converted)
+        self.assertNotIn("---", converted)
+
+    def test_code_is_passed_through_untouched(self):
+        converted = slack_routes.markdown_to_mrkdwn(
+            "before\n```python\n# a comment\nx = a ** b\n```\n"
+            "inline `foo(**kwargs)` and `__init__` stay literal"
+        )
+        self.assertIn("# a comment", converted)
+        self.assertIn("x = a ** b", converted)
+        self.assertIn("`foo(**kwargs)`", converted)
+        self.assertIn("`__init__`", converted)
+
+    def test_dunder_names_are_not_treated_as_emphasis(self):
+        converted = slack_routes.markdown_to_mrkdwn("the __init__ method runs first")
+        self.assertIn("__init__", converted)
+
+    def test_chunks_split_on_line_boundaries(self):
+        text = "\n".join(f"line {index} with *bold {index}* text" for index in range(200))
+        chunks = slack_routes._mrkdwn_chunks(text, limit=300)
+        self.assertTrue(all(len(chunk) <= 300 for chunk in chunks))
+        # A chunk boundary must not land inside a bold pair.
+        self.assertTrue(all(chunk.count("*") % 2 == 0 for chunk in chunks))
+        self.assertEqual("\n".join(chunks).replace("\n", ""), text.replace("\n", ""))
+
+    def test_oversized_single_line_is_still_split(self):
+        self.assertEqual(len(slack_routes._mrkdwn_chunks("x" * 700, limit=300)), 3)
