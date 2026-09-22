@@ -19,12 +19,19 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from . import ask_service, db
-from .agent import ComparisonRepositoryToolbox, RepositoryToolbox
+from .agent import (
+    ComparisonRepositoryToolbox,
+    RepositoryToolbox,
+    tool_definitions_without_ask_user,
+)
 from .config import (
     DEFAULT_WORKSPACE,
     graph_path,
     repo_clone_dir,
+    default_shared_llm_id,
+    is_shared_llm_mode,
     retrieval_config_path,
+    shared_llm_id_for_mode,
     source_index_path,
     ui_feature_flags,
 )
@@ -2706,12 +2713,26 @@ def _repo_cache_grounding_allows_shared_reuse(question: str, response: dict) -> 
 
 
 def _request_uses_shared_tier_only(llm_mode: str, user_llm: Optional[dict]) -> bool:
-    """True only when this request is guaranteed to be answered by the shared
-    ("Mimo") tier: either explicitly requested, or auto mode with no personal
-    key on file to try first. Mirrors the tier order in llm.client.generate()."""
-    if llm_mode == "mimo":
+    """True only when this request is guaranteed to be answered by a shared
+    LLM: either one was explicitly requested, or auto mode with no personal key
+    on file to try first. Mirrors the tier order in llm.client.generate()."""
+    # Whether a shared LLM was requested is a property of the request, not of
+    # whether one happens to be configured -- an unconfigured shared request
+    # still fails as a shared request, exactly as it did before.
+    if is_shared_llm_mode(llm_mode):
         return True
     return llm_mode == "auto" and not (user_llm and user_llm.get("api_key"))
+
+
+def _shared_llm_cache_scope(llm_mode: str, user_llm: Optional[dict]) -> str:
+    """Which shared LLM a repo-cached answer came from.
+
+    The repo cache is shared across users and deliberately ignores llm_mode, so
+    with more than one shared LLM configured it would otherwise hand one
+    model's answer to someone who asked a different one."""
+    if not _request_uses_shared_tier_only(llm_mode, user_llm):
+        return ""
+    return shared_llm_id_for_mode(llm_mode) or default_shared_llm_id() or ""
 
 
 def _remember_repo_answer(
@@ -2721,6 +2742,7 @@ def _remember_repo_answer(
     repository_revision: str,
     question: str,
     response: dict,
+    shared_llm_id: str = "",
 ) -> None:
     """Cache a fresh shared-tier answer for reuse across any user asking the
     same question against the same indexed revision. Only the shared tier is
@@ -2740,6 +2762,7 @@ def _remember_repo_answer(
         repository_revision=repository_revision,
         question=question,
         response=response,
+        shared_llm_id=shared_llm_id,
     )
 
 
@@ -2998,6 +3021,10 @@ def answer_compare(
         context["comparison_repositories"][0],
         context["comparison_repositories"][1],
     )
+    if conversation_state is not None:
+        toolbox.tool_definitions = tool_definitions_without_ask_user(
+            toolbox.tool_definitions
+        )
     toolbox.response_style_instruction = context.get("response_style_instruction", "")
     generation_started_at = time.perf_counter()
     result = generate(
@@ -3239,6 +3266,12 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
             context=context,
         )
     toolbox = RepositoryToolbox(workspace)
+    if conversation_state is not None:
+        # One clarifying question per conversation. By the time a follow-up
+        # reaches full retrieval the user has already supplied more detail, so
+        # asking again instead of investigating loops on clarifications and
+        # never produces an answer.
+        toolbox.tool_definitions = tool_definitions_without_ask_user()
     retrieval_ms = round((time.perf_counter() - retrieval_started_at) * 1000, 1)
     response_style_instruction = (
         PRODUCT_TEAM_RESPONSE_INSTRUCTION

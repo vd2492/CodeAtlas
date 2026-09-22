@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .. import db
+from ..config import default_shared_llm_id, public_shared_llms
 from ..llm.client import sniff_provider
 from . import crypto
 from .security import hash_password, verify_password
@@ -887,10 +888,16 @@ def delete_user(username: str, admin: dict = Depends(require_admin)):
 
 @router.get("/me/llm")
 def get_my_llm(user: dict = Depends(require_user)):
-    """Non-secret view of the user's stored key (never returns the key itself)."""
+    """Non-secret view of the user's stored key (never returns the key itself),
+    plus the shared LLMs this deployment offers. Served from an authenticated
+    route so shared model names are not public; API keys are never included."""
+    shared = {
+        "shared_llms": public_shared_llms(),
+        "default_shared_llm": default_shared_llm_id(),
+    }
     creds = load_user_llm(user["id"])
     if not creds:
-        return {"configured": False}
+        return {"configured": False, **shared}
     key = creds.get("api_key", "")
     return {
         "configured": True,
@@ -898,6 +905,7 @@ def get_my_llm(user: dict = Depends(require_user)):
         "base_url": creds.get("base_url"),
         "model": creds.get("model"),
         "key_hint": f"…{key[-4:]}" if len(key) >= 4 else "set",
+        **shared,
     }
 
 

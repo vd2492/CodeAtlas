@@ -304,6 +304,18 @@ class TokenAnalyticsTests(unittest.TestCase):
         self.assertIn("/admin/repos/${curInsightsSlug}/answer-cache/clear", html)
 
 
+class AnswerMarkdownTests(unittest.TestCase):
+    def test_ask_page_renders_markdown_blocks(self):
+        """Headings, rules and lists were falling through as literal text, so
+        answers showed '##' and '---' instead of formatting."""
+        html = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
+        for helper in ("headingMatch", "isHorizontalRule", "listItemMatch"):
+            self.assertIn(f"function {helper}(", html)
+        self.assertIn("answer-heading", html)
+        self.assertIn('<hr class="answer-rule">', html)
+        self.assertIn("answer-list", html)
+
+
 class UiFeatureFlagTests(unittest.TestCase):
     def test_optional_surfaces_are_hidden_by_default(self):
         with patch.dict(os.environ, {}, clear=False):

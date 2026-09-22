@@ -152,11 +152,13 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        shared_llm_id: str = "",
     ) -> Optional[tuple[str, ...]]:
-        """Shared across every user/session — deliberately excludes session_key,
-        user_id, and llm_mode. Callers only use this for requests guaranteed to
-        be served by the shared LLM tier, so llm_mode never needs to disambiguate
-        entries here the way it does for the per-session cache above."""
+        """Shared across every user/session — deliberately excludes session_key
+        and user_id. It is scoped by shared_llm_id rather than by llm_mode:
+        callers only use this for requests guaranteed to be served by a shared
+        LLM, but with more than one configured, two shared models answering the
+        same question must not share an entry."""
         normalized_question = cls.normalize_question(question)
         if not normalized_question:
             return None
@@ -164,6 +166,7 @@ class ConversationStore:
             str(workspace),
             str(user_type),
             str(repository_revision),
+            str(shared_llm_id or ""),
             normalized_question,
         )
 
@@ -376,12 +379,14 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        shared_llm_id: str = "",
     ) -> Optional[dict]:
         cache_key = self._repo_answer_cache_key(
             workspace=workspace,
             user_type=user_type,
             repository_revision=repository_revision,
             question=question,
+            shared_llm_id=shared_llm_id,
         )
         if cache_key is None:
             return None
@@ -404,6 +409,7 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        shared_llm_id: str = "",
         response: dict,
     ) -> None:
         cache_key = self._repo_answer_cache_key(
@@ -411,6 +417,7 @@ class ConversationStore:
             user_type=user_type,
             repository_revision=repository_revision,
             question=question,
+            shared_llm_id=shared_llm_id,
         )
         if cache_key is None or not cacheable_answer(response.get("answer")):
             return

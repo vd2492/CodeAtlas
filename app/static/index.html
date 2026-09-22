@@ -562,6 +562,14 @@
     /* Remote-config hiding. Kept separate from [hidden] because setAskMode
        toggles that attribute on .single-repo-flow when switching ask modes. */
     .feature-off { display: none !important; }
+    .shared-llm-options { display: contents; }
+    .shared-llm-heading {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
 
     .compare-card {
       margin: 0 0 16px;
@@ -1046,6 +1054,30 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    .answer-heading {
+      margin: 18px 0 8px;
+      color: var(--fg);
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .answer-heading:first-child { margin-top: 0; }
+    h3.answer-heading { font-size: 17px; }
+    h4.answer-heading { font-size: 15px; }
+    h5.answer-heading,
+    h6.answer-heading { font-size: 14px; color: var(--muted); }
+    .answer-rule {
+      margin: 18px 0;
+      border: 0;
+      border-top: 1px solid var(--border);
+    }
+    .answer-list {
+      margin: 8px 0;
+      padding-left: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .answer-list li { overflow-wrap: anywhere; }
     .answer-text {
       min-width: 0;
       max-width: 100%;
@@ -1592,14 +1624,41 @@
     }
     .workspace-sidebar .personal-llm .btn-primary { max-width: none; }
     .chat-sidebar-section {
-      flex: 1 1 0;
+      /* Not a flex-grow region: the sidebar itself scrolls, so the chat list
+         is never squeezed to fit alongside the cards above it. */
+      flex: none;
       min-width: 0;
-      min-height: 96px;
       display: flex;
       flex-direction: column;
-      overflow: hidden;
       padding-top: 12px;
       border-top: 1px solid var(--border);
+    }
+    .chat-sidebar-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 8px 8px;
+    }
+    .chat-sidebar-head .chat-sidebar-heading { margin: 0; }
+    .chat-new-button {
+      flex: none;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .chat-new-button:hover {
+      color: var(--fg);
+      border-color: var(--border-strong);
     }
     .chat-sidebar-heading {
       margin: 0 8px 8px;
@@ -1610,13 +1669,10 @@
       text-transform: uppercase;
     }
     .chat-list {
-      flex: 1;
-      min-height: 0;
+      flex: none;
       display: flex;
       flex-direction: column;
       gap: 3px;
-      overflow-y: auto;
-      overscroll-behavior: contain;
       padding-right: 3px;
       scrollbar-width: thin;
       scrollbar-color: var(--border-strong) transparent;
@@ -1971,12 +2027,14 @@
       padding: 9px 4px 8px;
       font-size: 16px;
     }
-    .composer-dock .image-attach-btn { grid-area: attach; }
-    .composer-dock #mainAskCancelBtn { grid-area: submit; align-self: center; }
+    /* The box grows downward, so bottom- or centre-aligned controls drift with
+       it. Pinning them to the top keeps the cluster still while text wraps. */
+    .composer-dock .image-attach-btn { grid-area: attach; align-self: start; }
+    .composer-dock #mainAskCancelBtn { grid-area: submit; align-self: start; }
     .composer-dock .ask-box > .btn-primary {
       grid-area: submit;
       min-width: 74px;
-      align-self: center;
+      align-self: start;
     }
     .composer-dock .ask-box > .chat-submit-button,
     .composer-dock .compare-box .chat-submit-button,
@@ -2031,12 +2089,6 @@
       .workspace-sidebar .ask-mode-tab { width: auto; flex: 1 1 160px; }
       .workspace-sidebar .ask-mode-switch { flex: 1 1 100%; flex-direction: row; }
       .workspace-sidebar .llm-card { width: 100%; }
-      .workspace-sidebar .chat-sidebar-section {
-        flex: none;
-        min-height: 0;
-        overflow: visible;
-      }
-      .workspace-sidebar .chat-list { max-height: 260px; }
       .conversation-pane { min-height: 72vh; overflow: visible; }
       .conversation-scroll { overflow: visible; padding: 70px 18px 20px; }
       .ask-welcome { min-height: 280px; }
@@ -2193,9 +2245,11 @@
     <!-- LLM choice -->
     <section class="card llm-card span-2">
       <div class="card-head"><span class="card-dot"></span><h2 class="card-title">My LLM key</h2></div>
+      <div id="sharedLlmHeading" class="shared-llm-heading" hidden>Shared LLM</div>
       <div class="llm-options" role="group" aria-label="LLM provider">
         <!-- Ollama remains a disabled backend placeholder for a future release. -->
-        <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
+        <!-- Shared LLM buttons are rendered from the deployment's configuration. -->
+        <span id="sharedLlmOptions" class="shared-llm-options"></span>
         <button id="personalLlmToggle" type="button" class="llm-option"
           aria-expanded="false"
           aria-controls="personalLlmActions personalLlmConfig"
@@ -2265,7 +2319,11 @@
         onclick="goBackToAdminConsole()" hidden>Go back to admin console</button>
     </div>
     <section class="chat-sidebar-section" aria-labelledby="chatSidebarHeading">
-      <h2 id="chatSidebarHeading" class="chat-sidebar-heading">Chats</h2>
+      <div class="chat-sidebar-head">
+        <h2 id="chatSidebarHeading" class="chat-sidebar-heading">Chats</h2>
+        <button type="button" class="chat-new-button" onclick="startNewChat()"
+          aria-label="New chat" title="New chat">+</button>
+      </div>
       <div id="chatList" class="chat-list"></div>
     </section>
     </aside>
@@ -2475,6 +2533,8 @@
     let BRANCHES = [];
     let BRANCH_POLL_TIMER = null;
     let LLM_MODE = 'mimo';
+    let SHARED_LLMS = [];
+    let DEFAULT_SHARED_LLM = '';
     let PERSONAL_KEY_CONFIGURED = false;
     let TOAST_TIMER = null;
     let CONVERSATION_ID = null;
@@ -4156,21 +4216,80 @@
       window.location.href = '/';   // back to the landing page
     }
 
+    // ---------- Shared LLM options ----------
+    // Which shared LLMs exist is deployment configuration, so the buttons are
+    // rendered from it rather than hardcoded.
+    function sharedLlmMode(id) { return `shared:${id}`; }
+
+    function defaultSharedLlmMode() {
+      if (DEFAULT_SHARED_LLM) return sharedLlmMode(DEFAULT_SHARED_LLM);
+      if (SHARED_LLMS.length) return sharedLlmMode(SHARED_LLMS[0].id);
+      return 'mimo';
+    }
+
+    // "mimo" is the pre-existing value for "the shared tier" and may still be
+    // in a returning user's localStorage, so it resolves like the server does.
+    function resolveSharedLlmMode(mode) {
+      if (!mode) return defaultSharedLlmMode();
+      if (mode === 'mimo' || mode === 'shared') {
+        const named = SHARED_LLMS.find(item => item.id === 'mimo');
+        return named ? sharedLlmMode(named.id) : defaultSharedLlmMode();
+      }
+      if (String(mode || '').startsWith('shared:')) {
+        const id = String(mode).slice('shared:'.length);
+        return SHARED_LLMS.some(item => item.id === id)
+          ? sharedLlmMode(id)
+          : defaultSharedLlmMode();
+      }
+      return mode;
+    }
+
+    function renderSharedLlmOptions() {
+      const host = document.getElementById('sharedLlmOptions');
+      const heading = document.getElementById('sharedLlmHeading');
+      if (!host) return;
+      if (!SHARED_LLMS.length) {
+        // No shared LLM configured: keep the original single button so the
+        // option never silently disappears.
+        // Nothing configured: keep the shared option available, but the
+        // WebView never names a specific model.
+        host.innerHTML = '<button type="button" class="llm-option" data-llm-mode="mimo">Use shared LLM</button>';
+        if (heading) heading.hidden = true;
+        return;
+      }
+      host.innerHTML = SHARED_LLMS.map(item => `
+        <button type="button" class="llm-option"
+          data-llm-mode="${escapeHtml(sharedLlmMode(item.id))}"
+          title="${escapeHtml(item.model)}">Use ${escapeHtml(item.name)}</button>
+      `).join('');
+      // The section title only earns its place when there is a choice to make.
+      if (heading) heading.hidden = SHARED_LLMS.length < 2;
+    }
+
+    function selectedSharedLlm() {
+      if (!String(LLM_MODE || '').startsWith('shared:')) return null;
+      const id = String(LLM_MODE).slice('shared:'.length);
+      return SHARED_LLMS.find(item => item.id === id) || null;
+    }
+
     // ---------- LLM mode ----------
     function getSavedLlmMode() {
+      // Returns '' when the user has never chosen, so a first visit lands on
+      // the configured default shared LLM instead of a hardcoded name.
       try {
-        const saved = localStorage.getItem('codeatlas-llm-mode') || 'mimo';
+        const saved = localStorage.getItem('codeatlas-llm-mode') || '';
         if (saved === 'ollama') {
-          localStorage.setItem('codeatlas-llm-mode', 'mimo');
-          return 'mimo';
+          localStorage.removeItem('codeatlas-llm-mode');
+          return '';
         }
         return saved;
       }
-      catch (e) { return 'mimo'; }
+      catch (e) { return ''; }
     }
 
     function setLlmMode(mode) {
-      LLM_MODE = mode === 'ollama' ? 'mimo' : (mode || 'mimo');
+      const requested = (mode === 'ollama' || !mode) ? 'mimo' : mode;
+      LLM_MODE = requested === 'personal' ? 'personal' : resolveSharedLlmMode(requested);
       CONVERSATION_ID = null;
       try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
       updateLlmModeUi();
@@ -4379,7 +4498,10 @@
           ? 'Selected: personal LLM key.'
           : 'Add a personal API key to use this option.';
       } else {
-        status.textContent = 'Selected: Mimo v2.5.';
+        const shared = selectedSharedLlm();
+        status.textContent = shared
+          ? `Selected: ${shared.name}.`
+          : 'Selected: shared LLM.';
       }
     }
 
@@ -4413,10 +4535,12 @@
     }
 
     async function loadLlmStatus() {
-      LLM_MODE = getSavedLlmMode();
+      const savedMode = getSavedLlmMode();
       try {
         const s = await (await fetch('/auth/me/llm')).json();
         PERSONAL_KEY_CONFIGURED = Boolean(s.configured);
+        SHARED_LLMS = Array.isArray(s.shared_llms) ? s.shared_llms : [];
+        DEFAULT_SHARED_LLM = s.default_shared_llm || '';
         if (s.configured) {
           document.getElementById('keyModel').value = s.model || '';
           document.getElementById('keyBaseUrl').value = s.base_url || '';
@@ -4425,6 +4549,11 @@
       } catch (e) {
         PERSONAL_KEY_CONFIGURED = false;
       }
+      renderSharedLlmOptions();
+      // Resolve after the options are known: a saved id that no longer exists,
+      // or the legacy "mimo", lands on the configured default.
+      LLM_MODE = savedMode === 'personal' ? 'personal' : resolveSharedLlmMode(savedMode);
+      try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
       updateLlmModeUi();
     }
 
@@ -4639,6 +4768,28 @@
       return value.split('|').map(cell => cell.trim());
     }
 
+    // `---` on its own line is a horizontal rule. A table separator always
+    // contains `|`, so the two never collide.
+    function isHorizontalRule(line) {
+      return /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(String(line ?? ''));
+    }
+
+    function headingMatch(line) {
+      const match = /^\s{0,3}(#{1,6})\s+(.*\S)\s*$/.exec(String(line ?? ''));
+      if (!match) return null;
+      // The answer card already owns an <h2>, so the model's top level (# or
+      // ##, whichever it uses) sits directly beneath it at h3 and nests down.
+      return { level: Math.min(6, Math.max(3, match[1].length + 1)), text: match[2] };
+    }
+
+    function listItemMatch(line) {
+      const bullet = /^\s{0,3}[-*+]\s+(.*)$/.exec(String(line ?? ''));
+      if (bullet) return { ordered: false, text: bullet[1] };
+      const ordered = /^\s{0,3}\d{1,9}[.)]\s+(.*)$/.exec(String(line ?? ''));
+      if (ordered) return { ordered: true, text: ordered[1] };
+      return null;
+    }
+
     function isTableSeparator(line) {
       const cells = tableCells(line);
       return cells.length > 1 && cells.every(cell =>
@@ -4700,6 +4851,43 @@
               </table>
             </div>
           `);
+          continue;
+        }
+
+        const heading = headingMatch(line);
+        if (heading) {
+          flushText();
+          rendered.push(
+            `<h${heading.level} class="answer-heading">${renderInlineAnswer(heading.text)}</h${heading.level}>`
+          );
+          index += 1;
+          continue;
+        }
+
+        if (isHorizontalRule(line)) {
+          flushText();
+          rendered.push('<hr class="answer-rule">');
+          index += 1;
+          continue;
+        }
+
+        const listStart = listItemMatch(line);
+        if (listStart) {
+          flushText();
+          const ordered = listStart.ordered;
+          const items = [];
+          while (index < lines.length) {
+            const item = listItemMatch(lines[index]);
+            if (!item || item.ordered !== ordered) break;
+            items.push(item.text);
+            index += 1;
+          }
+          const tag = ordered ? 'ol' : 'ul';
+          rendered.push(
+            `<${tag} class="answer-list">` +
+            items.map(item => `<li>${renderInlineAnswer(item)}</li>`).join('') +
+            `</${tag}>`
+          );
           continue;
         }
 
@@ -5407,6 +5595,15 @@
           : data.retrieval_mode === 'agentic'
             ? `agentic retrieval · ${followUpToolCalls} tool calls`
             : 'one-shot retrieval fallback';
+        // Why the agent loop was skipped. The server has always returned this;
+        // without showing it, a silent downgrade to one-shot looks like a
+        // normal answer that simply failed to find anything. Shown in full on
+        // its own line rather than as a tooltip, so it survives a screenshot.
+        const fallbackReasonText = String(data.agent_fallback_reason || '').trim();
+        const fallbackReason = fallbackReasonText ? ' · agent unavailable' : '';
+        const fallbackReasonLine = fallbackReasonText
+          ? `<p class="src" style="margin-top:-6px">agent fallback: ${escapeHtml(fallbackReasonText.slice(0, 400))}</p>`
+          : '';
         const totalMs = Number(data.timings_ms?.total);
         const timingLabel = Number.isFinite(totalMs)
           ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
@@ -5437,8 +5634,9 @@
         const answerMetadata = productFlowSummary
           ? `<p class="src" style="margin-top:0">Product team flow summary${tokenLabel}</p>`
           : `
-            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}${tokenLabel}</p>
+            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(fallbackReason)}${escapeHtml(timingLabel)}${tokenLabel}</p>
             ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
+            ${fallbackReasonLine}
           `;
         const investigateAction = data.investigate_deeply_available
           ? `
@@ -5581,11 +5779,13 @@
         });
       }
 
-      document.querySelectorAll('.llm-option[data-llm-mode]').forEach(button => {
-        button.addEventListener('click', function() {
-          closePersonalLlmPanel();
-          setLlmMode(button.getAttribute('data-llm-mode'));
-        });
+      // Delegated: shared LLM buttons are rendered from configuration after
+      // this runs, so binding each button here would leave them inert.
+      document.addEventListener('click', function(event) {
+        const button = event.target.closest('.llm-option[data-llm-mode]');
+        if (!button) return;
+        closePersonalLlmPanel();
+        setLlmMode(button.getAttribute('data-llm-mode'));
       });
 
       const askInput = document.getElementById('question');

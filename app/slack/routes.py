@@ -17,6 +17,7 @@ import requests
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from .. import ask_service, db
+from ..config import default_shared_llm_id, shared_llm_mode
 
 router = APIRouter(prefix="/slack", tags=["slack"])
 logger = logging.getLogger(__name__)
@@ -76,7 +77,18 @@ def _bot_token() -> str:
 
 
 def _llm_mode() -> str:
-    return os.environ.get("CODEATLAS_SLACK_LLM_MODE", "auto").strip().lower() or "auto"
+    """Slack always answers with the default shared LLM.
+
+    Slack actors are synthetic identities that never hold a personal key, so
+    "auto" already resolved to the shared tier; naming the default explicitly
+    makes that a guarantee rather than a side effect of the tier order. An
+    operator can still pin a specific one with CODEATLAS_SLACK_LLM_MODE until
+    per-request model selection exists in Slack."""
+    configured = os.environ.get("CODEATLAS_SLACK_LLM_MODE", "").strip().lower()
+    if configured and configured != "auto":
+        return configured
+    default_id = default_shared_llm_id()
+    return shared_llm_mode(default_id) if default_id else "auto"
 
 
 def _relay_secret() -> str:

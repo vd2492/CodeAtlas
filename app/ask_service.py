@@ -163,7 +163,7 @@ def answer_single_request(
     session_key = str(user.get("_session_key") or "")
     use_session_cache = not (
         request.deep_investigation
-        or (llm_mode == "mimo" and not allow_shared)
+        or (main.is_shared_llm_mode(llm_mode) and not allow_shared)
         or image_attachments
     )
     # A follow-up's text only means something inside its own thread, so it is
@@ -210,6 +210,7 @@ def answer_single_request(
             response["answer_user_type"] = user_type
             return response
 
+    shared_llm_scope = main._shared_llm_cache_scope(llm_mode, user_llm)
     use_repo_cache = (
         allow_shared
         and not request.follow_up
@@ -223,6 +224,7 @@ def answer_single_request(
             user_type=user_type,
             repository_revision=revision,
             question=request.question,
+            shared_llm_id=shared_llm_scope,
         )
         if repo_cached_response:
             response = main._repo_cached_answer_response(
@@ -276,6 +278,7 @@ def answer_single_request(
                         user_type="dev_team",
                         repository_revision=revision,
                         question=request.question,
+                        shared_llm_id=shared_llm_scope,
                     )
                 if source_cached_response:
                     try:
@@ -321,6 +324,7 @@ def answer_single_request(
                                 repository_revision=revision,
                                 question=request.question,
                                 response=response,
+                                shared_llm_id=shared_llm_scope,
                             )
                         schedule_answer_token_usage(
                             user,
@@ -430,6 +434,7 @@ def answer_single_request(
                     repository_revision=revision,
                     question=request.question,
                     response=response,
+                    shared_llm_id=shared_llm_scope,
                 )
             schedule_answer_token_usage(
                 user,
@@ -487,7 +492,7 @@ def answer_compare_request(
     session_key = str(user.get("_session_key") or "")
     use_session_cache = not (
         request.deep_investigation
-        or (llm_mode == "mimo" and not allow_shared)
+        or (main.is_shared_llm_mode(llm_mode) and not allow_shared)
     )
     # Same thread scoping as the ask path above.
     cache_conversation_id = (

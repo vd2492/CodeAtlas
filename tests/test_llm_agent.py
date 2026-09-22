@@ -1,10 +1,11 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app import main
+from app import config, main
 from app.conversations import ConversationStore
 from app.llm import client
 
@@ -110,6 +111,635 @@ class AgentLoopTests(unittest.TestCase):
             user_content[1]["image_url"]["url"],
             "data:image/png;base64,iVBORw0KGgo=",
         )
+
+    def test_newer_openai_models_use_completion_token_parameter(self):
+        response = FakeResponse({
+            "choices": [{"message": {"content": "The answer."}}]
+        })
+        with patch("app.llm.client.requests.post", return_value=response) as post:
+            answer = client._openai_chat(
+                "https://example.test/v1",
+                "key",
+                "gpt-5.6-luna",
+                {"llm_context_preview": {"question": "What changed?"}},
+            )
+
+        self.assertEqual(answer, "The answer.")
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["max_completion_tokens"], 1400)
+        self.assertNotIn("max_tokens", payload)
+        self.assertNotIn("temperature", payload)
+
+    def test_openai_retries_with_completion_tokens_after_legacy_parameter_rejection(self):
+        rejected = FakeResponse(
+            {"error": {"message": "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."}},
+            status_code=400,
+            text="Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead.",
+        )
+        success = FakeResponse({
+            "choices": [{"message": {"content": "The answer."}}]
+        })
+        with patch("app.llm.client.requests.post", side_effect=[rejected, success]) as post:
+            answer = client._openai_chat(
+                "https://example.test/v1",
+                "key",
+                "custom-gateway-model",
+                {"llm_context_preview": {"question": "What changed?"}},
+            )
+
+        self.assertEqual(answer, "The answer.")
+        self.assertEqual(post.call_count, 2)
+        first_payload = post.call_args_list[0].kwargs["json"]
+        second_payload = post.call_args_list[1].kwargs["json"]
+        self.assertEqual(first_payload["max_tokens"], 1400)
+        self.assertEqual(second_payload["max_completion_tokens"], 1400)
+        self.assertNotIn("max_tokens", second_payload)
+
+    def test_openai_retries_without_temperature_after_default_only_rejection(self):
+        rejected = FakeResponse(
+            {"error": {"message": "Unsupported value: 'temperature'. Only the default (1) value is supported."}},
+            status_code=400,
+            text="Unsupported value: 'temperature'. Only the default (1) value is supported.",
+        )
+        success = FakeResponse({
+            "choices": [{"message": {"content": "The answer."}}]
+        })
+        with patch("app.llm.client.requests.post", side_effect=[rejected, success]) as post:
+            answer = client._openai_chat(
+                "https://example.test/v1",
+                "key",
+                "custom-gateway-model",
+                {"llm_context_preview": {"question": "What changed?"}},
+            )
+
+        self.assertEqual(answer, "The answer.")
+        self.assertEqual(post.call_count, 2)
+        first_payload = post.call_args_list[0].kwargs["json"]
+        second_payload = post.call_args_list[1].kwargs["json"]
+        self.assertEqual(first_payload["temperature"], 0.2)
+        self.assertNotIn("temperature", second_payload)
+
+    REGISTRY_ENV = {
+        "CODEATLAS_SHARED_LLMS": "mimo,luna",
+        "CODEATLAS_SHARED_LLM_MIMO_NAME": "Mimo v2.5",
+        "CODEATLAS_SHARED_LLM_MIMO_MODEL": "mimo-v2.5",
+        "CODEATLAS_SHARED_LLM_MIMO_API_KEY": "key-mimo",
+        "CODEATLAS_SHARED_LLM_MIMO_BASE_URL": "https://api.xiaomimimo.com/v1",
+        "CODEATLAS_SHARED_LLM_LUNA_MODEL": "gpt-5.6-luna",
+        "CODEATLAS_SHARED_LLM_LUNA_API_KEY": "key-luna",
+        "CODEATLAS_SHARED_LLM_LUNA_BASE_URL": "https://api.openai.com/v1",
+        "CODEATLAS_DEFAULT_SHARED_LLM": "luna",
+    }
+
+    def _route(self, mode, user_llm=None):
+        seen = {}
+
+        def fake_attempt(creds, *args, **kwargs):
+            seen.update(creds)
+            return {"answer": "ok", "retrieval_mode": "agentic", "agent_trace": []}
+
+        with patch.object(client, "_attempt_with_creds", side_effect=fake_attempt):
+            result = client.generate(
+                {"llm_context_preview": {"question": "q"}},
+                user_llm=user_llm,
+                allow_shared_fallback=True,
+                llm_mode=mode,
+                question="q",
+                toolbox=None,
+            )
+        return seen, result["provider_used"]
+
+    def test_each_shared_llm_uses_its_own_key_and_endpoint(self):
+        with patch.dict(os.environ, self.REGISTRY_ENV):
+            mimo, mimo_provider = self._route("shared:mimo")
+            luna, luna_provider = self._route("shared:luna")
+
+        self.assertEqual(mimo["model"], "mimo-v2.5")
+        self.assertEqual(mimo["api_key"], "key-mimo")
+        self.assertEqual(mimo_provider, "shared:mimo-v2.5")
+        self.assertEqual(luna["model"], "gpt-5.6-luna")
+        self.assertEqual(luna["api_key"], "key-luna")
+        self.assertEqual(luna_provider, "shared:gpt-5.6-luna")
+
+    def test_auto_mode_and_slack_use_the_configured_default_shared_llm(self):
+        with patch.dict(os.environ, self.REGISTRY_ENV):
+            auto, _ = self._route("auto")
+            self.assertEqual(auto["model"], "gpt-5.6-luna")
+
+            # A personal key still takes tier 1 ahead of any shared LLM.
+            byok, provider = self._route("auto", user_llm={
+                "api_key": "personal",
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "model": "m",
+            })
+            self.assertEqual(byok["api_key"], "personal")
+            self.assertEqual(provider, "user:openai")
+
+    def test_slack_always_uses_the_default_shared_llm(self):
+        from app.slack import routes as slack_routes
+
+        env = dict(self.REGISTRY_ENV)
+        env["CODEATLAS_SLACK_LLM_MODE"] = "auto"
+        with patch.dict(os.environ, env):
+            self.assertEqual(slack_routes._llm_mode(), "shared:luna")
+            os.environ["CODEATLAS_DEFAULT_SHARED_LLM"] = "mimo"
+            self.assertEqual(slack_routes._llm_mode(), "shared:mimo")
+            # An operator may still pin one explicitly.
+            os.environ["CODEATLAS_SLACK_LLM_MODE"] = "shared:luna"
+            self.assertEqual(slack_routes._llm_mode(), "shared:luna")
+
+    def test_legacy_shared_config_still_defines_one_shared_llm(self):
+        legacy = {
+            "CODEATLAS_LLM_BASE_URL": "https://token-plan-sgp.xiaomimimo.com/v1",
+            "CODEATLAS_LLM_API_KEY": "legacy-key",
+            "CODEATLAS_LLM_MODEL": "mimo-v2.5",
+        }
+        with patch.dict(os.environ, legacy):
+            os.environ.pop("CODEATLAS_SHARED_LLMS", None)
+            entries = config.public_shared_llms()
+            self.assertEqual(entries, [{"id": "mimo", "name": "mimo-v2.5", "model": "mimo-v2.5"}])
+            self.assertEqual(config.default_shared_llm_id(), "mimo")
+            seen, provider = self._route("mimo")
+            self.assertEqual(seen["api_key"], "legacy-key")
+            self.assertEqual(provider, "shared:mimo-v2.5")
+
+    def test_shared_llm_list_served_to_the_client_never_includes_keys(self):
+        with patch.dict(os.environ, self.REGISTRY_ENV):
+            blob = json.dumps(config.public_shared_llms())
+        self.assertNotIn("key-mimo", blob)
+        self.assertNotIn("key-luna", blob)
+        self.assertNotIn("api_key", blob)
+
+    def test_half_configured_shared_llm_is_not_offered(self):
+        env = dict(self.REGISTRY_ENV)
+        env["CODEATLAS_SHARED_LLMS"] = "mimo,luna,broken"
+        env["CODEATLAS_SHARED_LLM_BROKEN_MODEL"] = "no-key-model"
+        with patch.dict(os.environ, env):
+            self.assertEqual(
+                [entry["id"] for entry in config.public_shared_llms()],
+                ["mimo", "luna"],
+            )
+
+    def test_repo_cache_is_scoped_per_shared_llm(self):
+        """Two shared models answering the same question must not share an
+        entry in the cross-user repo cache."""
+        store = ConversationStore(ttl_seconds=30, max_states=5)
+        response = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {},
+        }
+        common = {
+            "workspace": "repo-main",
+            "user_type": "dev_team",
+            "repository_revision": "rev",
+            "question": "How does login work?",
+        }
+        store.store_repo_cached_answer(**common, response=response, shared_llm_id="mimo")
+
+        self.assertIsNotNone(store.get_repo_cached_answer(**common, shared_llm_id="mimo"))
+        self.assertIsNone(store.get_repo_cached_answer(**common, shared_llm_id="luna"))
+
+    def test_ask_page_renders_shared_llms_from_configuration(self):
+        html = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
+        self.assertIn("renderSharedLlmOptions", html)
+        self.assertIn('id="sharedLlmOptions"', html)
+        self.assertIn('id="sharedLlmHeading"', html)
+        self.assertIn("Shared LLM", html)
+        # Buttons are labelled `Use <display name>`.
+        self.assertIn('Use ${escapeHtml(item.name)}', html)
+        # The WebView must not name any specific model.
+        self.assertNotIn("Mimo v2.5", html.split("<script")[0])
+
+    def test_reasoning_model_investigates_over_the_responses_api(self):
+        """Reasoning plus tools together.
+
+        /v1/chat/completions only allows function tools for a reasoning model
+        with reasoning switched off, which costs the multi-step investigation
+        the model is wanted for. /v1/responses allows both."""
+        def call(call_id, name, arguments):
+            return {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments),
+            }
+
+        rounds = [
+            FakeResponse({"status": "completed", "output": [
+                {"type": "reasoning", "id": "rs_1", "summary": []},
+                call("c1", "search_code", {"query": "earnings"}),
+            ]}),
+            FakeResponse({"status": "completed", "output": [
+                call("c2", "search_code", {"query": "payout"}),
+                call("c3", "find_definition", {"symbol": "PayoutsFragment"}),
+            ]}),
+            FakeResponse({"status": "completed", "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Daily and weekly totals. Payouts.kt:L12-L60"}],
+            }]}),
+        ]
+        toolbox = FakeToolbox()
+        with patch("app.llm.client.requests.post", side_effect=rounds) as post:
+            result = client._call_agent_with_creds(
+                {
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "key",
+                    "model": "gpt-5.6-luna",
+                },
+                "what are the main features of earnings screen?",
+                toolbox,
+                "",
+                True,
+                None,
+            )
+
+        self.assertEqual(result["tool_calls"], 3)
+        self.assertIn("Payouts.kt", result["answer"])
+        for request in post.call_args_list:
+            self.assertTrue(request.args[0].endswith("/responses"))
+        first = post.call_args_list[0].kwargs["json"]
+        self.assertEqual(first["reasoning"], {"effort": client.AGENT_REASONING_EFFORT})
+        self.assertEqual(first["tool_choice"], "required")
+        # Repository code must not be retained by the provider.
+        self.assertFalse(first["store"])
+        # Responses declares tools flat, not nested under "function".
+        self.assertIn("name", first["tools"][0])
+        self.assertNotIn("function", first["tools"][0])
+        # Tool results are fed back keyed by call_id.
+        outputs = [
+            item for item in post.call_args_list[-1].kwargs["json"]["input"]
+            if item.get("type") == "function_call_output"
+        ]
+        self.assertEqual([item["call_id"] for item in outputs], ["c1", "c2", "c3"])
+
+    def test_missing_responses_endpoint_falls_back_to_chat_completions(self):
+        """A gateway without /v1/responses must be no worse off than before."""
+        missing = FakeResponse(
+            {"error": {"message": "Unknown endpoint"}},
+            status_code=404,
+            text="Unknown endpoint /v1/responses",
+        )
+        tool_call = FakeResponse({"choices": [{
+            "message": {"content": None, "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "search_code", "arguments": '{"query": "e"}'},
+            }]},
+            "finish_reason": "tool_calls",
+        }]})
+        final = FakeResponse({"choices": [{"message": {"content": "Answer. a.py:L1-L2"}}]})
+
+        with patch(
+            "app.llm.client.requests.post",
+            side_effect=[missing, tool_call, final],
+        ) as post:
+            result = client._call_agent_with_creds(
+                {
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "key",
+                    "model": "gpt-5.6-luna",
+                },
+                "question",
+                FakeToolbox(),
+                "",
+                True,
+                None,
+            )
+
+        self.assertEqual(result["tool_calls"], 1)
+        endpoints = [c.args[0].rsplit("/", 1)[-1] for c in post.call_args_list]
+        self.assertEqual(endpoints, ["responses", "completions", "completions"])
+
+    def test_invalid_reasoning_effort_does_not_silently_disable_reasoning(self):
+        """A typo must not quietly return reasoning models to the non-reasoning
+        path: the provider would reject the value, and an unexpected
+        /v1/responses failure falls back to /v1/chat/completions."""
+        import importlib
+
+        for value, expected in [
+            ("high", "high"),
+            ("minimal", "minimal"),
+            ("maximum", "medium"),
+            ("", "medium"),
+        ]:
+            with patch.dict(os.environ, {"CODEATLAS_AGENT_REASONING_EFFORT": value}):
+                reloaded = importlib.reload(client)
+                self.assertEqual(reloaded.AGENT_REASONING_EFFORT, expected, value)
+
+        # Leave the module as the rest of the suite expects it.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CODEATLAS_AGENT_REASONING_EFFORT", None)
+            importlib.reload(client)
+
+    def test_non_reasoning_model_never_uses_the_responses_api(self):
+        self.assertTrue(client._use_responses_api("gpt-5.6-luna"))
+        self.assertFalse(client._use_responses_api("mimo-v2.5"))
+        self.assertFalse(client._use_responses_api("gpt-4o-mini"))
+
+    def test_follow_up_investigation_cannot_ask_another_clarifying_question(self):
+        """One clarifying question per conversation.
+
+        Reproduces the reported loop: the model asked which earnings view was
+        meant, the user answered, and it asked again -- three times running,
+        never investigating."""
+        from app.agent.tools import ASK_USER_TOOL_NAME
+
+        state = ConversationStore(ttl_seconds=30, max_states=5).create(
+            user_id=1,
+            workspace="riderapp",
+            llm_mode="mimo",
+            user_type="product_team",
+            repository_revision="rev",
+            context={"llm_context_preview": {"question": "earnings screen?", "nodes": []}},
+            question="what are the main features of earnings screen?",
+            answer="Which earnings experience do you mean: the current earnings view, the rate information view, or payment history?",
+        )
+        seen = {}
+
+        def fake_build_context(question, limit=16, workspace=None, activity_callback=None):
+            return {
+                "question": question,
+                "llm_context_preview": {"question": question, "nodes": []},
+            }
+
+        def fake_generate(context, **kwargs):
+            toolbox = kwargs.get("toolbox")
+            definitions = getattr(toolbox, "tool_definitions", None)
+            seen["tools"] = [
+                definition["name"]
+                for definition in (
+                    definitions if definitions is not None else client.TOOL_DEFINITIONS
+                )
+            ]
+            seen["prompt"] = client._agent_system_prompt(toolbox)
+            return {
+                "answer": "The payouts screen shows daily and weekly totals.",
+                "provider_used": "user:openai",
+                "retrieval_mode": "agentic",
+                "agent_trace": [],
+                "rounds": 2,
+                "tool_calls": 3,
+            }
+
+        patches = (
+            patch.object(main, "build_context", fake_build_context),
+            patch.object(main, "generate", fake_generate),
+            patch.object(main, "repository_version_payload", return_value=None),
+        )
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        # The opening question may still ask for clarification.
+        main.answer_question("what are the main features of earnings screen?", workspace="riderapp")
+        self.assertIn(ASK_USER_TOOL_NAME, seen["tools"])
+        self.assertNotIn("Do not ask another one", seen["prompt"])
+
+        # The reply to that clarification may not.
+        main.answer_question(
+            "the current earnings view showing daily and weekly totals",
+            workspace="riderapp",
+            conversation_state=state,
+        )
+        self.assertNotIn(ASK_USER_TOOL_NAME, seen["tools"])
+        self.assertIn("Do not ask another one", seen["prompt"])
+        # Every other repository tool is still available to investigate with.
+        self.assertGreaterEqual(len(seen["tools"]), len(client.TOOL_DEFINITIONS) - 1)
+
+    def test_reasoning_model_disables_reasoning_to_use_function_tools(self):
+        """OpenAI refuses function tools for a reasoning model on
+        /v1/chat/completions unless reasoning is off for that call:
+
+            "Function tools with reasoning_effort are not supported for
+             gpt-5.6-luna in /v1/chat/completions. To use function tools, use
+             /v1/responses or set reasoning_effort to 'none'."
+
+        Without this every agentic request is rejected before the model runs and
+        the loop silently downgrades to one-shot retrieval."""
+        payload = client._openai_payload(
+            "gpt-5.6-luna",
+            {
+                "model": "gpt-5.6-luna",
+                "messages": [],
+                "tools": [{"type": "function"}],
+                "max_tokens": 1800,
+                "temperature": 0.2,
+            },
+        )
+        self.assertEqual(payload["reasoning_effort"], "none")
+
+        # A request without tools keeps the model's full reasoning.
+        no_tools = client._openai_payload(
+            "gpt-5.6-luna",
+            {"model": "gpt-5.6-luna", "messages": [], "max_tokens": 1400},
+        )
+        self.assertNotIn("reasoning_effort", no_tools)
+
+        # A classic chat model never receives the parameter.
+        classic = client._openai_payload(
+            "mimo-v2.5",
+            {
+                "model": "mimo-v2.5",
+                "messages": [],
+                "tools": [{"type": "function"}],
+                "max_tokens": 1800,
+            },
+        )
+        self.assertNotIn("reasoning_effort", classic)
+
+    def test_provider_that_rejects_reasoning_effort_retries_without_it(self):
+        rejected = FakeResponse(
+            {"error": {"message": "Unrecognized request argument supplied: reasoning_effort"}},
+            status_code=400,
+            text="Unrecognized request argument supplied: reasoning_effort",
+        )
+        accepted = FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+        with patch(
+            "app.llm.client.requests.post",
+            side_effect=[rejected, accepted],
+        ) as post:
+            response = client._post_openai_with_compatibility(
+                "https://api.openai.com/v1/chat/completions",
+                "gpt-5.6-luna",
+                {
+                    "model": "gpt-5.6-luna",
+                    "messages": [],
+                    "tools": [{"type": "function"}],
+                    "max_tokens": 1800,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(
+            post.call_args_list[0].kwargs["json"]["reasoning_effort"], "none"
+        )
+        self.assertNotIn("reasoning_effort", post.call_args_list[1].kwargs["json"])
+
+    def test_truncated_agent_round_retries_with_more_headroom(self):
+        """A reasoning model can spend its whole completion budget thinking and
+        return nothing. That is not a refusal to search, so the round is retried
+        with more room rather than downgraded to one-shot retrieval."""
+        truncated = FakeResponse({
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+        })
+        tool_call = FakeResponse({
+            "choices": [{
+                "message": {
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_source",
+                            "arguments": '{"query": "earnings"}',
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }]
+        })
+        final = FakeResponse({
+            "choices": [{"message": {"content": "Payouts screen. Payouts.kt:L1-L40"}}]
+        })
+        toolbox = FakeToolbox()
+
+        with patch(
+            "app.llm.client.requests.post",
+            side_effect=[truncated, tool_call, final],
+        ) as post:
+            result = client._openai_agent(
+                "https://api.openai.com/v1",
+                "key",
+                "gpt-5.6-luna",
+                "what are the main features of earnings screen?",
+                toolbox,
+                client.TOOL_DEFINITIONS,
+                "",
+                True,
+                None,
+            )
+
+        self.assertEqual(result["tool_calls"], 1)
+        budgets = [
+            call.kwargs["json"]["max_completion_tokens"]
+            for call in post.call_args_list
+        ]
+        self.assertEqual(budgets[0], client.AGENT_REASONING_OUTPUT_TOKENS)
+        self.assertGreater(budgets[1], budgets[0])
+
+    def test_persistent_truncation_is_not_reported_as_declining_tools(self):
+        truncated = FakeResponse({
+            "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+        })
+        toolbox = FakeToolbox()
+
+        with patch(
+            "app.llm.client.requests.post",
+            side_effect=[truncated] * (client.AGENT_TRUNCATION_RETRIES + 1),
+        ):
+            with self.assertRaises(client.AgenticUnsupported) as caught:
+                client._openai_agent(
+                    "https://api.openai.com/v1",
+                    "key",
+                    "gpt-5.6-luna",
+                    "question",
+                    toolbox,
+                    client.TOOL_DEFINITIONS,
+                    "",
+                    True,
+                    None,
+                )
+
+        message = str(caught.exception)
+        self.assertIn("completion cap", message)
+        self.assertNotIn("answered without using repository tools", message)
+
+    def test_model_that_declines_tools_keeps_its_own_reason(self):
+        declined = FakeResponse({
+            "choices": [{
+                "message": {"content": "There is no earnings screen."},
+                "finish_reason": "stop",
+            }]
+        })
+        with patch("app.llm.client.requests.post", return_value=declined):
+            with self.assertRaises(client.AgenticUnsupported) as caught:
+                client._openai_agent(
+                    "https://api.openai.com/v1",
+                    "key",
+                    "gpt-5.6-luna",
+                    "question",
+                    FakeToolbox(),
+                    client.TOOL_DEFINITIONS,
+                    "",
+                    True,
+                    None,
+                )
+
+        self.assertIn("answered without using repository tools", str(caught.exception))
+
+    def test_only_reasoning_models_get_the_larger_starting_budget(self):
+        self.assertEqual(
+            client._agent_output_budget("gpt-5.6-luna"),
+            client.AGENT_REASONING_OUTPUT_TOKENS,
+        )
+        self.assertEqual(
+            client._agent_output_budget("mimo-v2.5"),
+            client.AGENT_MAX_OUTPUT_TOKENS,
+        )
+        self.assertGreater(
+            client.AGENT_REASONING_OUTPUT_TOKENS,
+            client.AGENT_MAX_OUTPUT_TOKENS,
+        )
+
+    def test_agentic_downgrade_is_logged_and_reported(self):
+        declined = FakeResponse({
+            "choices": [{
+                "message": {"content": "No tools used."},
+                "finish_reason": "stop",
+            }]
+        })
+        one_shot = FakeResponse({
+            "choices": [{"message": {"content": "One-shot answer. a.py:L1-L2"}}]
+        })
+        with patch(
+            "app.llm.client.requests.post",
+            side_effect=[declined, one_shot],
+        ), self.assertLogs("app.llm.client", level="WARNING") as logs:
+            result = client._attempt_with_creds(
+                {
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "api_key": "key",
+                    "model": "gpt-5.6-luna",
+                },
+                {"llm_context_preview": {"question": "question"}},
+                question="question",
+                toolbox=FakeToolbox(),
+                require_tool=True,
+            )
+
+        self.assertEqual(result["retrieval_mode"], "one_shot")
+        self.assertIn(
+            "answered without using repository tools",
+            result["agent_fallback_reason"],
+        )
+        self.assertTrue(
+            any("falling back to one-shot" in line for line in logs.output),
+            logs.output,
+        )
+
+    def test_ask_page_surfaces_the_agent_fallback_reason(self):
+        html = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
+        self.assertIn("data.agent_fallback_reason", html)
+        self.assertIn("agent unavailable", html)
+        # Rendered as text, not only a tooltip, so it shows up in a screenshot.
+        self.assertIn("agent fallback:", html)
 
     def test_anthropic_chat_sends_image_blocks(self):
         response = FakeResponse({
@@ -251,6 +881,10 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(result["rounds"], 2)
         self.assertIn("src/auth.py", result["answer"])
         first_messages = post.call_args_list[0].kwargs["json"]["messages"]
+        self.assertEqual(
+            post.call_args_list[0].kwargs["json"]["tool_choice"],
+            "required",
+        )
         self.assertIn(
             "Map customer-facing terms to canonical symbols",
             first_messages[0]["content"],
