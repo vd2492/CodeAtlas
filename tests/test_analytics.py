@@ -315,6 +315,17 @@ class AnswerMarkdownTests(unittest.TestCase):
         self.assertIn('<hr class="answer-rule">', html)
         self.assertIn("answer-list", html)
 
+    def test_ask_page_renders_bold_instead_of_stripping_it(self):
+        html = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
+        self.assertIn("function renderEmphasis(", html)
+        self.assertIn("<strong>$1</strong>", html)
+        # The old stripping helper is gone.
+        self.assertNotIn("cleanAnswerText", html)
+        # Inline code is split out first so ** inside it stays literal, and
+        # __ is left alone so names like __init__ survive.
+        self.assertIn("split(/(`[^`\\n]+`)/g)", html)
+        self.assertNotIn("__([^_\\n]+)__", html)
+
 
 class UiFeatureFlagTests(unittest.TestCase):
     def test_optional_surfaces_are_hidden_by_default(self):

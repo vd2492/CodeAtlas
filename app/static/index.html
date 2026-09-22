@@ -4749,16 +4749,25 @@
       state.timer = window.setInterval(poll, 900);
     }
 
-    function cleanAnswerText(value) {
-      return String(value ?? '')
-        .replace(/\*\*([^*\n]+)\*\*/g, '$1')
-        .replace(/__([^_\n]+)__/g, '$1')
-        .replace(/\*\*/g, '')
-        .replace(/__/g, '');
+    // Emphasis outside inline code. `__` is deliberately not treated as bold:
+    // in a codebase tool it collides with names like __init__, which the old
+    // stripping turned into "init".
+    function renderEmphasis(value) {
+      return value
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*\*/g, '');
     }
 
     function renderInlineAnswer(value) {
-      return escapeHtml(value).replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      // Split on inline-code spans first so ** inside them stays literal.
+      return escapeHtml(value)
+        .split(/(`[^`\n]+`)/g)
+        .map(part => (
+          part.length > 1 && part.startsWith('`') && part.endsWith('`')
+            ? `<code>${part.slice(1, -1)}</code>`
+            : renderEmphasis(part)
+        ))
+        .join('');
     }
 
     function tableCells(line) {
@@ -4798,7 +4807,7 @@
     }
 
     function renderAnswer(value) {
-      const lines = cleanAnswerText(value).replace(/\r\n?/g, '\n').split('\n');
+      const lines = String(value ?? '').replace(/\r\n?/g, '\n').split('\n');
       const rendered = [];
       let textLines = [];
 
