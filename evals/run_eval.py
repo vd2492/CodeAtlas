@@ -168,7 +168,18 @@ LEAK_PATTERNS = [
     (r"\b\w+\.py\b", "python filename"),
     (r"\bline\s+\d+", "line reference"),
     (r"\b[a-z_]+/[a-z_]+\.py", "file path"),
+    # Class names leak just as badly as filenames. The first live run had an
+    # answer volunteer "CityReferralConfig" and the old patterns missed it.
+    (r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b", "class name"),
+    (r"\b[a-z]+(?:_[a-z0-9]+){2,}\b", "snake_case identifier"),
 ]
+
+# Multi-hump words that legitimately appear in this admin's own labels and
+# choice values, so a product-team answer may say them without leaking.
+LEAK_ALLOWLIST = {
+    "codeatlas", "postonboarding", "prepaid", "postpaid", "rekyc",
+    "javascript", "django", "redis", "bitbucket", "github",
+}
 
 
 def grade_audience(response, must_not_contain):
@@ -178,8 +189,11 @@ def grade_audience(response, must_not_contain):
         if needle.lower() in answer.lower():
             hits.append(needle)
     for pattern, label in LEAK_PATTERNS:
-        if re.search(pattern, answer):
-            hits.append(label)
+        for m in re.findall(pattern, answer):
+            if m.lower().replace("_", "") in LEAK_ALLOWLIST:
+                continue
+            hits.append(f"{label}:{m}")
+            break
     return (len(hits) == 0), hits
 
 
