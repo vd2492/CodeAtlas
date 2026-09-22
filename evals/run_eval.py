@@ -68,8 +68,20 @@ def opener_from_cookie(base_url, cookie_value):
     return opener
 
 
+# The agent loop sometimes ends on a tool call and the client gives up with a
+# 400. It is transient plumbing, not a wrong answer — first live run hit it on
+# 2 of 5 items. Counting it as a failure would swamp the real signal.
+TRANSIENT = ("returned a tool call instead of a final answer",
+             "No LLM provider succeeded")
+
+
+def _is_transient(data):
+    blob = f"{data.get('_body','')}{data.get('answer','')}{data.get('detail','')}"
+    return any(t in blob for t in TRANSIENT)
+
+
 def ask(opener, base_url, workspace, question, user_type,
-        llm_mode="auto", branch=None, timeout=600):
+        llm_mode="auto", branch=None, timeout=600, retries=2):
     url = f"{base_url}/repo/ask-llm?workspace={workspace}"
     if branch is not None:
         url += f"&branch={branch}"
@@ -81,16 +93,26 @@ def ask(opener, base_url, workspace, question, user_type,
         "deep_investigation": False,
     }
     started = time.time()
-    try:
-        data = _post(opener, url, payload, timeout)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            data = _post(opener, url, payload, timeout)
+        except urllib.error.HTTPError as e:
+            data = {"_error": f"HTTP {e.code}",
+                    "_body": e.read()[:400].decode("utf-8", "replace")}
+        except Exception as e:                              # noqa: BLE001
+            data = {"_error": type(e).__name__, "_body": str(e)[:400]}
+
+        if _is_transient(data) and attempt <= retries:
+            time.sleep(2 * attempt)
+            continue
+
         data["_elapsed_s"] = round(time.time() - started, 1)
+        data["_attempts"] = attempt
+        if _is_transient(data):
+            data["_error"] = data.get("_error") or "transient_exhausted"
         return data
-    except urllib.error.HTTPError as e:
-        return {"_error": f"HTTP {e.code}", "_body": e.read()[:400].decode("utf-8", "replace"),
-                "_elapsed_s": round(time.time() - started, 1)}
-    except Exception as e:                                  # noqa: BLE001
-        return {"_error": type(e).__name__, "_body": str(e)[:400],
-                "_elapsed_s": round(time.time() - started, 1)}
 
 
 # --------------------------------------------------------------- grading
@@ -213,6 +235,7 @@ def run_arm(opener, args, items, arm, results_fh, judge_fh):
                 "band": item.get("band"),
                 "priority": item.get("priority"),
                 "error": resp.get("_error"),
+                "attempts": resp.get("_attempts"),
                 "retrieval_pass": retrieval,
                 "audience_pass": audience,
                 "leaks": leaks,

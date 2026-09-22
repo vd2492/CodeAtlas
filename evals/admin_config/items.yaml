@@ -66,7 +66,7 @@ items:
     The single best item in the set. Tests typo-tolerant retrieval AND the
     much harder judgement that a visible, editable admin row is dead code.
     A confidently helpful "edit this key" answer is the expensive failure.
-  evidence_paths: ["**/RMS/**"]
+  evidence_paths: []
 
 - id: s3-deactivate-does-not-disable
   status: grounded
@@ -90,7 +90,7 @@ items:
     - RMS/helper.py:1974-2013
     - RMS/helper.py:1957-1972
     - RMS/tasks.py:1214-1215
-  evidence_paths: ["**/RMS/**"]
+  evidence_paths: ["**/RMS/helper.py", "**/RMS/tasks.py"]
 
 - id: s3-cache-ignores-is-active
   status: grounded
@@ -119,7 +119,7 @@ items:
   notes: >-
     The DB has unique_together including is_active, so "the active one" is
     the defensible-sounding answer and it is wrong in practice.
-  evidence_paths: ["**/RMS/**"]
+  evidence_paths: ["**/common/redis_keys.py", "**/RMS/models.py", "**/RMS/admin.py"]
 
 - id: kv-configparams-no-db-fallback
   status: grounded
@@ -142,7 +142,7 @@ items:
     - rider_app/models.py:599-602
     - slot/slot_redis_helper.py:53-60
     - common/redis_helper.py:250-269
-  evidence_paths: ["**/rider_app/**", "**/RMS/**"]
+  evidence_paths: ["**/rider_app/models.py", "**/slot/slot_redis_helper.py", "**/common/redis_helper.py"]
 
 - id: rsc-filters-invalid-example
   status: grounded
@@ -163,7 +163,7 @@ items:
   notes: >-
     The field's own help_text documents an invalid value. Tests whether the
     answer is copied from the admin or verified against the parser.
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/models.py", "**/RMS/admin.py"]
 
 # =================================================================
 # K1  key-value config
@@ -187,7 +187,7 @@ items:
   notes: >-
     Three keys collide across the two tables and they do NOT all resolve to
     the same table, so a rule learned from one transfers wrongly to another.
-  evidence_paths: ["**/RMS/**", "**/rider_app/**"]
+  evidence_paths: ["**/RMS/views.py", "**/slot/tasks.py", "**/rider_app/views.py"]
 
 - id: kv-new-suffix
   status: grounded
@@ -206,7 +206,7 @@ items:
   gold_citations:
     - rider_app/viewset/document_verification_helper.py:122
     - rider_app/serializers.py:1400-1401
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/viewset/document_verification_helper.py", "**/rider_app/serializers.py"]
 
 - id: kv-aliased-constant-indirection
   status: grounded
@@ -224,7 +224,7 @@ items:
     the constant definition. Four keys are aliased this way.
   gold_citations: ["common/redis_keys.py:1,3,4,5", "common/global_constants.py:825,826,966"]
   notes: Purpose-built retrieval-depth probe. Expect this to be the weakest item.
-  evidence_paths: ["**/common/**"]
+  evidence_paths: ["**/common/redis_keys.py", "**/common/global_constants.py"]
 
 - id: kv-namespaced-family
   status: grounded
@@ -303,7 +303,7 @@ items:
     should_mention: the value is cached, so the change is not instant
   gold_citations: ["RMS/helper.py:1974-2013", "RMS/models.py:3684"]
   must_not_contain: [".py", "CitywisePolicyAmount", "line "]
-  evidence_paths: ["**/RMS/**"]
+  evidence_paths: ["**/RMS/helper.py", "**/RMS/models.py"]
 
 - id: s3-units
   status: grounded
@@ -319,7 +319,7 @@ items:
     Was drafted as an abstention item on admin evidence alone. The code is
     unambiguous, so hedging is now the failure. Good calibration counterweight
     to the genuine abstention items.
-  evidence_paths: ["**/RMS/**", "**/payment/**"]
+  evidence_paths: ["**/RMS/models.py", "**/RMS/admin.py"]
 
 - id: s3-verbatim
   status: grounded
@@ -418,7 +418,7 @@ items:
   notes: >-
     The hardest item here. help_text states a clear rule, so the documented
     answer is easy and incomplete. Rewards reading call sites over docs.
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/helper.py"]
 
 - id: rsc-count-range-opaque
   kind: abstention
@@ -445,7 +445,7 @@ items:
     must_mention: the field is nullable on the model but the admin form assumes it is set
     must_not: describe blank as meaning "all areas"
   gold_citations: ["RMS/admin.py:410"]
-  evidence_paths: ["**/RMS/**"]
+  evidence_paths: ["**/RMS/admin.py"]
 
 - id: rsc-factor-silent-noop
   status: grounded
@@ -483,7 +483,7 @@ items:
     CORRECTED. The first draft asserted no image field existed - the HTML
     scrape missed it because the URL input is hidden behind a JS upload
     widget. That wrong gold would have penalised correct answers.
-  evidence_paths: ["**/rider_app/**", "**/common/**"]
+  evidence_paths: ["**/rider_app/models.py", "**/common/widgets.py"]
 
 - id: c-carousel-active-flags
   status: grounded
@@ -502,7 +502,7 @@ items:
     must_not: describe it as a deprecated or historical field
   gold_citations: ["rider_app/onboarding_v5_views.py:70-73"]
   notes: The name is_active_old invites exactly the wrong inference.
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/onboarding_v5_views.py"]
 
 - id: c-carousel-stale-cache
   status: grounded
@@ -519,7 +519,7 @@ items:
       an hour
     must_mention: the optimised variant is the one that goes stale
   gold_citations: ["rider_app/models.py:54-57"]
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/models.py"]
 
 - id: c-notice-end-date
   status: grounded
@@ -537,7 +537,7 @@ items:
   notes: >-
     CORRECTED. Drafted as "format undocumented" because the widget renders as
     a text input. It is a real DateField with standard validation.
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/models.py", "**/rider_app/helper.py"]
 
 - id: c-notice-banner
   status: grounded
@@ -623,7 +623,7 @@ items:
     The failure is silent and the UI actively hides it - the app shows the
     new, correct coordinates from the text pair while the centre was matched
     to riders using the stale numeric pair.
-  evidence_paths: ["**/jobs/**", "**/common/**"]
+  evidence_paths: ["**/jobs/models.py", "**/common/helper.py", "**/jobs/serializers.py"]
 
 - id: s2-geo-newer-field-does-not-win
   status: grounded
@@ -651,7 +651,7 @@ items:
     kv-new-suffix the newer key wins cleanly; here the newer field lost.
     Score this against kv-new-suffix - passing both means the rule was
     checked rather than generalised. Same shape as s3-client-axis-exists.
-  evidence_paths: ["**/jobs/**"]
+  evidence_paths: ["**/jobs/serializers.py", "**/common/helper.py"]
 
 - id: s2-geo-partial-blast-radius
   status: grounded
@@ -681,7 +681,7 @@ items:
     One edit produces a bug in one flow and correct behaviour in another,
     simultaneously. "It works over here" is the misleading evidence a PM
     will bring to the question.
-  evidence_paths: ["**/common/**", "**/lead_portal/**", "**/rider_training/**"]
+  evidence_paths: ["**/common/helper.py", "**/rider_training/core/training_task.py", "**/lead_portal/helpers/lead_helper.py"]
 
 
 # =================================================================
@@ -777,7 +777,7 @@ items:
     should_mention: it must be a valid 10 digit number or the save is rejected
   gold_citations: ["jobs/models.py:162-167"]
   must_not_contain: [".py", "line "]
-  evidence_paths: ["**/jobs/**"]
+  evidence_paths: ["**/jobs/models.py"]
 
 # =================================================================
 # abstention
@@ -905,7 +905,7 @@ items:
   notes: >-
     Half answerable, half not. Tests whether the answer separates the two
     instead of hedging on both or asserting on both.
-  evidence_paths: ["**/rider_app/**"]
+  evidence_paths: ["**/rider_app/helper.py"]
 
 scorecard_template: |
   Fill in after each run. n = items per row.
