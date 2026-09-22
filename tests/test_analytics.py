@@ -312,7 +312,8 @@ class AnswerMarkdownTests(unittest.TestCase):
         for helper in ("headingMatch", "isHorizontalRule", "listItemMatch"):
             self.assertIn(f"function {helper}(", html)
         self.assertIn("answer-heading", html)
-        self.assertIn('<hr class="answer-rule">', html)
+        # `---` is detected so it can be dropped, not drawn as a rule.
+        self.assertNotIn('<hr class="answer-rule">', html)
         self.assertIn("answer-list", html)
 
     def test_ask_page_renders_bold_instead_of_stripping_it(self):

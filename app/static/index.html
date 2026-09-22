@@ -1065,11 +1065,6 @@
     h4.answer-heading { font-size: 15px; }
     h5.answer-heading,
     h6.answer-heading { font-size: 14px; color: var(--muted); }
-    .answer-rule {
-      margin: 18px 0;
-      border: 0;
-      border-top: 1px solid var(--border);
-    }
     .answer-list {
       margin: 8px 0;
       padding-left: 22px;
@@ -4777,8 +4772,8 @@
       return value.split('|').map(cell => cell.trim());
     }
 
-    // `---` on its own line is a horizontal rule. A table separator always
-    // contains `|`, so the two never collide.
+    // `---` on its own line is a horizontal rule, which is dropped rather than
+    // drawn. A table separator always contains `|`, so the two never collide.
     function isHorizontalRule(line) {
       return /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(String(line ?? ''));
     }
@@ -4813,7 +4808,12 @@
 
       const flushText = () => {
         if (!textLines.length) return;
-        rendered.push(`<div class="answer-text">${renderInlineAnswer(textLines.join('\n'))}</div>`);
+        // Collapse runs of blank lines to one so paragraph spacing stays even
+        // — dropping a `---` otherwise leaves a double gap behind it.
+        const text = textLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+        if (text) {
+          rendered.push(`<div class="answer-text">${renderInlineAnswer(text)}</div>`);
+        }
         textLines = [];
       };
 
@@ -4874,8 +4874,9 @@
         }
 
         if (isHorizontalRule(line)) {
-          flushText();
-          rendered.push('<hr class="answer-rule">');
+          // The model emits `---` freely between points. Drawing a rule for
+          // each one is visual noise, so it is dropped; the blank lines around
+          // it already separate the sections.
           index += 1;
           continue;
         }
