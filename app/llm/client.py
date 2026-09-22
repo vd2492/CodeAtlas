@@ -455,16 +455,6 @@ def _adapt_openai_payload(payload: dict, message: str, param: str) -> bool:
     if param == "temperature":
         payload.pop("temperature", None)
         return True
-    # gpt-5.6 and later refuse function tools on /v1/chat/completions while
-    # reasoning is on, and name "none" as the way to keep tools. Without this
-    # the agent loop never starts: the tool call is rejected, the caller falls
-    # back to one-shot retrieval, and every answer is written from the context
-    # preview alone with zero files read.
-    if param == "reasoning_effort" and "'none'" in message:
-        if payload.get("reasoning_effort") == "none":
-            return False
-        payload["reasoning_effort"] = "none"
-        return True
     return False
 
 
@@ -481,6 +471,24 @@ def _unsupported_parameter(response) -> str | None:
     except ValueError:
         return None
     return error.get("param")
+
+
+def _needs_responses_endpoint(response) -> bool:
+    """True when the model refuses function tools on /chat/completions.
+
+    gpt-5.6 and later return this rather than running the tool loop. Setting
+    reasoning_effort to "none" also clears it, but that guts the planning the
+    agent depends on: in a 48-item run it produced exactly one ask_user call
+    per question and read zero files. The /v1/responses endpoint keeps both.
+    """
+    if response.status_code != 400:
+        return False
+    try:
+        error = (response.json() or {}).get("error") or {}
+    except ValueError:
+        return False
+    message = error.get("message") or ""
+    return "/v1/responses" in message and "tools" in message.lower()
 
 
 def _post_with_retries(*args, **kwargs):
@@ -953,6 +961,12 @@ def _openai_agent(
         )
         if 300 <= response.status_code < 400:
             raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+        if _needs_responses_endpoint(response):
+            return _openai_responses_agent(
+                base_url, api_key, model, question, toolbox, tool_definitions,
+                agent_context=agent_context, require_tool=require_tool,
+                image_attachments=image_attachments,
+            )
         _tool_request_error(response, model, image_attachments)
         message = response.json()["choices"][0]["message"]
         tool_calls = message.get("tool_calls") or []
@@ -1015,6 +1029,130 @@ def _openai_agent(
             messages,
             product_answer=product_answer,
         ),
+        "rounds": AGENT_MAX_ROUNDS + 1,
+        "tool_calls": tool_call_count,
+    }
+
+
+AGENT_REASONING_EFFORT = os.environ.get("CODEATLAS_AGENT_REASONING_EFFORT", "medium")
+
+
+def _responses_tools(tool_definitions: list[dict]) -> list[dict]:
+    """/v1/responses takes function tools flat; /chat/completions nests them."""
+    return [{"type": "function", **definition} for definition in tool_definitions]
+
+
+def _responses_text(payload: dict) -> str:
+    return "".join(
+        part.get("text", "")
+        for item in payload.get("output", [])
+        if item.get("type") == "message"
+        for part in item.get("content", [])
+    )
+
+
+def _openai_responses_agent(
+    base_url: str,
+    api_key: str,
+    model: str,
+    question: str,
+    toolbox,
+    tool_definitions: list[dict],
+    agent_context: str = "",
+    require_tool: bool = True,
+    image_attachments: list[dict] = None,
+) -> dict:
+    """Agent loop over /v1/responses, for models that refuse tools elsewhere.
+
+    Mirrors _openai_agent's contract. The one structural difference: every
+    item the model emits must be replayed on the next turn, reasoning items
+    included — sending a function_call without the reasoning item that
+    produced it is rejected outright.
+    """
+    system_prompt = _agent_system_prompt(toolbox)
+    product_answer = _product_toolbox_answer(toolbox)
+    items = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": _agent_question(question, agent_context, product_answer=product_answer),
+        },
+    ]
+    tools = _responses_tools(tool_definitions)
+    tool_call_count = 0
+    url = f"{base_url.rstrip('/')}/responses"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    for round_number in range(1, AGENT_MAX_ROUNDS + 1):
+        response = _post_with_retries(
+            url,
+            headers=headers,
+            json={
+                "model": model,
+                "input": items,
+                "tools": tools,
+                "reasoning": {"effort": AGENT_REASONING_EFFORT},
+            },
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
+        )
+        if 300 <= response.status_code < 400:
+            raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+        _tool_request_error(response, model, image_attachments)
+        payload = response.json()
+
+        calls = [item for item in payload.get("output", []) if item.get("type") == "function_call"]
+
+        ask_call = next((c for c in calls if c.get("name") == ASK_USER_TOOL_NAME), None)
+        if ask_call is not None:
+            asked = str(_tool_arguments(ask_call.get("arguments")).get("question") or "").strip()
+            if asked:
+                toolbox.trace.append(_ask_user_trace_entry(asked))
+                return {
+                    "answer": _require_answer(asked, model),
+                    "rounds": round_number,
+                    "tool_calls": tool_call_count,
+                    "needs_clarification": True,
+                }
+
+        if not calls:
+            if require_tool and tool_call_count == 0:
+                raise AgenticUnsupported(f"{model} answered without using repository tools")
+            return {
+                "answer": _require_answer(_responses_text(payload), model),
+                "rounds": round_number,
+                "tool_calls": tool_call_count,
+            }
+
+        # Replay the whole output, not just the calls: the reasoning items are
+        # required alongside the function_calls they produced.
+        items.extend(payload.get("output", []))
+        for call in calls:
+            if tool_call_count >= AGENT_MAX_TOOL_CALLS:
+                result = json.dumps({
+                    "ok": False,
+                    "error": "tool-call budget exhausted; answer with collected evidence",
+                })
+            else:
+                result = toolbox.call(call.get("name") or "", _tool_arguments(call.get("arguments")))
+                tool_call_count += 1
+            items.append({
+                "type": "function_call_output",
+                "call_id": call.get("call_id"),
+                "output": result,
+            })
+
+    items.append({"role": "user", "content": _budget_exhausted_prompt(product_answer)})
+    final = _post_with_retries(
+        url,
+        headers=headers,
+        json={"model": model, "input": items, "reasoning": {"effort": AGENT_REASONING_EFFORT}},
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    _tool_request_error(final, model, image_attachments)
+    return {
+        "answer": _require_answer(_responses_text(final.json()), model),
         "rounds": AGENT_MAX_ROUNDS + 1,
         "tool_calls": tool_call_count,
     }
