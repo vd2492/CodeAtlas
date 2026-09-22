@@ -736,10 +736,14 @@ class AgentLoopTests(unittest.TestCase):
 
     def test_ask_page_surfaces_the_agent_fallback_reason(self):
         html = (Path(__file__).resolve().parents[1] / "app/static/index.html").read_text()
-        self.assertIn("data.agent_fallback_reason", html)
+        self.assertIn("agent_fallback_reason", html)
         self.assertIn("agent unavailable", html)
         # Rendered as text, not only a tooltip, so it shows up in a screenshot.
         self.assertIn("agent fallback:", html)
+        # Both the single-branch and comparison answers report it.
+        self.assertIn("function agentFallbackNotice(", html)
+        self.assertIn("agentFallbackNotice(data)", html)
+        self.assertIn("compareFallback.line", html)
 
     def test_anthropic_chat_sends_image_blocks(self):
         response = FakeResponse({

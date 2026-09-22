@@ -621,7 +621,9 @@
     }
     .compare-box {
       display: flex;
-      align-items: center;
+      /* Pinned like the single-branch composer: centring makes the send button
+         slide down as the textarea grows. */
+      align-items: flex-start;
       gap: 10px;
       padding: 10px 10px 10px 14px;
       border: 1px solid var(--border-strong);
@@ -4747,6 +4749,20 @@
     // Emphasis outside inline code. `__` is deliberately not treated as bold:
     // in a codebase tool it collides with names like __init__, which the old
     // stripping turned into "init".
+    // Why the agent loop was skipped. The server has always returned this;
+    // without showing it, a silent downgrade to one-shot looks like a normal
+    // answer that simply failed to find anything. Rendered as text on its own
+    // line rather than a tooltip, so it survives a screenshot. Shared by the
+    // single-branch and comparison answers.
+    function agentFallbackNotice(data) {
+      const reason = String(data?.agent_fallback_reason || '').trim();
+      if (!reason) return { chip: '', line: '' };
+      return {
+        chip: ' · agent unavailable',
+        line: `<p class="src" style="margin-top:-6px">agent fallback: ${escapeHtml(reason.slice(0, 400))}</p>`,
+      };
+    }
+
     function renderEmphasis(value) {
       return value
         .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
@@ -5210,10 +5226,13 @@
         preview: data.answer || requestQuestion,
       });
 
+      const compareFallback = agentFallbackNotice(data);
+
       result.innerHTML = `
         ${followUpComposer(data.needs_clarification)}
         <h2>CodeAtlas Branch Comparison</h2>
-        <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(timingLabel)}${tokenLabel}</p>
+        <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(compareFallback.chip)}${escapeHtml(timingLabel)}${tokenLabel}</p>
+        ${compareFallback.line}
         <div class="answer">${renderAnswer(data.answer)}</div>
         ${investigateAction}
         ${compareEvidenceSection(data)}
@@ -5605,15 +5624,7 @@
           : data.retrieval_mode === 'agentic'
             ? `agentic retrieval · ${followUpToolCalls} tool calls`
             : 'one-shot retrieval fallback';
-        // Why the agent loop was skipped. The server has always returned this;
-        // without showing it, a silent downgrade to one-shot looks like a
-        // normal answer that simply failed to find anything. Shown in full on
-        // its own line rather than as a tooltip, so it survives a screenshot.
-        const fallbackReasonText = String(data.agent_fallback_reason || '').trim();
-        const fallbackReason = fallbackReasonText ? ' · agent unavailable' : '';
-        const fallbackReasonLine = fallbackReasonText
-          ? `<p class="src" style="margin-top:-6px">agent fallback: ${escapeHtml(fallbackReasonText.slice(0, 400))}</p>`
-          : '';
+        const { chip: fallbackReason, line: fallbackReasonLine } = agentFallbackNotice(data);
         const totalMs = Number(data.timings_ms?.total);
         const timingLabel = Number.isFinite(totalMs)
           ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
