@@ -448,25 +448,37 @@ def _provider_retry_delay(attempt: int, response=None) -> float:
 # maintaining a model allowlist that goes stale, adapt on that specific error
 # and replay the request once per parameter.
 def _adapt_openai_payload(payload: dict, message: str, param: str) -> bool:
-    """Rewrite payload in place for one unsupported-parameter 400. True if changed."""
+    """Rewrite payload in place for one rejected-parameter 400. True if changed."""
     if param == "max_tokens" and "max_completion_tokens" in message:
         payload["max_completion_tokens"] = payload.pop("max_tokens", None)
         return True
     if param == "temperature":
         payload.pop("temperature", None)
         return True
+    # gpt-5.6 and later refuse function tools on /v1/chat/completions while
+    # reasoning is on, and name "none" as the way to keep tools. Without this
+    # the agent loop never starts: the tool call is rejected, the caller falls
+    # back to one-shot retrieval, and every answer is written from the context
+    # preview alone with zero files read.
+    if param == "reasoning_effort" and "'none'" in message:
+        if payload.get("reasoning_effort") == "none":
+            return False
+        payload["reasoning_effort"] = "none"
+        return True
     return False
 
 
 def _unsupported_parameter(response) -> str | None:
-    """The parameter name from an OpenAI unsupported_parameter/invalid 400."""
+    """The parameter an OpenAI 400 blames, if it names one.
+
+    Not keyed on error.code: the reasoning_effort/function-tools rejection
+    comes back with a null code and only fills in "param".
+    """
     if response.status_code != 400:
         return None
     try:
         error = (response.json() or {}).get("error") or {}
     except ValueError:
-        return None
-    if error.get("code") not in {"unsupported_parameter", "unsupported_value"}:
         return None
     return error.get("param")
 
@@ -474,7 +486,7 @@ def _unsupported_parameter(response) -> str | None:
 def _post_with_retries(*args, **kwargs):
     """POST once plus bounded retries for temporary network/provider failures."""
     payload = kwargs.get("json")
-    for _ in range(2):  # at most one fixup per offending parameter
+    for _ in range(3):  # at most one fixup per offending parameter
         response = _post_once(*args, **kwargs)
         if not isinstance(payload, dict):
             return response
