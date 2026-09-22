@@ -441,8 +441,56 @@ def _provider_retry_delay(attempt: int, response=None) -> float:
     )
 
 
+# OpenAI's reasoning models (o-series, gpt-5 and later) reject two parameters
+# the chat-completions payloads here have always sent: "max_tokens" was renamed
+# to "max_completion_tokens", and "temperature" only accepts its default. Both
+# come back as a 400 that names the offending parameter, so rather than
+# maintaining a model allowlist that goes stale, adapt on that specific error
+# and replay the request once per parameter.
+def _adapt_openai_payload(payload: dict, message: str, param: str) -> bool:
+    """Rewrite payload in place for one unsupported-parameter 400. True if changed."""
+    if param == "max_tokens" and "max_completion_tokens" in message:
+        payload["max_completion_tokens"] = payload.pop("max_tokens", None)
+        return True
+    if param == "temperature":
+        payload.pop("temperature", None)
+        return True
+    return False
+
+
+def _unsupported_parameter(response) -> str | None:
+    """The parameter name from an OpenAI unsupported_parameter/invalid 400."""
+    if response.status_code != 400:
+        return None
+    try:
+        error = (response.json() or {}).get("error") or {}
+    except ValueError:
+        return None
+    if error.get("code") not in {"unsupported_parameter", "unsupported_value"}:
+        return None
+    return error.get("param")
+
+
 def _post_with_retries(*args, **kwargs):
     """POST once plus bounded retries for temporary network/provider failures."""
+    payload = kwargs.get("json")
+    for _ in range(2):  # at most one fixup per offending parameter
+        response = _post_once(*args, **kwargs)
+        if not isinstance(payload, dict):
+            return response
+        param = _unsupported_parameter(response)
+        message = ""
+        if param:
+            try:
+                message = ((response.json() or {}).get("error") or {}).get("message", "")
+            except ValueError:
+                message = ""
+        if not param or not _adapt_openai_payload(payload, message, param):
+            return response
+    return _post_once(*args, **kwargs)
+
+
+def _post_once(*args, **kwargs):
     for attempt in range(PROVIDER_RETRIES + 1):
         try:
             response = requests.post(*args, **kwargs)
