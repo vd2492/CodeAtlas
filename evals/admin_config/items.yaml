@@ -249,10 +249,13 @@ items:
     admin_page: "Configs"
     mechanism: key-value table - find the row by name, then edit the value
     must_mention:
-      - the value is free text with no validation on the form
+      - the admin checks only the value's format (its declared type in Configs, valid JSON in Config params), not whether it has the structure the code expects
       - there are two separate key-value tables that behave differently
+  gold_citations:
+    - RMS/admin.py:1015-1065
+    - rider_app/models.py:591-594
   must_not_contain: [".py", "line "]
-  evidence_paths: ["**/RMS/**", "**/rider_app/**"]
+  evidence_paths: ["**/RMS/admin.py", "**/rider_app/models.py"]
 
 - id: kv-type-mismatch
   status: grounded
@@ -263,10 +266,19 @@ items:
     What could have gone wrong?
   expect:
     must_mention:
-      - values are free text, unvalidated at the form level
-      - configs declare a type separately from the value
-      - a value not matching its declared type is the likely cause
-  evidence_paths: ["**/RMS/**"]
+      - the admin only checks that a value is well-formed for its declared type (JSON, list, integer), not that it has the structure or meaning the code expects
+      - a well-formed value with the wrong shape or content is the likely cause
+    should_mention: the type of an existing config cannot be changed in the admin
+  gold_citations:
+    - RMS/admin.py:1015-1065
+    - RMS/admin.py:1070-1076
+  notes: >-
+    Corrected 2026-09-23. The original gold said values are unvalidated free
+    text, inferred from the admin HTML (a plain textarea). RMSConfigForm in
+    fact rejects values that do not parse as their declared type, and
+    Config params stores JSON. Caught when a Luna answer described the
+    validation correctly and the judges failed it.
+  evidence_paths: ["**/RMS/admin.py", "**/RMS/models.py"]
 
 - id: kv-nonexistent-abstain   # id kept so earlier run results still line up
   status: grounded
@@ -834,13 +846,19 @@ items:
     I need to change a config whose description is blank. How do I know
     what format the value should be in?
   expect:
-    verdict: not_determinable_from_admin
+    verdict: partially_determinable
     must_say:
-      - the description field is optional and frequently empty
-      - the value is free text, so the form will accept anything
-    should_say: the format must be read from the code that consumes the key
-    must_not: claim the declared config type is sufficient to know the format
-  evidence_paths: ["**/RMS/**"]
+      - the declared type decides the syntax (text, integer, JSON or list), and the admin rejects a value that does not match it
+      - with a blank description, the structure or meaning the code expects is not documented anywhere in the admin
+    should_say: the expected structure has to come from the code that reads the key, an existing value, or the owning team
+    must_not: claim the declared type alone tells you everything the value must contain
+  gold_citations:
+    - RMS/admin.py:1015-1065
+  notes: >-
+    Corrected 2026-09-23. Was a pure abstention item built on the belief that
+    the value field is unvalidated free text. Syntax is validated by type;
+    only the expected structure is undocumented.
+  evidence_paths: ["**/RMS/admin.py"]
 
 - id: abs-inventory-none-option
   status: grounded
