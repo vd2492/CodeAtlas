@@ -184,15 +184,15 @@ TOOL_DEFINITIONS = [
     {
         "name": ASK_USER_TOOL_NAME,
         "description": (
-            "Ask the user one short clarifying question instead of guessing. Use "
-            "this only when a search_code or find_definition result includes "
-            "`possible_ambiguity` — meaning the same or a very similar name "
-            "resolves to genuinely different parts of the repository — and the "
-            "question does not already say which one is meant. Name the specific "
-            "options from `possible_ambiguity` in the question. Do not use this for "
-            "ordinary uncertainty that another search or read_file call could "
-            "resolve instead. Calling this tool ends the turn: the question becomes "
-            "the answer, and the user's next message is treated as the reply to it."
+            "Last resort: ask the user one short clarifying question. Use it only "
+            "after you have searched and read the leading candidates, when they "
+            "would give materially different answers and nothing in the question or "
+            "the evidence favours one. A `possible_ambiguity` flag alone is not a "
+            "reason to ask; it is common in large repositories. If one reading is "
+            "more likely, answer it and name the alternative instead. Name the "
+            "specific options in the question. Calling this tool ends the turn: the "
+            "question becomes the answer, and the user's next message is treated as "
+            "the reply to it."
         ),
         "parameters": _object_schema(
             {
@@ -576,9 +576,10 @@ class RepositoryToolbox:
         return {
             "note": (
                 "These matches sit in unrelated parts of the repository with "
-                "similar relevance scores. If the user's question does not say "
-                f"which one they mean, call {ASK_USER_TOOL_NAME} before investigating "
-                "further."
+                "similar relevance scores. Investigate the leading candidates and "
+                "follow the one the question's wording points to; only if they "
+                "would give materially different answers and nothing favours one, "
+                f"consider {ASK_USER_TOOL_NAME}."
             ),
             "areas": ranked[:4],
         }
