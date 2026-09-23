@@ -179,6 +179,7 @@ LEAK_PATTERNS = [
 LEAK_ALLOWLIST = {
     "codeatlas", "postonboarding", "prepaid", "postpaid", "rekyc",
     "javascript", "django", "redis", "bitbucket", "github",
+    "youtube",   # a real content-type choice on rider announcements
 }
 
 

@@ -89,6 +89,7 @@ one holistic score. That is what makes a failure actionable.
 | `S2` | per-entity field |
 | `C` | content (banners, carousel, notices) |
 | `L` | lookup table |
+| `N` | hardcoded in code, not in the admin at all (1 item: the geofence radius) |
 
 **`band`** — how far the question's wording is from the code's:
 
@@ -188,7 +189,7 @@ blank until judging runs.
 
 ### Abstention is not "say I don't know"
 
-Ten items expect the answer *"this cannot be determined here."* Every one of
+Nine items expect the answer *"this cannot be determined here."* Every one of
 them **also requires the constructive half** — naming where the answer actually
 lives, or who to ask. A bare refusal fails.
 
@@ -235,8 +236,8 @@ two traps of that shape.
   every arm carries no information and costs full price forever. Expect to keep
   roughly three quarters of what you write.
 - **Watch the cells, not the total.** A cell needs 10–15 items to mean
-  anything. Currently healthy: `admin_vs_code` 11, `S3` 13, `K1` 11,
-  abstention 10, `C` 10. Thin, read pooled: `S3b` 6, `S2` 6, `L` 2.
+  anything. Currently healthy: `admin_vs_code` 11, `S3` 12, `K1` 11,
+  `C` 10, abstention 9. Thin, read pooled: `S3b` 6, `S2` 6, `L` 2, `N` 1.
 - **Items beat repeats.** Item-level variance dominates run-level flakiness.
   Keep 3 reps; never trade items for more reps.
 - **Spot-check cited gold.** It was produced by an agent reading source. The

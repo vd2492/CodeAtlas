@@ -268,19 +268,36 @@ items:
       - a value not matching its declared type is the likely cause
   evidence_paths: ["**/RMS/**"]
 
-- id: kv-nonexistent-abstain
-  kind: abstention
+- id: kv-nonexistent-abstain   # id kept so earlier run results still line up
   status: grounded
-  scope_class: K1
+  scope_class: N
   band: B4
   priority: high
   question: "How do I change the geofence radius for a specific client?"
   expect:
-    verdict: not_found
-    must_say: no geofence or radius setting exists in this service
-    must_not: map the question onto an unrelated city, zone or area setting
-  notes: True negative. Tests abstention under pressure to be helpful.
-  evidence_paths: []
+    answer: >-
+      it cannot be changed from the admin or per client; the radius is
+      hardcoded, so changing it needs a code change
+    must_mention:
+      - the pickup geofence radius is a fixed 350 metres
+      - it is applied to Hulk shift reporting and destination locations, not configured per client
+    should_mention: >-
+      a separate hardcoded radius is used to find nearby EV hubs, widening in
+      10 km steps up to 30 km; it is not a geofence setting either
+    must_not: >-
+      claim a per-client or admin-editable geofence setting exists, or map the
+      question onto a zone or city setting
+  gold_citations:
+    - HulkMS/utils.py:24-27
+    - HulkMS/tasks.py:36-46
+    - EVMS/helper.py:833-834
+    - EVMS/helper.py:893-904
+  notes: >-
+    Originally written as a true negative ("no geofence exists in this
+    service"). That was wrong: the Mimo cold run answered with the 350 m
+    constant from HulkMS/utils.py, which is correct, and the old gold would
+    have failed it. Now scope class N (hardcoded, not in the admin).
+  evidence_paths: ["**/HulkMS/utils.py", "**/HulkMS/tasks.py"]
 
 # =================================================================
 # S3  city override tables
@@ -912,9 +929,10 @@ scorecard_template: |
 
   class                    retrieval  facets  audience  abstain   n
   admin_vs_code                ?        ?        ?        ?       11
-  abstention                   ?        ?        ?        ?       10
+  abstention                   ?        ?        ?        ?        9
   K1  key-value                ?        ?        ?        ?       11
-  S3  city override            ?        ?        ?        ?       13
+  N   hardcoded, not in admin  ?        ?        ?        -        1
+  S3  city override            ?        ?        ?        ?       12
   S3b referral surge           ?        ?        ?        ?        6
   C   content                  ?        ?        ?        ?       10
   S2  per-entity               ?        ?        ?        ?        6
