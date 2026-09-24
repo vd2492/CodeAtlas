@@ -6,15 +6,18 @@ split, one check per element). Keys starting with "should_" are soft: they
 are reported but do not decide whether the item passes. An item passes when
 all of its hard checks pass.
 
-Two judges are supported, both read from the environment so no key is ever
-passed on the command line:
+Three judges are supported. Keys come from the environment or the CLI's own
+login, never the command line:
 
-    --judge mimo   CODEATLAS_LLM_BASE_URL / _API_KEY / _MODEL  (chat/completions)
-    --judge luna   CODEATLAS_SHARED_LLM_LUNA_BASE_URL / _API_KEY / _MODEL  (/v1/responses)
+    --judge mimo    CODEATLAS_LLM_BASE_URL / _API_KEY / _MODEL  (chat/completions)
+    --judge luna    CODEATLAS_SHARED_LLM_LUNA_BASE_URL / _API_KEY / _MODEL  (/v1/responses)
+    --judge sonnet  the `claude` CLI in print mode, on whatever it is logged in with;
+                    a claude.ai subscription login draws on plan usage, not API
+                    billing. Model via CLAUDE_JUDGE_MODEL (default "sonnet").
 
-Both are also contestants in the runs they grade, so run both judges and
-compare: agreement is the signal, and a judge that favours its own model
-shows up as disagreement rather than hiding inside one score.
+Mimo and Luna are also contestants in the runs they grade, so compare judges:
+agreement is the signal, and a judge that favours its own model shows up as
+disagreement rather than hiding inside one score. Sonnet is not a contestant.
 
 Usage:
     python evals/judge.py --answers run/answers.jsonl --judge mimo --out run/judged-mimo.jsonl
@@ -25,6 +28,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -127,7 +131,87 @@ def call_luna(prompt):
     return 200, text
 
 
-JUDGES = {"mimo": call_mimo, "luna": call_luna}
+CHECKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "checks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "pass": {"type": "boolean"},
+                    "why": {"type": "string"},
+                },
+                "required": ["id", "pass", "why"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["checks"],
+    "additionalProperties": False,
+}
+
+
+def _cli_env():
+    """Environment for a `claude` subprocess that behaves like a fresh terminal launch.
+
+    When this script runs inside a Claude Code session, the parent's session
+    variables (host session id, messaging socket, a desktop-app base URL) would
+    otherwise leak into the child and tie it to that session. Auth still comes
+    from the CLI's own login, so a subscription login keeps billing on the plan.
+    """
+    session_prefixes = ("CLAUDE_CODE_", "CLAUDE_AGENT_", "CLAUDE_PREVIEW_")
+    session_names = {"CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "ANTHROPIC_BASE_URL"}
+    return {
+        k: v for k, v in os.environ.items()
+        if not k.startswith(session_prefixes) and k not in session_names
+    }  # CLAUDE_CONFIG_DIR is kept: it is where a custom login lives
+
+
+def call_sonnet_cli(prompt):
+    """Judge through the Claude Code CLI in print mode.
+
+    With a claude.ai subscription login this draws on plan usage instead of
+    per-token API billing. Everything the CLI would normally load is resent on
+    every call, so strip it: --system-prompt replaces the default prompt,
+    --tools "" drops built-in tools, --strict-mcp-config with no --mcp-config
+    loads zero MCP servers, and --disable-slash-commands drops skills. Without
+    the last two, one test call carried ~104k tokens of connector tool
+    definitions (Slack, Gmail, Drive, Figma...) for a 1.2k-character prompt.
+    Do not add --bare: it only accepts ANTHROPIC_API_KEY, which moves the run
+    onto API billing.
+    """
+    cmd = [
+        "claude", "-p", prompt,
+        "--model", os.environ.get("CLAUDE_JUDGE_MODEL", "sonnet"),
+        "--system-prompt", INSTRUCTIONS,
+        "--tools", "",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--json-schema", json.dumps(CHECKS_SCHEMA),
+        "--output-format", "json",
+        "--no-session-persistence",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=_cli_env())
+    except subprocess.TimeoutExpired:
+        return 504, "claude CLI timed out"
+    if proc.returncode != 0:
+        return 500, (proc.stderr or proc.stdout)[-400:]
+    try:
+        out = json.loads(proc.stdout)
+    except ValueError:
+        return 500, proc.stdout[-400:]
+    if out.get("is_error"):
+        return 500, str(out.get("result"))[:400]
+    structured = out.get("structured_output")
+    if structured is not None:
+        return 200, json.dumps(structured)
+    return 200, out.get("result") or ""
+
+
+JUDGES = {"mimo": call_mimo, "luna": call_luna, "sonnet": call_sonnet_cli}
 
 
 def parse(text):
