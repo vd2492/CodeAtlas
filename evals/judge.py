@@ -6,22 +6,15 @@ split, one check per element). Keys starting with "should_" are soft: they
 are reported but do not decide whether the item passes. An item passes when
 all of its hard checks pass.
 
-Three judges are supported. Keys come from the environment or the CLI's own
-login, never the command line:
-
-    --judge mimo    CODEATLAS_LLM_BASE_URL / _API_KEY / _MODEL  (chat/completions)
-    --judge luna    CODEATLAS_SHARED_LLM_LUNA_BASE_URL / _API_KEY / _MODEL  (/v1/responses)
-    --judge sonnet  the `claude` CLI in print mode, on whatever it is logged in with;
-                    a claude.ai subscription login draws on plan usage, not API
-                    billing. Model via CLAUDE_JUDGE_MODEL (default "sonnet").
-
-Mimo and Luna are also contestants in the runs they grade, so compare judges:
-agreement is the signal, and a judge that favours its own model shows up as
-disagreement rather than hiding inside one score. Sonnet is not a contestant.
+The judge is Claude Sonnet, called through the Claude Code CLI in print mode
+(`claude -p`). It uses whatever the CLI is logged in with; a claude.ai
+subscription login draws on plan usage rather than per-token API billing.
+Sonnet is not one of the models being evaluated, so it has no stake in the
+answers it grades. Override the model with CLAUDE_JUDGE_MODEL.
 
 Usage:
-    python evals/judge.py --answers run/answers.jsonl --judge mimo --out run/judged-mimo.jsonl
-    python evals/judge.py --report run/judged-mimo.jsonl run/judged-luna.jsonl
+    python evals/judge.py --answers run/answers.jsonl --out run/judged-sonnet.jsonl
+    python evals/judge.py --report run/judged-sonnet.jsonl
 """
 
 import argparse
@@ -31,11 +24,9 @@ import re
 import subprocess
 import sys
 import time
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import requests
 import yaml
 
 ITEMS = Path(__file__).parent / "admin_config" / "items.yaml"
@@ -89,46 +80,6 @@ def build_prompt(item, answer, checks):
     if item.get("notes"):
         lines += ["", f"GRADER CONTEXT (not part of the answer): {' '.join(str(item['notes']).split())}"]
     return "\n".join(lines)
-
-
-def call_mimo(prompt):
-    base = os.environ["CODEATLAS_LLM_BASE_URL"].rstrip("/")
-    r = requests.post(
-        f"{base}/chat/completions",
-        headers={"Authorization": f"Bearer {os.environ['CODEATLAS_LLM_API_KEY']}"},
-        json={
-            "model": os.environ.get("CODEATLAS_LLM_MODEL", "mimo-v2.5"),
-            "messages": [{"role": "system", "content": INSTRUCTIONS},
-                         {"role": "user", "content": prompt}],
-            "temperature": 0,
-            "max_tokens": 2000,
-        },
-        timeout=180,
-    )
-    return r.status_code, (r.json()["choices"][0]["message"]["content"] if r.ok else r.text)
-
-
-def call_luna(prompt):
-    base = os.environ["CODEATLAS_SHARED_LLM_LUNA_BASE_URL"].rstrip("/")
-    r = requests.post(
-        f"{base}/responses",
-        headers={"Authorization": f"Bearer {os.environ['CODEATLAS_SHARED_LLM_LUNA_API_KEY']}"},
-        json={
-            "model": os.environ.get("CODEATLAS_SHARED_LLM_LUNA_MODEL", "gpt-5.6-luna"),
-            "instructions": INSTRUCTIONS,
-            "input": prompt,
-            "reasoning": {"effort": "low"},
-        },
-        timeout=180,
-    )
-    if not r.ok:
-        return r.status_code, r.text
-    text = "".join(
-        part.get("text", "")
-        for o in r.json().get("output", []) if o.get("type") == "message"
-        for part in o.get("content", [])
-    )
-    return 200, text
 
 
 CHECKS_SCHEMA = {
@@ -211,7 +162,7 @@ def call_sonnet_cli(prompt):
     return 200, out.get("result") or ""
 
 
-JUDGES = {"mimo": call_mimo, "luna": call_luna, "sonnet": call_sonnet_cli}
+JUDGES = {"sonnet": call_sonnet_cli}
 
 
 def parse(text):
@@ -272,62 +223,51 @@ def run(args):
 
 
 def report(paths):
+    """Per-arm scores from judged files: items fully passing, and the share of
+    required checks met (the steadier number when few items pass outright)."""
     items = load_items()
     rows = [json.loads(l) for p in paths for l in Path(p).read_text().splitlines() if l.strip()]
     rows = [r for r in rows if "error" not in r]
-    by = defaultdict(dict)                       # (item, arm) -> {judge: pass}
-    for r in rows:
-        by[(r["item_id"], r["arm"])][r["judge"]] = r["item_pass"]
-    judges = sorted({r["judge"] for r in rows})
     arms = sorted({r["arm"] for r in rows})
 
-    def rate(xs):
-        xs = [x for x in xs if x is not None]
-        return f"{sum(xs)/len(xs):.2f}" if xs else " n/a"
+    def cell(rs):
+        if not rs:
+            return f"{'-':>8}{'-':>10}{0:>5}"
+        full = sum(bool(r["item_pass"]) for r in rs) / len(rs)
+        checks = sum(r["hard_passed"] for r in rs) / max(1, sum(r["hard_total"] for r in rs))
+        return f"{full:>8.2f}{checks:>10.2f}{len(rs):>5}"
 
-    print(f"\nItem pass rate (all hard checks pass). Judges: {', '.join(judges)}\n")
-    print(f"{'arm':<10}" + "".join(f"{j:>10}" for j in judges) + f"{'both':>10}{'n':>6}")
+    print(f"\n{'arm':<14}{'items':>8}{'checks':>10}{'n':>5}")
     for arm in arms:
-        keys = [k for k in by if k[1] == arm]
-        cols = [rate(by[k].get(j) for k in keys) for j in judges]
-        both = rate((all(by[k].get(j) for j in judges) if all(j in by[k] for j in judges) else None) for k in keys)
-        print(f"{arm:<10}" + "".join(f"{c:>10}" for c in cols) + f"{both:>10}{len(keys):>6}")
+        print(f"{arm:<14}{cell([r for r in rows if r['arm'] == arm])}")
 
-    if len(judges) == 2:
-        a, b = judges
-        pairs = [(v[a], v[b]) for v in by.values() if a in v and b in v]
-        agree = sum(x == y for x, y in pairs)
-        print(f"\nJudge agreement: {agree}/{len(pairs)} = {agree/len(pairs):.2f}")
-        for arm in arms:
-            ps = [(v[a], v[b]) for k, v in by.items() if k[1] == arm and a in v and b in v]
-            print(f"  on {arm:<8} {a} passes {sum(x for x,_ in ps):>2}, {b} passes {sum(y for _,y in ps):>2}  (n={len(ps)})")
-
-    for dim, field in (("scope_class", "scope_class"), ("kind", "kind"), ("band", "band")):
-        print(f"\nby {dim} — pass rate where both judges agree it passed")
-        print(f"{'':<16}" + "".join(f"{arm:>10}" for arm in arms))
-        groups = sorted({items[k[0]].get(field) or "(none)" for k in by})
+    for dim in ("scope_class", "kind", "band"):
+        groups = sorted({items[r["item_id"]].get(dim) or "(none)" for r in rows})
+        print(f"\nrequired-check rate by {dim}")
+        print(f"{'':<16}" + "".join(f"{arm:>14}" for arm in arms))
         for g in groups:
             cells = []
             for arm in arms:
-                keys = [k for k in by if k[1] == arm and (items[k[0]].get(field) or "(none)") == g]
-                cells.append(rate((all(by[k].get(j) for j in judges) if all(j in by[k] for j in judges) else None) for k in keys))
-            print(f"  {g:<14}" + "".join(f"{c:>10}" for c in cells))
+                rs = [r for r in rows if r["arm"] == arm and (items[r["item_id"]].get(dim) or "(none)") == g]
+                t = sum(r["hard_total"] for r in rs)
+                cells.append(f"{sum(r['hard_passed'] for r in rs) / t:.2f}" if t else "-")
+            print(f"  {g:<14}" + "".join(f"{c:>14}" for c in cells))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--answers")
-    ap.add_argument("--judge", choices=sorted(JUDGES))
+    ap.add_argument("--judge", choices=sorted(JUDGES), default="sonnet")
     ap.add_argument("--out")
-    ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--workers", type=int, default=2)  # keep plan rate limits in mind
     ap.add_argument("--report", nargs="+")
     args = ap.parse_args()
     if args.report:
         report(args.report)
-    elif args.answers and args.judge and args.out:
+    elif args.answers and args.out:
         run(args)
     else:
-        sys.exit("pass --answers, --judge and --out, or --report FILES")
+        sys.exit("pass --answers and --out, or --report FILES")
 
 
 if __name__ == "__main__":

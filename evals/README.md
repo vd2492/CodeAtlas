@@ -146,6 +146,18 @@ states a definite answer fails if the response only expresses uncertainty.
 
 Validate any judge against ~20 hand-labelled items before trusting it.
 
+`evals/judge.py` is that step. The judge is **Claude Sonnet**, run through
+the Claude Code CLI (`claude -p`), so a claude.ai subscription login grades
+on plan usage rather than API billing. Sonnet is not one of the models under
+evaluation. The call strips everything the CLI would otherwise resend on each
+request (default system prompt, built-in tools, MCP servers, skills), which
+takes a grade from ~104k tokens to ~6k.
+
+```bash
+python evals/judge.py --answers <run>/answers.jsonl --out <run>/judged-sonnet.jsonl
+python evals/judge.py --report <run>/judged-sonnet.jsonl
+```
+
 ## 5. Caching — read this before believing a number
 
 CodeAtlas has three layers that will short-circuit an eval
