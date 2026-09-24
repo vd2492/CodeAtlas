@@ -164,7 +164,7 @@ items:
   expect:
     answer: 'enter {"clients": [1,2,3]} with double quotes'
     must_mention:
-      - clients are numeric ids
+      - clients are given as numeric IDs, whether stated or shown in the example value
       - the example shown on the form uses single quotes and will be rejected
     must_not: repeat the form's single-quoted example as usable
   gold_citations:
