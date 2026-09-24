@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -55,6 +56,105 @@ _executor = ThreadPoolExecutor(
     max_workers=int(os.environ.get("CODEATLAS_SLACK_MAX_WORKERS", "4")),
     thread_name_prefix="codeatlas-slack",
 )
+
+class _TTLCache:
+    """Thread-safe key/value store with lazy TTL eviction.
+
+    Shared by the dedupe and pending-question caches below instead of each
+    hand-rolling its own dict + lock + sweep-and-evict loop.
+    """
+
+    def __init__(self, ttl_seconds: float):
+        self._ttl = ttl_seconds
+        self._store: dict[str, tuple[object, float]] = {}
+        self._lock = threading.Lock()
+
+    def _evict_locked(self, now: float) -> None:
+        for key, (_, seen_at) in list(self._store.items()):
+            if now - seen_at > self._ttl:
+                self._store.pop(key, None)
+
+    def seen(self, key: Optional[str]) -> bool:
+        """Record `key` as seen now; return True if it was already seen."""
+        if not key:
+            return False
+        now = time.time()
+        with self._lock:
+            self._evict_locked(now)
+            if key in self._store:
+                return True
+            self._store[key] = (None, now)
+            return False
+
+    def set(self, key: Optional[str], value: object) -> None:
+        if not key:
+            return
+        now = time.time()
+        with self._lock:
+            self._evict_locked(now)
+            self._store[key] = (value, now)
+
+    def pop(self, key: Optional[str]) -> Optional[object]:
+        if not key:
+            return None
+        with self._lock:
+            entry = self._store.pop(key, None)
+        if not entry:
+            return None
+        value, seen_at = entry
+        if time.time() - seen_at > self._ttl:
+            return None
+        return value
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+
+_EVENT_DEDUPE_TTL_SECONDS = 600
+
+# Slack retries an Events API delivery it didn't get a fast ack for, which
+# would otherwise post the same answer twice.
+_SEEN_EVENT_IDS = _TTLCache(_EVENT_DEDUPE_TTL_SECONDS)
+
+# A DM mention can fire both app_mention and message.im for the same
+# physical message; this stops it from being answered twice.
+_SEEN_MESSAGE_KEYS = _TTLCache(_EVENT_DEDUPE_TTL_SECONDS)
+
+# When repo inference can't tell which repo a question is about, we ask the
+# user to name one; this remembers that original question, scoped to the
+# specific thread it was asked in, so a bare repo-name reply *in that
+# thread* resumes it instead of being answered as a new, standalone
+# one-word question. Thread-scoping (rather than just channel+user) also
+# means two concurrent ambiguous questions in the same channel/DM can't
+# clobber each other's pending entry.
+_PENDING_REPO_QUESTIONS = _TTLCache(_EVENT_DEDUPE_TTL_SECONDS)
+
+
+def _already_processed_event(event_id: Optional[str]) -> bool:
+    return _SEEN_EVENT_IDS.seen(event_id)
+
+
+def _already_answered_message(channel: Optional[str], ts: Optional[str]) -> bool:
+    if not channel or not ts:
+        return False
+    return _SEEN_MESSAGE_KEYS.seen(f"{channel}:{ts}")
+
+
+def _remember_pending_question(
+    channel: Optional[str], thread_ts: Optional[str], user: Optional[str], question: str
+) -> None:
+    if not channel or not thread_ts or not user or not question:
+        return
+    _PENDING_REPO_QUESTIONS.set(f"{channel}:{thread_ts}:{user}", question)
+
+
+def _take_pending_question(
+    channel: Optional[str], thread_ts: Optional[str], user: Optional[str]
+) -> Optional[str]:
+    if not channel or not thread_ts or not user:
+        return None
+    return _PENDING_REPO_QUESTIONS.pop(f"{channel}:{thread_ts}:{user}")
 
 
 def _env_bool(name: str, default: str = "false") -> bool:
@@ -163,6 +263,17 @@ def _parse_form(body: bytes) -> dict:
     return parse_qs(body.decode("utf-8"), keep_blank_values=True)
 
 
+_MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
+
+
+def _strip_mention(text: str) -> str:
+    """Drop @CodeAtlas mention token(s), wherever in the message they are,
+    leaving the question ("@codeatlas, how do I..." mentions mid-sentence,
+    not just at the start)."""
+    stripped = _MENTION_RE.sub("", str(text or ""))
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
 def verify_slack_request(headers, body: bytes) -> None:
     if _valid_relay_request(headers):
         return
@@ -236,6 +347,17 @@ def _post_ephemeral(channel_id: str, user_id: str, text: str, blocks: list[dict]
     _slack_api("chat.postEphemeral", payload)
 
 
+def _post_channel_message(channel_id: str, thread_ts: str, text: str, blocks: list[dict] = None) -> None:
+    payload = {
+        "channel": channel_id,
+        "text": text,
+        "thread_ts": thread_ts,
+    }
+    if blocks:
+        payload["blocks"] = blocks
+    _slack_api("chat.postMessage", payload)
+
+
 def _post_response_url(response_url: str, text: str, blocks: list[dict] = None) -> None:
     if not response_url:
         raise RuntimeError("Slack response_url is not available.")
@@ -262,11 +384,18 @@ def _send_user_message(values: dict, text: str, blocks: list[dict] = None) -> No
             return
         except Exception:
             pass
+    # Mention-originated flows have no response_url and reply in-thread,
+    # visible to the channel, instead of ephemerally to just the asker.
+    thread_ts = values.get("thread_ts")
+    channel_id = values.get("channel_id")
+    if thread_ts and channel_id:
+        _post_channel_message(channel_id, thread_ts, text, blocks)
+        return
     slack_user_id = _slack_user_id(values)
-    if not values.get("channel_id") or not slack_user_id:
+    if not channel_id or not slack_user_id:
         raise RuntimeError("Slack channel_id and user_id are required to send a user message.")
     _post_ephemeral(
-        values["channel_id"],
+        channel_id,
         slack_user_id,
         text,
         blocks,
@@ -279,6 +408,36 @@ def _repo_options() -> list[dict]:
         _option(repo["name"], repo["slug"], repo.get("slug"))
         for repo in repos
     ]
+
+
+def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
+    """Deterministic repo match: an explicit name/slug mention, or the only
+    published repo. Ambiguous or unmatched text returns None so the caller
+    asks the user instead of guessing (semantic classification is Phase B).
+
+    Takes `repos` rather than fetching it, so a caller that already has the
+    published-repo list (e.g. to build a "which repository?" prompt on a
+    miss) doesn't have to fetch it twice.
+    """
+    if not repos:
+        return None
+    lowered = text.lower()
+    matches = []
+    for repo in repos:
+        for candidate in {repo["slug"].strip().lower(), repo["name"].strip().lower()}:
+            # (?<!\w)/(?!\w) rather than \b: \b requires a word/non-word
+            # transition at the edge itself, so it never matches a
+            # candidate that starts or ends with punctuation (e.g. a repo
+            # named "Payments API (EU)") even when that candidate appears
+            # verbatim in the text.
+            if candidate and re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", lowered):
+                matches.append(repo)
+                break
+    if len(matches) == 1:
+        return matches[0]
+    if not matches and len(repos) == 1:
+        return repos[0]
+    return None
 
 
 def _matching_option(options: list[dict], value: Optional[str]) -> Optional[dict]:
@@ -778,6 +937,32 @@ def _current_branch(repo: dict, branch_name: str) -> Optional[dict]:
         return None
 
 
+def _default_branch_name(repo: dict) -> str:
+    """The repo's current default branch, for flows that skip branch picking.
+
+    Checks already-known branches first: a repo that's already been used
+    has its default recorded in the DB, so it doesn't need to pay a live
+    git round-trip (remote_branch_options) on every single question — only
+    a repo with no branch approved yet needs that network discovery call.
+    """
+    existing = db.list_repo_branches(repo["id"])
+    for branch in existing:
+        if branch.get("is_default"):
+            return branch["name"]
+    try:
+        branches = ask_service.remote_branch_options(repo, limit=200)
+    except Exception:
+        branches = []
+    for branch in branches:
+        if branch.get("is_default"):
+            return branch["name"]
+    if branches:
+        return branches[0]["name"]
+    if existing:
+        return existing[0]["name"]
+    raise HTTPException(status_code=404, detail="No branch is available for this repository yet.")
+
+
 def _branch_is_ready(branch: Optional[dict]) -> bool:
     return bool(
         branch
@@ -1033,6 +1218,124 @@ def _start_answer_job(values: dict, *, follow_up: bool = False, deep: bool = Fal
     _executor.submit(_run_answer_job, values, follow_up=follow_up, deep=deep)
 
 
+def _run_mention_job(payload: dict, event: dict) -> None:
+    """Handle an @codeatlas channel mention or a DM message: infer the
+    repo/branch deterministically (Phase A) and answer with the same
+    pipeline the modal flow uses."""
+    team_id = payload.get("team_id") or (payload.get("team") or {}).get("id")
+    channel_id = event.get("channel")
+    slack_user = event.get("user")
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    question = _strip_mention(event.get("text") or "")
+    values = {
+        "team_id": team_id,
+        "channel_id": channel_id,
+        "user_id": slack_user,
+        "slack_user_id": slack_user,
+        "thread_ts": thread_ts,
+        "question": question,
+        "ask_type": ASK_SINGLE,
+        "user_type": USER_PRODUCT,
+    }
+    if not channel_id or not slack_user:
+        logger.warning("Ignoring Slack event missing channel or user.")
+        return
+    # Everything below (repo inference, branch prep) previously had no
+    # safety net: an exception here would vanish in the executor thread
+    # with no log and no reply, and since the event is already marked
+    # handled before this job runs, even Slack's own retry couldn't help.
+    try:
+        if not question:
+            _send_user_message(
+                values,
+                "CodeAtlas needs a question",
+                [{
+                    "type": "section",
+                    "text": _mrkdwn(
+                        "Ask me something after the mention, e.g. "
+                        "`@CodeAtlas how do I go online in the app?`"
+                    ),
+                }],
+            )
+            return
+        repos = ask_service.published_repos()
+        repo = _infer_repo_from_text(question, repos)
+        if not repo:
+            if not repos:
+                _send_user_message(
+                    values,
+                    "No repositories available",
+                    [{
+                        "type": "section",
+                        "text": _mrkdwn("No repositories are published yet. Ask an admin to publish one."),
+                    }],
+                )
+                return
+            _remember_pending_question(channel_id, thread_ts, slack_user, question)
+            names = ", ".join(f"`{item['name']}`" for item in repos[:10])
+            _send_user_message(
+                values,
+                "Which repository?",
+                [{
+                    "type": "section",
+                    "text": _mrkdwn(
+                        f"I couldn't tell which repository you mean. Mention it by name, e.g. {names}."
+                    ),
+                }],
+            )
+            return
+        # A bare repo-name reply (e.g. just "sortbuddy") to our own "which
+        # repository?" prompt, in the same thread, answers that prompt
+        # rather than being treated as a new one-word question.
+        if question.strip().lower() in {repo["slug"].lower(), repo["name"].lower()}:
+            pending_question = _take_pending_question(channel_id, thread_ts, slack_user)
+            if pending_question:
+                question = pending_question
+                values["question"] = question
+        values["repo_slug"] = repo["slug"]
+        values["repo_name"] = repo["name"]
+        branch_name = _default_branch_name(repo)
+        # Only kick off a sync/index job the first time this repo's default
+        # branch is used; once it's approved, the shared answer pipeline
+        # below already re-checks freshness itself, so doing it again here
+        # too just races that check and flickers a stale "still preparing"
+        # notice on every later question.
+        if not db.get_repo_branch_by_name(repo["id"], branch_name):
+            try:
+                ask_service.prepare_repo_branch(
+                    repo,
+                    branch_name,
+                    actor=f"slack:{team_id}:{slack_user}",
+                )
+            except Exception:
+                # Two near-simultaneous first-time questions about the same
+                # repo can both reach here before either finishes; if the
+                # other one already won and created the branch, that's a
+                # completed setup, not a failure.
+                if not db.get_repo_branch_by_name(repo["id"], branch_name):
+                    raise
+        values["branch"] = branch_name
+    except Exception as exc:
+        logger.exception("CodeAtlas could not prepare a repository/branch for a Slack question.")
+        try:
+            _send_user_message(
+                values,
+                "CodeAtlas could not answer",
+                [{
+                    "type": "section",
+                    "text": _mrkdwn(f"I couldn't prepare that repository.\n\nReason: {_http_detail(exc)}"),
+                }],
+            )
+        except Exception:
+            pass
+        return
+    _run_answer_job(values, follow_up=False, deep=False)
+
+
+def _start_mention_job(payload: dict, event: dict) -> None:
+    _executor.submit(_run_mention_job, payload, event)
+
+
 def _open_ask_modal(metadata: dict, trigger_id: str) -> None:
     try:
         _slack_api("views.open", {
@@ -1211,6 +1514,49 @@ async def slash_command(request: Request):
     }
     logger.info("Accepted Slack slash command for team=%s channel=%s user=%s", team_id, channel_id, slack_user)
     _open_ask_modal(metadata, _form_value(form, "trigger_id"))
+    return Response(status_code=200)
+
+
+@router.post("/events")
+async def slack_events(request: Request):
+    if not slack_enabled():
+        raise HTTPException(status_code=404, detail="Slack integration is not enabled.")
+    body = await request.body()
+    verify_slack_request(request.headers, body)
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid Slack payload.")
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload.get("challenge", "")}
+    _authorize_slack_workspace(payload)
+    if payload.get("type") != "event_callback":
+        return Response(status_code=200)
+    if _already_processed_event(payload.get("event_id")):
+        return Response(status_code=200)
+    event = payload.get("event") or {}
+    event_type = event.get("type")
+    is_channel_mention = event_type == "app_mention" and not event.get("bot_id")
+    # A DM's messages are always directed at CodeAtlas, so no @mention is
+    # required there; message.im only fires for actual 1:1/group DMs, and
+    # subtype is set for edits/deletes/joins rather than a new message to
+    # answer.
+    is_dm_message = (
+        event_type == "message"
+        and event.get("channel_type") == "im"
+        and not event.get("subtype")
+        and not event.get("bot_id")
+    )
+    if is_channel_mention or is_dm_message:
+        # A DM mention can trigger both app_mention and message.im for the
+        # same message; only answer it once.
+        if _already_answered_message(event.get("channel"), event.get("ts")):
+            return Response(status_code=200)
+        logger.info(
+            "Accepted Slack %s for team=%s channel=%s user=%s",
+            event_type, payload.get("team_id"), event.get("channel"), event.get("user"),
+        )
+        _start_mention_job(payload, event)
     return Response(status_code=200)
 
 

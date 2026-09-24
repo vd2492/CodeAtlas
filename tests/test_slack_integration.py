@@ -627,6 +627,461 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(values["question"], "How does login work?")
 
 
+class SlackEventsTests(unittest.TestCase):
+    """@codeatlas mention entry point (Phase A): Events API handshake, auth,
+    and dedupe. Repo/branch resolution is covered in SlackMentionJobTests."""
+
+    def setUp(self):
+        self.secret = "test-signing-secret"
+        self.env = patch.dict(os.environ, {
+            "CODEATLAS_SLACK_ENABLED": "true",
+            "CODEATLAS_SLACK_SIGNING_SECRET": self.secret,
+            "CODEATLAS_SLACK_BOT_TOKEN": "xoxb-test-token",
+            "CODEATLAS_SLACK_ALLOWED_TEAM_IDS": "T123",
+        })
+        self.env.start()
+        slack_routes._SEEN_EVENT_IDS.clear()
+        slack_routes._SEEN_MESSAGE_KEYS.clear()
+
+    def tearDown(self):
+        self.env.stop()
+
+    def _post_events(self, payload: dict):
+        body = json.dumps(payload).encode("utf-8")
+        headers = {**signed_headers(self.secret, body), "content-type": "application/json"}
+        return asyncio.run(slack_routes.slack_events(FakeRequest(body, headers)))
+
+    def test_url_verification_echoes_challenge(self):
+        result = self._post_events({"type": "url_verification", "challenge": "abc123"})
+        self.assertEqual(result, {"challenge": "abc123"})
+
+    def test_app_mention_dispatches_mention_job(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev1",
+            "event": {
+                "type": "app_mention",
+                "channel": "C1",
+                "user": "U1",
+                "ts": "111.222",
+                "text": "<@B1> how do I go online?",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            response = self._post_events(payload)
+        self.assertEqual(response.status_code, 200)
+        start.assert_called_once()
+        _, event = start.call_args.args
+        self.assertEqual(event["text"], "<@B1> how do I go online?")
+
+    def test_duplicate_event_id_is_processed_once(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev1",
+            "event": {"type": "app_mention", "channel": "C1", "user": "U1", "ts": "1", "text": "hi"},
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(payload)
+            self._post_events(payload)
+        start.assert_called_once()
+
+    def test_bot_originated_mention_is_ignored(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev2",
+            "event": {
+                "type": "app_mention",
+                "channel": "C1",
+                "user": "U1",
+                "ts": "1",
+                "text": "hi",
+                "bot_id": "B123",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(payload)
+        start.assert_not_called()
+
+    def test_disallowed_team_is_rejected(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T999",
+            "event_id": "Ev3",
+            "event": {"type": "app_mention", "channel": "C1", "user": "U1", "ts": "1", "text": "hi"},
+        }
+        with self.assertRaises(HTTPException) as raised:
+            self._post_events(payload)
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_dm_message_dispatches_mention_job_without_a_mention(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev4",
+            "event": {
+                "type": "message",
+                "channel": "D1",
+                "channel_type": "im",
+                "user": "U1",
+                "ts": "1",
+                "text": "how do I go online?",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            response = self._post_events(payload)
+        self.assertEqual(response.status_code, 200)
+        start.assert_called_once()
+
+    def test_dm_message_with_subtype_is_ignored(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev5",
+            "event": {
+                "type": "message",
+                "channel": "D1",
+                "channel_type": "im",
+                "user": "U1",
+                "ts": "1",
+                "text": "edited text",
+                "subtype": "message_changed",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(payload)
+        start.assert_not_called()
+
+    def test_plain_channel_message_without_mention_is_ignored(self):
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev6",
+            "event": {
+                "type": "message",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "ts": "1",
+                "text": "just chatting, not asking codeatlas",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(payload)
+        start.assert_not_called()
+
+    def test_same_message_is_not_answered_twice_across_event_types(self):
+        """A DM @mention can fire both app_mention and message.im for the
+        same physical message; only one of them should be answered."""
+        mention_payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev7a",
+            "event": {
+                "type": "app_mention",
+                "channel": "D1",
+                "user": "U1",
+                "ts": "100.001",
+                "text": "<@B1> how do I go online?",
+            },
+        }
+        dm_payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev7b",
+            "event": {
+                "type": "message",
+                "channel": "D1",
+                "channel_type": "im",
+                "user": "U1",
+                "ts": "100.001",
+                "text": "<@B1> how do I go online?",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(mention_payload)
+            self._post_events(dm_payload)
+        start.assert_called_once()
+
+
+class SlackMentionRoutingTests(unittest.TestCase):
+    """Deterministic (Phase A) mention parsing and repo inference."""
+
+    def test_strip_mention_removes_leading_tokens(self):
+        self.assertEqual(
+            slack_routes._strip_mention("<@U123>  how do I go online?"),
+            "how do I go online?",
+        )
+        self.assertEqual(slack_routes._strip_mention("<@U1><@U2> hi"), "hi")
+        self.assertEqual(slack_routes._strip_mention("no mention here"), "no mention here")
+
+    def test_infer_repo_matches_explicit_name_or_slug(self):
+        repos = [
+            {"slug": "gandalf", "name": "Gandalf Android"},
+            {"slug": "frodo", "name": "Frodo Backend"},
+        ]
+        self.assertEqual(
+            slack_routes._infer_repo_from_text("how do I go online in gandalf", repos)["slug"],
+            "gandalf",
+        )
+        self.assertEqual(
+            slack_routes._infer_repo_from_text("frodo supply flow question", repos)["slug"],
+            "frodo",
+        )
+
+    def test_infer_repo_returns_none_when_ambiguous_or_unmatched(self):
+        repos = [
+            {"slug": "gandalf", "name": "Gandalf Android"},
+            {"slug": "frodo", "name": "Frodo Backend"},
+        ]
+        self.assertIsNone(slack_routes._infer_repo_from_text("how does login work?", repos))
+
+    def test_infer_repo_defaults_to_sole_published_repo(self):
+        repos = [{"slug": "gandalf", "name": "Gandalf Android"}]
+        self.assertEqual(
+            slack_routes._infer_repo_from_text("how does login work?", repos)["slug"],
+            "gandalf",
+        )
+
+    def test_infer_repo_matches_name_with_punctuated_edges(self):
+        """\\b fails to match a candidate that itself starts/ends with
+        punctuation (e.g. a repo named "Payments API (EU)"); the fix uses
+        (?<!\\w)/(?!\\w) instead, which matches correctly either way."""
+        repos = [{"slug": "payments", "name": "Payments API (EU)"}]
+        self.assertEqual(
+            slack_routes._infer_repo_from_text(
+                "does codeatlas support payments api (eu) yet?", repos
+            )["slug"],
+            "payments",
+        )
+
+    def test_strip_mention_removes_mid_sentence_token(self):
+        self.assertEqual(
+            slack_routes._strip_mention("hey <@B123>, how do I go online?"),
+            "hey , how do I go online?",
+        )
+
+
+class SlackMentionJobTests(unittest.TestCase):
+    """End-to-end _run_mention_job behavior, with the answer pipeline mocked
+    out (it's exercised separately by the existing modal-flow tests)."""
+
+    def setUp(self):
+        slack_routes._PENDING_REPO_QUESTIONS.clear()
+
+    def _event(self, text="how do I go online?", **overrides):
+        event = {
+            "type": "app_mention",
+            "channel": "C1",
+            "user": "U1",
+            "ts": "111.222",
+            "text": f"<@B1> {text}",
+        }
+        event.update(overrides)
+        return event
+
+    def _payload(self, event):
+        return {"type": "event_callback", "team_id": "T123", "event_id": "Ev1", "event": event}
+
+    def test_answers_when_repo_and_branch_resolve(self):
+        repo = {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"}
+        event = self._event()
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repo]), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value=None), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch") as prepare, \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(event), event)
+
+        prepare.assert_called_once()
+        run_job.assert_called_once()
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["repo_slug"], "gandalf")
+        self.assertEqual(values["branch"], "main")
+        self.assertEqual(values["ask_type"], slack_routes.ASK_SINGLE)
+        self.assertEqual(values["user_type"], slack_routes.USER_PRODUCT)
+        self.assertEqual(values["thread_ts"], "111.222")
+        self.assertEqual(values["question"], "how do I go online?")
+
+    def test_skips_redundant_prepare_when_branch_already_approved(self):
+        """Once a repo's default branch is already approved, re-preparing it
+        on every later question only races the answer pipeline's own
+        freshness check and flickers a stale 'still preparing' notice."""
+        repo = {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"}
+        event = self._event()
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repo]), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch") as prepare, \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(event), event)
+
+        prepare.assert_not_called()
+        run_job.assert_called_once()
+        self.assertEqual(run_job.call_args.args[0]["branch"], "main")
+
+    def test_bare_repo_name_reply_resumes_the_original_question(self):
+        """After 'which repository?', replying with just the repo name in
+        the SAME thread should re-ask the original question against that
+        repo, not answer the bare repo name as a new one-word question."""
+        repos = [
+            {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"},
+            {"id": 2, "slug": "frodo", "name": "Frodo Backend", "status": "published"},
+        ]
+        ambiguous_event = self._event(text="how do I go online?", ts="100.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_send_user_message"):
+            slack_routes._run_mention_job(self._payload(ambiguous_event), ambiguous_event)
+
+        # A real threaded reply carries thread_ts = the original message's ts.
+        reply_event = self._event(text="gandalf", ts="100.002", thread_ts="100.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repos[0]]), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch"), \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(reply_event), reply_event)
+
+        run_job.assert_called_once()
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["repo_slug"], "gandalf")
+        self.assertEqual(values["question"], "how do I go online?")
+
+    def test_bare_repo_name_reply_in_different_thread_is_not_resumed(self):
+        """Two concurrent ambiguous questions in the same channel/DM must
+        not clobber each other's pending entry: a bare repo-name reply in a
+        DIFFERENT thread than the one that asked 'which repository?' should
+        not resume that other thread's question."""
+        repos = [
+            {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"},
+            {"id": 2, "slug": "frodo", "name": "Frodo Backend", "status": "published"},
+        ]
+        ambiguous_event = self._event(text="how do I go online?", ts="100.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_send_user_message"):
+            slack_routes._run_mention_job(self._payload(ambiguous_event), ambiguous_event)
+
+        # A bare "gandalf" in an unrelated thread is its own new question.
+        reply_event = self._event(text="gandalf", ts="200.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repos[0]]), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch"), \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(reply_event), reply_event)
+
+        run_job.assert_called_once()
+        self.assertEqual(run_job.call_args.args[0]["question"], "gandalf")
+
+    def test_bare_repo_name_without_pending_question_is_answered_literally(self):
+        """No prior 'which repository?' prompt in this channel/user means a
+        bare repo-name message is just answered as-is (existing behavior)."""
+        repo = {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"}
+        event = self._event(text="gandalf")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repo]), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch"), \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(event), event)
+
+        run_job.assert_called_once()
+        self.assertEqual(run_job.call_args.args[0]["question"], "gandalf")
+
+    def test_concurrent_prepare_race_is_not_reported_as_a_failure(self):
+        """Two near-simultaneous first-time questions about the same repo
+        can both see 'not approved yet' and both call prepare_repo_branch;
+        if a concurrent call already won and created the branch, the loser
+        should proceed normally instead of erroring out to the user."""
+        repo = {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"}
+        event = self._event()
+        # First call (inside prepare_repo_branch) says "not approved yet";
+        # by the time we recover from the raised exception, a concurrent
+        # call has already created it.
+        branch_lookup = iter([None, {"id": 5}])
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=[repo]), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(
+                    slack_routes.db, "get_repo_branch_by_name",
+                    side_effect=lambda *a, **k: next(branch_lookup),
+                ), \
+                patch.object(
+                    slack_routes.ask_service, "prepare_repo_branch",
+                    side_effect=RuntimeError("UNIQUE constraint failed"),
+                ), \
+                patch.object(slack_routes, "_run_answer_job") as run_job, \
+                patch.object(slack_routes, "_send_user_message") as send:
+            slack_routes._run_mention_job(self._payload(event), event)
+
+        send.assert_not_called()
+        run_job.assert_called_once()
+        self.assertEqual(run_job.call_args.args[0]["branch"], "main")
+
+    def test_unhandled_error_in_repo_inference_notifies_user_and_does_not_raise(self):
+        """A previously-unguarded exception (e.g. a transient DB error from
+        published_repos()) must not vanish silently in the executor thread
+        with no log and no reply."""
+        event = self._event()
+        with patch.object(
+                slack_routes.ask_service, "published_repos",
+                side_effect=RuntimeError("db unavailable"),
+        ), patch.object(slack_routes, "_send_user_message") as send:
+            slack_routes._run_mention_job(self._payload(event), event)  # must not raise
+
+        send.assert_called_once()
+        blocks = send.call_args.args[2]
+        self.assertIn("db unavailable", blocks[0]["text"]["text"])
+
+    def test_empty_question_prompts_for_one(self):
+        event = self._event(text="")
+        with patch.object(slack_routes, "_send_user_message") as send:
+            slack_routes._run_mention_job(self._payload(event), event)
+        send.assert_called_once()
+        blocks = send.call_args.args[2]
+        self.assertIn("Ask me something", blocks[0]["text"]["text"])
+
+    def test_ambiguous_repo_asks_user_to_specify(self):
+        repos = [
+            {"id": 1, "slug": "gandalf", "name": "Gandalf Android", "status": "published"},
+            {"id": 2, "slug": "frodo", "name": "Frodo Backend", "status": "published"},
+        ]
+        event = self._event(text="how does login work?")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_send_user_message") as send:
+            slack_routes._run_mention_job(self._payload(event), event)
+        send.assert_called_once()
+        blocks = send.call_args.args[2]
+        self.assertIn("couldn't tell which repository", blocks[0]["text"]["text"])
+
+
+class SlackThreadReplyTests(unittest.TestCase):
+    """_send_user_message must keep every existing surface working (Slack
+    routing regression guard) while adding the mention flow's threaded reply."""
+
+    def test_thread_reply_used_when_mention_originated(self):
+        with patch.object(slack_routes, "_slack_api") as api:
+            slack_routes._send_user_message(
+                {"channel_id": "C1", "thread_ts": "111.222"},
+                "hello",
+                [{"type": "section", "text": {"type": "mrkdwn", "text": "hi"}}],
+            )
+        api.assert_called_once()
+        method, payload = api.call_args.args
+        self.assertEqual(method, "chat.postMessage")
+        self.assertEqual(payload["channel"], "C1")
+        self.assertEqual(payload["thread_ts"], "111.222")
+
+    def test_ephemeral_fallback_unchanged_when_no_thread_or_response_url(self):
+        with patch.object(slack_routes, "_post_ephemeral") as ephemeral:
+            slack_routes._send_user_message(
+                {"channel_id": "C1", "slack_user_id": "U1"},
+                "hello",
+            )
+        ephemeral.assert_called_once()
+
+
 class SlackAnswerFormattingTests(unittest.TestCase):
     """Slack renders mrkdwn, not Markdown: it has no headings and uses a single
     asterisk for bold, so an answer posted verbatim showed literal ## and **."""
