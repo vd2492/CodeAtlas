@@ -189,7 +189,7 @@ blank until judging runs.
 
 ### Abstention is not "say I don't know"
 
-Nine items expect the answer *"this cannot be determined here."* Every one of
+Eight items expect the answer *"this cannot be determined here."* Every one of
 them **also requires the constructive half** — naming where the answer actually
 lives, or who to ask. A bare refusal fails.
 
@@ -237,7 +237,7 @@ two traps of that shape.
   roughly three quarters of what you write.
 - **Watch the cells, not the total.** A cell needs 10–15 items to mean
   anything. Currently healthy: `admin_vs_code` 11, `S3` 12, `K1` 11,
-  `C` 10, abstention 9. Thin, read pooled: `S3b` 6, `S2` 6, `L` 2, `N` 1.
+  `C` 10, abstention 8. Thin, read pooled: `S3b` 6, `S2` 6, `L` 2, `N` 1.
 - **Items beat repeats.** Item-level variance dominates run-level flakiness.
   Keep 3 reps; never trade items for more reps.
 - **Spot-check cited gold.** It was produced by an agent reading source. The

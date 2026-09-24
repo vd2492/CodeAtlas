@@ -79,18 +79,28 @@ items:
     riders are still being charged. Why?
   expect:
     answer: >-
-      the lookup falls through to a global default when no active city row
-      exists, and that default still satisfies the caller's charge condition
+      two things keep the fee going: the cached city amount, and once that is
+      gone, a fallback to a default fee
     must_mention:
-      - there is a fallback chain, not a single row
-      - the default path returns a sentinel id of -1 which passes the gate
-      - turning the fee off requires the default config to be absent too
-    must_not: attribute it to caching alone
+      - the city amount is cached for up to a day, and the cache ignores the active flag, so unticking and saving the row keeps the old amount in use
+      - when no active city amount is found, the system falls back to a default fee instead of charging nothing
+      - stopping the fee for that city means the default must not apply to it either
+    should_mention: the default path passes the charge check even though no city row is active
+    must_not: claim that unticking "is active" on its own stops the fee
   gold_citations:
+    - RMS/models.py:4150-4157
+    - common/redis_keys.py:91
     - RMS/helper.py:1974-2013
     - RMS/helper.py:1957-1972
     - RMS/tasks.py:1214-1215
-  evidence_paths: ["**/RMS/helper.py", "**/RMS/tasks.py"]
+  notes: >-
+    Corrected 2026-09-24. The old gold described only the fallback and had
+    must_not "attribute it to caching alone", which contradicted
+    s3-cache-ignores-is-active: the cache really does ignore is_active, and
+    saving the row rewrites it. Both models found that bug with no system
+    prompt and scored 0. A complete answer covers the cache and the fallback.
+    The "-1 sentinel" moves to should_mention; it is implementation detail.
+  evidence_paths: ["**/RMS/helper.py", "**/RMS/tasks.py", "**/RMS/models.py", "**/common/redis_keys.py"]
 
 - id: s3-cache-ignores-is-active
   status: grounded
@@ -601,16 +611,28 @@ items:
 # =================================================================
 
 - id: l-zone-radius-negative
-  kind: abstention
   status: grounded
   scope_class: L
   band: B4
   question: "How do I increase the zone radius for Bangalore?"
   expect:
-    verdict: not_configurable
-    must_say: zones here have only a name, with no radius or geometry
-    must_not: invent a radius, boundary or geometry field
-  evidence_paths: ["**/RMS/**"]
+    verdict: not_configurable_in_admin
+    must_mention:
+      - there is no admin setting for it; zones in the admin have only a name
+      - the only zone radius is a fixed 5 km used to find nearby zones, the same for every city
+      - changing it, or making Bangalore different, needs a code change
+    should_mention: it widens how far the app looks for a nearby zone; it does not change a zone's boundary
+    must_not: describe an admin or per-city radius setting that can be edited today
+  gold_citations:
+    - RMS/models.py:638-640
+    - rider_app/v6_views.py:231-234
+  notes: >-
+    Corrected 2026-09-24. Originally "zones have only a name, no radius",
+    based on RMS.zone alone. The rider app hardcodes a 5 km nearby-zone search
+    radius for Quick Commerce zones (rider_app/v6_views.py:232). Luna answered
+    with that 5 km and was scored 0 against the old gold; the answer was
+    largely right. No longer an abstention item: the answer is determinable.
+  evidence_paths: ["**/rider_app/v6_views.py", "**/RMS/models.py"]
 
 - id: l-zone-add
   status: grounded
@@ -947,7 +969,7 @@ scorecard_template: |
 
   class                    retrieval  facets  audience  abstain   n
   admin_vs_code                ?        ?        ?        ?       11
-  abstention                   ?        ?        ?        ?        9
+  abstention                   ?        ?        ?        ?        8
   K1  key-value                ?        ?        ?        ?       11
   N   hardcoded, not in admin  ?        ?        ?        -        1
   S3  city override            ?        ?        ?        ?       12
