@@ -845,9 +845,15 @@ def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
     chunks = _mrkdwn_chunks(markdown_to_mrkdwn(answer))
     for chunk in chunks[:8]:
         blocks.append({"type": "section", "text": _mrkdwn(chunk)})
+    context_elements = []
     mode = response.get("retrieval_mode")
     if mode:
-        blocks.append({"type": "context", "elements": [_mrkdwn(f"Retrieval: `{mode}`")]})
+        context_elements.append(_mrkdwn(f"Retrieval: `{mode}`"))
+    provider = response.get("provider_used")
+    if provider:
+        context_elements.append(_mrkdwn(f"Model: `{provider}`"))
+    if context_elements:
+        blocks.append({"type": "context", "elements": context_elements})
     value = _private_metadata(topic)
     actions = [
         {

@@ -565,6 +565,42 @@ class SlackIntegrationTests(unittest.TestCase):
             slack_routes.ACTION_NEW,
         ])
 
+    def test_answer_blocks_show_retrieval_mode_and_model(self):
+        topic = {
+            "repo_name": "Payments",
+            "branch": "main",
+            "user_type": slack_routes.USER_PRODUCT,
+            "question": "How does login work?",
+        }
+        response = {
+            "answer": "Login creates a session.",
+            "investigate_deeply_available": False,
+            "retrieval_mode": "agentic",
+            "provider_used": "shared:mimo-v2.5",
+        }
+
+        blocks = slack_routes._answer_text_blocks(response, topic)
+
+        context_block = next(b for b in blocks if b["type"] == "context")
+        context_text = [el["text"] for el in context_block["elements"]]
+        self.assertIn("Retrieval: `agentic`", context_text)
+        self.assertIn("Model: `shared:mimo-v2.5`", context_text)
+
+    def test_answer_blocks_omit_model_line_when_not_reported(self):
+        topic = {
+            "repo_name": "Payments",
+            "branch": "main",
+            "user_type": slack_routes.USER_PRODUCT,
+            "question": "How does login work?",
+        }
+        response = {"answer": "Login creates a session.", "retrieval_mode": "compact_context"}
+
+        blocks = slack_routes._answer_text_blocks(response, topic)
+
+        context_block = next(b for b in blocks if b["type"] == "context")
+        context_text = [el["text"] for el in context_block["elements"]]
+        self.assertEqual(context_text, ["Retrieval: `compact_context`"])
+
     def test_view_submission_dispatches_answer_job(self):
         payload = {
             "type": "view_submission",
