@@ -97,6 +97,18 @@ class _TTLCache:
             self._evict_locked(now)
             return key in self._store
 
+    def get(self, key: Optional[str]) -> Optional[object]:
+        """Non-destructive read: the stored value if present and unexpired,
+        else None. Unlike `pop`, a hit is left in place so later lookups for
+        the same key keep matching."""
+        if not key:
+            return None
+        now = time.time()
+        with self._lock:
+            self._evict_locked(now)
+            entry = self._store.get(key)
+        return entry[0] if entry else None
+
     def set(self, key: Optional[str], value: object) -> None:
         if not key:
             return
@@ -188,6 +200,29 @@ def _is_mentioned_thread(channel: Optional[str], thread_ts: Optional[str]) -> bo
     if not channel or not thread_ts:
         return False
     return _MENTIONED_THREADS.has(f"{channel}:{thread_ts}")
+
+
+# The latest resolved repo/branch/conversation for a mentioned thread, so a
+# later mention-less reply there can continue that exact conversation
+# (follow_up=True, same repo/branch) instead of re-inferring the repo from
+# just that one reply alone and losing everything already established --
+# e.g. answering a clarifying question CodeAtlas itself just asked would
+# otherwise re-trigger "I couldn't tell which repository you mean."
+_THREAD_CONTEXT = _TTLCache(_THREAD_MEMORY_TTL_SECONDS)
+
+
+def _remember_thread_context(topic: dict) -> None:
+    channel = topic.get("channel_id")
+    thread_ts = topic.get("thread_ts")
+    if not channel or not thread_ts:
+        return
+    _THREAD_CONTEXT.set(f"{channel}:{thread_ts}", topic)
+
+
+def _thread_context(channel: Optional[str], thread_ts: Optional[str]) -> Optional[dict]:
+    if not channel or not thread_ts:
+        return None
+    return _THREAD_CONTEXT.get(f"{channel}:{thread_ts}")
 
 
 def _env_bool(name: str, default: str = "false") -> bool:
@@ -953,6 +988,7 @@ def _answer_topic_payload(values: dict, response: dict, branch_context: dict) ->
         "question": response.get("question") or values.get("question"),
     }
     topic["topic_label"] = _topic_label(topic)
+    _remember_thread_context(topic)
     return topic
 
 
@@ -1375,6 +1411,40 @@ def _start_mention_job(payload: dict, event: dict) -> None:
     _executor.submit(_run_mention_job, payload, event)
 
 
+def _run_thread_follow_up_job(payload: dict, event: dict) -> None:
+    """A mention-less reply inside a thread CodeAtlas already answered in:
+    continue that exact conversation (same repo/branch, follow_up=True)
+    instead of re-inferring the repo from just this one reply, which would
+    lose the context and could re-trigger "which repository?" for a message
+    that never names one -- e.g. answering CodeAtlas's own clarifying
+    question."""
+    channel_id = event.get("channel")
+    thread_ts = event.get("thread_ts")
+    slack_user = event.get("user")
+    question = _strip_mention(event.get("text") or "")
+    if not channel_id or not slack_user or not question:
+        return
+    context = _thread_context(channel_id, thread_ts)
+    if not context:
+        # No resolved answer yet for this thread (e.g. it's still waiting on
+        # a "which repository?" reply, or the first answer is still in
+        # flight) -- fall back to fresh inference, which also covers a bare
+        # repo-name reply resuming the pending question.
+        _run_mention_job(payload, event)
+        return
+    values = {
+        **context,
+        "user_id": slack_user,
+        "slack_user_id": slack_user,
+        "question": question,
+    }
+    _run_answer_job(values, follow_up=True)
+
+
+def _start_thread_follow_up_job(payload: dict, event: dict) -> None:
+    _executor.submit(_run_thread_follow_up_job, payload, event)
+
+
 def _open_ask_modal(metadata: dict, trigger_id: str) -> None:
     try:
         _slack_api("views.open", {
@@ -1613,7 +1683,10 @@ async def slack_events(request: Request):
             "Accepted Slack %s for team=%s channel=%s user=%s",
             event_type, payload.get("team_id"), event.get("channel"), event.get("user"),
         )
-        _start_mention_job(payload, event)
+        if is_known_thread_reply:
+            _start_thread_follow_up_job(payload, event)
+        else:
+            _start_mention_job(payload, event)
     return Response(status_code=200)
 
 

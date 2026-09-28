@@ -836,12 +836,14 @@ class SlackEventsTests(unittest.TestCase):
                 "text": "and what about the payments flow?",
             },
         }
-        with patch.object(slack_routes, "_start_mention_job") as start:
+        with patch.object(slack_routes, "_start_mention_job") as start_mention, \
+                patch.object(slack_routes, "_start_thread_follow_up_job") as start_follow_up:
             self._post_events(mention_payload)
             response = self._post_events(reply_payload)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(start.call_count, 2)
-        _, second_event = start.call_args_list[1].args
+        start_mention.assert_called_once()
+        start_follow_up.assert_called_once()
+        _, second_event = start_follow_up.call_args.args
         self.assertEqual(second_event["ts"], "200.002")
 
     def test_reply_in_an_unmentioned_thread_is_still_ignored(self):
@@ -1180,6 +1182,80 @@ class SlackMentionJobTests(unittest.TestCase):
         send.assert_called_once()
         blocks = send.call_args.args[2]
         self.assertIn("couldn't tell which repository", blocks[0]["text"]["text"])
+
+
+class SlackThreadFollowUpJobTests(unittest.TestCase):
+    """_run_thread_follow_up_job: a mention-less reply in a thread CodeAtlas
+    already answered in continues that conversation instead of re-inferring
+    the repo from just the one reply and losing everything already
+    established (e.g. answering CodeAtlas's own clarifying question)."""
+
+    def setUp(self):
+        slack_routes._THREAD_CONTEXT.clear()
+
+    def _event(self, text, **overrides):
+        event = {
+            "type": "message",
+            "channel": "C1",
+            "channel_type": "channel",
+            "user": "U1",
+            "ts": "100.002",
+            "thread_ts": "100.001",
+            "text": text,
+        }
+        event.update(overrides)
+        return event
+
+    def _payload(self, event):
+        return {"type": "event_callback", "team_id": "T123", "event_id": "Ev1", "event": event}
+
+    def test_reuses_stored_repo_and_conversation_as_a_follow_up(self):
+        context = {
+            "team_id": "T123",
+            "channel_id": "C1",
+            "thread_ts": "100.001",
+            "ask_type": slack_routes.ASK_SINGLE,
+            "user_type": slack_routes.USER_PRODUCT,
+            "repo_slug": "sortbuddy",
+            "repo_name": "SortBuddy",
+            "branch_id": 5,
+            "branch": "release/4.9.0",
+            "branch_workspace": "sortbuddy--branch-5",
+            "conversation_id": "conv-42",
+            "question": "how does login work?",
+        }
+        slack_routes._THREAD_CONTEXT.set("C1:100.001", context)
+        event = self._event("user-facing sign-in screen")
+
+        with patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_thread_follow_up_job(self._payload(event), event)
+
+        run_job.assert_called_once()
+        values, kwargs = run_job.call_args.args[0], run_job.call_args.kwargs
+        self.assertTrue(kwargs.get("follow_up"))
+        self.assertEqual(values["repo_slug"], "sortbuddy")
+        self.assertEqual(values["branch"], "release/4.9.0")
+        self.assertEqual(values["conversation_id"], "conv-42")
+        self.assertEqual(values["question"], "user-facing sign-in screen")
+
+    def test_falls_back_to_fresh_inference_without_stored_context(self):
+        """No successful answer yet for this thread (e.g. it's still
+        mid-disambiguation) -- fall back to _run_mention_job rather than
+        answering with no repo at all."""
+        event = self._event("sortbuddy")
+        with patch.object(slack_routes, "_run_mention_job") as run_mention:
+            slack_routes._run_thread_follow_up_job(self._payload(event), event)
+        run_mention.assert_called_once()
+
+    def test_empty_reply_is_ignored(self):
+        context = {"channel_id": "C1", "thread_ts": "100.001", "repo_slug": "sortbuddy"}
+        slack_routes._THREAD_CONTEXT.set("C1:100.001", context)
+        event = self._event("   ")
+        with patch.object(slack_routes, "_run_answer_job") as run_job, \
+                patch.object(slack_routes, "_run_mention_job") as run_mention:
+            slack_routes._run_thread_follow_up_job(self._payload(event), event)
+        run_job.assert_not_called()
+        run_mention.assert_not_called()
 
 
 class SlackThreadReplyTests(unittest.TestCase):
