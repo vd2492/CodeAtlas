@@ -237,6 +237,8 @@
       box-shadow: 0 4px 14px -8px rgba(79,140,255,0.8);
     }
     .actions button:not(.ghost):not(.danger):hover { filter: brightness(1.08); transform: translateY(-1px); }
+    .branch-actions { display: flex; flex-direction: column; align-items: stretch; white-space: normal; }
+    .branch-actions button { margin: 2px 0; text-align: center; }
     /* secondary (Edit / Grant / Members) */
     .actions button.ghost {
       background: rgba(148,163,184,0.12); border-color: var(--line); color: var(--fg);
@@ -307,7 +309,8 @@
       display:flex; flex-direction:column;
     }
     .feedback-sheet {
-      min-height:180px; overflow:auto; display:grid; gap:14px;
+      flex:1 1 auto; min-height:0; overflow:auto; display:grid; gap:14px;
+      grid-auto-rows:max-content; align-content:start;
       overscroll-behavior:contain; scrollbar-gutter:stable;
     }
     .feedback-repo {
@@ -2421,7 +2424,7 @@ async function refreshBranchRows() {
         <td><span class="pill ${branch.freshness_status === "up_to_date" ? "published" : "cloned"}">${esc(branchFreshnessLabel(branch))}</span>
           <div class="branch-detail">Remote: <span class="mono">${esc(shortRemote)}</span><br>Checked: ${esc(formatLocalTimestamp(branch.last_checked_at, "never"))}${branch.last_error ? `<br>${esc(branch.last_error)}` : ""}</div></td>
         <td class="branch-settings-cell"></td>
-        <td class="actions branch-actions"></td>`;
+        <td class="actions"><div class="branch-actions"></div></td>`;
 
       const settings = document.createElement("div");
       settings.className = "branch-settings";
@@ -2459,6 +2462,7 @@ async function refreshBranchRows() {
       const syncButton = btn(branch.job_running ? "Working…" : "Sync & index now", () => syncBranch(branch.id, branch.name));
       syncButton.disabled = branch.job_running;
       actions.appendChild(syncButton);
+      if (!branch.is_default) actions.appendChild(btn("Make default branch", () => makeDefaultBranch(branch)));
       if (!branch.is_legacy) actions.appendChild(btn("Remove", () => removeBranch(branch), "danger"));
       tbody.appendChild(tr);
     }
@@ -2607,6 +2611,15 @@ async function syncBranch(branchId, branchName = "") {
     failRepoActivity(activity, e.message);
     flash(e.message);
   }
+}
+
+async function makeDefaultBranch(branch) {
+  if (!(await modalConfirm("Make default branch", `Make "${branch.name}" the default branch for this repository?`))) return;
+  try {
+    await api(`/admin/repos/${curBranchesSlug}/branches/${branch.id}/set-default`, { method: "POST" });
+    flash(`${branch.name} is now the default branch`, true);
+    refreshBranchRows();
+  } catch (e) { flash(e.message); }
 }
 
 async function removeBranch(branch) {

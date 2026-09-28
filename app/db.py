@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS repo_branches (
     freshness_interval_seconds INTEGER NOT NULL DEFAULT 300,
     is_legacy                  INTEGER NOT NULL DEFAULT 0,
     is_default                 INTEGER NOT NULL DEFAULT 0,
+    default_pinned             INTEGER NOT NULL DEFAULT 0,
     created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (repo_id, name)
@@ -274,6 +275,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE repo_branches "
                 "ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
+            )
+        if "default_pinned" not in branch_columns:
+            conn.execute(
+                "ALTER TABLE repo_branches "
+                "ADD COLUMN default_pinned INTEGER NOT NULL DEFAULT 0"
             )
         token_usage_columns = {
             row["name"] for row in conn.execute(
@@ -880,6 +886,42 @@ def set_repo_default_branch(repo_id: int, branch_name: str) -> None:
             "UPDATE repo_branches SET is_default = CASE WHEN name = ? THEN 1 ELSE 0 END, "
             "updated_at = datetime('now') WHERE repo_id = ?",
             (branch_name, repo_id),
+        )
+
+
+def set_repo_default_branch_pinned(repo_id: int, branch_name: str) -> None:
+    """Admin-chosen default branch. Sticks until another branch is pinned,
+    unlike set_repo_default_branch which discovery re-derives from the
+    remote's HEAD on every call."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE repo_branches SET "
+            "is_default = CASE WHEN name = ? THEN 1 ELSE 0 END, "
+            "default_pinned = CASE WHEN name = ? THEN 1 ELSE 0 END, "
+            "updated_at = datetime('now') WHERE repo_id = ?",
+            (branch_name, branch_name, repo_id),
+        )
+
+
+def reassert_pinned_default_branch(repo_id: int) -> None:
+    """Re-apply an admin's pinned default over is_default, if one exists.
+
+    Callers that mirror the remote's HEAD onto is_default (discovery) or
+    that insert a new branch guessing is_default from the remote's HEAD
+    (approval) call this right after, so a pin set concurrently by another
+    request always wins regardless of statement ordering: it's a single
+    atomic UPDATE, not a separate read-then-write, so there's no window for
+    the two to interleave. No-op when nothing is pinned for this repo.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE repo_branches SET is_default = default_pinned, "
+            "updated_at = datetime('now') "
+            "WHERE repo_id = ? AND EXISTS ("
+            "  SELECT 1 FROM repo_branches AS pinned "
+            "  WHERE pinned.repo_id = repo_branches.repo_id AND pinned.default_pinned = 1"
+            ")",
+            (repo_id,),
         )
 
 

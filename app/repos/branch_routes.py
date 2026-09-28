@@ -173,6 +173,26 @@ def admin_update_branch(
     }
 
 
+@router.post("/admin/repos/{slug}/branches/{branch_id}/set-default")
+def admin_set_default_branch(
+    slug: str,
+    branch_id: int,
+    admin: dict = Depends(require_admin),
+):
+    repo = _require_repo(slug)
+    branch = _require_repo_branch(repo, branch_id)
+    db.set_repo_default_branch_pinned(repo["id"], branch["name"])
+    db.record_audit(
+        admin["username"],
+        "set_default_branch",
+        slug,
+        branch["name"],
+    )
+    return {
+        "branch": _branch_payload(db.get_repo_branch(branch_id), admin=True)
+    }
+
+
 @router.post("/admin/repos/{slug}/branches/{branch_id}/sync")
 def admin_sync_branch(
     slug: str,
