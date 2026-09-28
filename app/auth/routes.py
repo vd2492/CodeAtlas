@@ -14,9 +14,10 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import db
+from ..config import default_shared_llm_id, public_shared_llms
 from ..llm.client import sniff_provider
 from . import crypto
 from .security import hash_password, verify_password
@@ -66,6 +67,16 @@ LOGIN_RATE_WINDOW_SECONDS = int(
 )
 _login_failures: "dict[str, list[float]]" = defaultdict(list)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
+FEEDBACK_ID_RE = re.compile(r"^feedback-[A-Za-z0-9_-]{12,119}$")
+MAX_CHAT_PAYLOAD_BYTES = 2 * 1024 * 1024
+MAX_CHAT_TURNS = 200
+ANSWER_FEEDBACK_REASONS = {
+    "too_vague": "Too vague",
+    "too_simple": "Too simple",
+    "too_complex": "Too complex",
+    "not_relevant": "Out of context",
+}
 
 
 def enforce_login_rate_limit(username: str) -> None:
@@ -238,6 +249,100 @@ class LlmCredsRequest(BaseModel):
     provider: Optional[str] = None   # auto-sniffed from the key if omitted
     base_url: Optional[str] = None
     model: Optional[str] = None
+
+
+class ChatTurnPayload(BaseModel):
+    id: str
+    question: str
+    type: str = "Question"
+    answer: str = ""
+    answeredAt: Optional[str] = None
+    createdAt: Optional[str] = None
+    feedbackId: Optional[str] = None
+    feedbackRating: Optional[str] = None
+    feedbackReason: Optional[str] = None
+
+
+class UserChatRequest(BaseModel):
+    title: str
+    preview: str = ""
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+    conversationId: Optional[str] = None
+    askMode: str = "single"
+    workspace: Optional[str] = None
+    branchId: Optional[int] = None
+    compareBranchA: Optional[int] = None
+    compareBranchB: Optional[int] = None
+    llmMode: Optional[str] = None
+    answerUserType: Optional[str] = None
+    turns: List[ChatTurnPayload] = Field(default_factory=list)
+
+
+class AnswerFeedbackRequest(BaseModel):
+    feedback_id: str
+    workspace: str
+    question: str
+    satisfaction: str
+    reason: Optional[str] = None
+
+
+def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
+    """Return a bounded, plain-data chat payload safe to retain in SQLite."""
+    if not CHAT_ID_RE.fullmatch(chat_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid chat id.")
+    title = request.title.strip()
+    if not title or len(title) > 160:
+        raise HTTPException(
+            status_code=400,
+            detail="Chat title must be between 1 and 160 characters.",
+        )
+    if request.askMode not in {"single", "compare"}:
+        raise HTTPException(status_code=400, detail="Invalid chat mode.")
+    if len(request.preview) > 20_000:
+        raise HTTPException(status_code=400, detail="Chat preview is too long.")
+    if len(request.turns) > MAX_CHAT_TURNS:
+        raise HTTPException(status_code=400, detail="Chat has too many turns.")
+
+    bounded_fields = {
+        "conversationId": (request.conversationId, 256),
+        "workspace": (request.workspace, 512),
+        "llmMode": (request.llmMode, 64),
+        "answerUserType": (request.answerUserType, 64),
+        "createdAt": (request.createdAt, 64),
+        "updatedAt": (request.updatedAt, 64),
+    }
+    if any(value is not None and len(value) > limit for value, limit in bounded_fields.values()):
+        raise HTTPException(status_code=400, detail="Chat metadata is too long.")
+    for turn in request.turns:
+        if not turn.id or len(turn.id) > 128:
+            raise HTTPException(status_code=400, detail="Invalid chat turn id.")
+        if not turn.question.strip() or len(turn.question) > 20_000:
+            raise HTTPException(status_code=400, detail="Invalid chat question.")
+        if len(turn.type) > 64 or len(turn.answer) > 20_000:
+            raise HTTPException(status_code=400, detail="Chat turn is too long.")
+        if (
+            (turn.createdAt is not None and len(turn.createdAt) > 64)
+            or (turn.answeredAt is not None and len(turn.answeredAt) > 64)
+        ):
+            raise HTTPException(status_code=400, detail="Invalid chat turn timestamp.")
+        if turn.feedbackId is not None and not FEEDBACK_ID_RE.fullmatch(turn.feedbackId):
+            raise HTTPException(status_code=400, detail="Invalid answer feedback id.")
+        if turn.feedbackRating not in {None, "liked", "disliked"}:
+            raise HTTPException(status_code=400, detail="Invalid answer feedback rating.")
+        if turn.feedbackReason not in {None, *ANSWER_FEEDBACK_REASONS}:
+            raise HTTPException(status_code=400, detail="Invalid answer feedback reason.")
+        if turn.feedbackRating == "disliked" and turn.feedbackReason is None:
+            raise HTTPException(status_code=400, detail="Disliked answers require a reason.")
+        if turn.feedbackRating != "disliked" and turn.feedbackReason is not None:
+            raise HTTPException(status_code=400, detail="Unexpected answer feedback reason.")
+
+    payload = request.model_dump()
+    payload["title"] = title
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > MAX_CHAT_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Chat is too large to save.")
+    return payload
 
 
 def validate_llm_key_endpoint(api_key: str, base_url: str) -> None:
@@ -416,6 +521,81 @@ def me(user: Optional[dict] = Depends(get_current_user)):
     return payload
 
 
+@router.get("/me/chats")
+def get_my_chats(user: dict = Depends(require_user)):
+    """Return only the authenticated user's saved Ask conversations."""
+    return {"chats": db.list_user_chats(user["id"])}
+
+
+@router.put("/me/chats/{chat_id}")
+def save_my_chat(
+    chat_id: str,
+    request: UserChatRequest,
+    user: dict = Depends(require_user),
+):
+    payload = validated_chat_payload(chat_id, request)
+    db.upsert_user_chat(
+        user["id"],
+        chat_id,
+        payload["title"],
+        payload.get("preview") or "",
+        payload,
+    )
+    return {"saved": chat_id}
+
+
+@router.delete("/me/chats/{chat_id}")
+def delete_my_chat(chat_id: str, user: dict = Depends(require_user)):
+    if not CHAT_ID_RE.fullmatch(chat_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid chat id.")
+    return {"deleted": db.delete_user_chat(user["id"], chat_id)}
+
+
+@router.post("/me/answer-feedback")
+def save_answer_feedback(
+    request: AnswerFeedbackRequest,
+    user: dict = Depends(require_user),
+):
+    if not FEEDBACK_ID_RE.fullmatch(request.feedback_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid feedback id.")
+    workspace = request.workspace.strip()
+    question = request.question.strip()
+    if not workspace or len(workspace) > 512:
+        raise HTTPException(status_code=400, detail="Invalid repository workspace.")
+    if not question or len(question) > 20_000:
+        raise HTTPException(status_code=400, detail="Invalid feedback question.")
+    if request.satisfaction not in {"unrated", "liked", "disliked"}:
+        raise HTTPException(status_code=400, detail="Invalid satisfaction value.")
+    reason = request.reason if request.satisfaction == "disliked" else None
+    if request.satisfaction == "disliked" and reason not in ANSWER_FEEDBACK_REASONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a reason for the negative feedback.",
+        )
+
+    repo = db.get_repo_by_workspace(workspace)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    if user["role"] != "admin" and not db.user_has_repo(user["id"], repo["workspace"]):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this repository.",
+        )
+    db.upsert_answer_feedback(
+        request.feedback_id,
+        repo["slug"],
+        repo["name"],
+        question,
+        request.satisfaction,
+        reason,
+    )
+    return {
+        "saved": True,
+        "satisfaction": request.satisfaction,
+        "reason": reason,
+    }
+
+
 @router.get("/admin/users")
 def list_users(admin: dict = Depends(require_admin)):
     users = []
@@ -427,6 +607,20 @@ def list_users(admin: dict = Depends(require_admin)):
 @router.get("/admin/audit")
 def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
     return {"audit": db.list_audit(limit)}
+
+
+@router.get("/admin/answer-feedback")
+def get_answer_feedback(
+    admin: dict = Depends(require_admin),
+    limit: int = 500,
+    offset: int = 0,
+):
+    """Anonymous question-level ratings; deliberately contains no user fields."""
+    return {
+        "feedback": db.list_answer_feedback(limit=limit, offset=offset),
+        "total": db.answer_feedback_count(),
+        "reason_labels": ANSWER_FEEDBACK_REASONS,
+    }
 
 
 @router.get("/admin/analytics")
@@ -694,10 +888,16 @@ def delete_user(username: str, admin: dict = Depends(require_admin)):
 
 @router.get("/me/llm")
 def get_my_llm(user: dict = Depends(require_user)):
-    """Non-secret view of the user's stored key (never returns the key itself)."""
+    """Non-secret view of the user's stored key (never returns the key itself),
+    plus the shared LLMs this deployment offers. Served from an authenticated
+    route so shared model names are not public; API keys are never included."""
+    shared = {
+        "shared_llms": public_shared_llms(),
+        "default_shared_llm": default_shared_llm_id(),
+    }
     creds = load_user_llm(user["id"])
     if not creds:
-        return {"configured": False}
+        return {"configured": False, **shared}
     key = creds.get("api_key", "")
     return {
         "configured": True,
@@ -705,6 +905,7 @@ def get_my_llm(user: dict = Depends(require_user)):
         "base_url": creds.get("base_url"),
         "model": creds.get("model"),
         "key_hint": f"…{key[-4:]}" if len(key) >= 4 else "set",
+        **shared,
     }
 
 

@@ -260,6 +260,7 @@ def discover_remote_branches(repo: dict) -> list[dict]:
     default_branch = _remote_default_branch(source)
     if default_branch:
         db.set_repo_default_branch(repo["id"], default_branch)
+        db.reassert_pinned_default_branch(repo["id"])
     result = _git(source, "ls-remote", "--heads", "origin")
     branches = []
     for line in result.stdout.splitlines():
@@ -293,6 +294,7 @@ def approve_repo_branch(repo: dict, branch_name: str) -> dict:
         branch_name,
         is_default=bool(available[branch_name].get("is_default")),
     )
+    db.reassert_pinned_default_branch(repo["id"])
     db.update_repo_branch_settings(
         branch["id"],
         allow_user_sync=True,

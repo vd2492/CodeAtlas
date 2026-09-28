@@ -210,6 +210,21 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def tool_definitions_without_ask_user(definitions: list[dict] = None) -> list[dict]:
+    """The tool set with the clarifying-question tool removed.
+
+    Used once a conversation has already asked the user for clarification. The
+    user has since replied with more detail, so another question instead of an
+    investigation just produces back-to-back clarifications and never an
+    answer."""
+    source = TOOL_DEFINITIONS if definitions is None else definitions
+    return [
+        definition
+        for definition in source
+        if definition.get("name") != ASK_USER_TOOL_NAME
+    ]
+
+
 class RepositoryToolbox:
     """Execute bounded read-only tools against one authorized workspace."""
 

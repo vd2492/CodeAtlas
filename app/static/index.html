@@ -156,6 +156,27 @@
       border-bottom-color: transparent;
       transform: rotate(45deg);
     }
+    .brand-logout {
+      flex: none;
+      width: 46px;
+      height: 46px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 14px;
+      background: transparent;
+      box-shadow: none;
+    }
+    .brand-logout:hover {
+      border: 0;
+      background: transparent;
+      transform: none;
+    }
+    .brand-logout:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+    }
 
     .brand { display: flex; flex-direction: column; }
     .title {
@@ -538,6 +559,17 @@
       color: var(--danger);
     }
     [hidden] { display: none !important; }
+    /* Remote-config hiding. Kept separate from [hidden] because setAskMode
+       toggles that attribute on .single-repo-flow when switching ask modes. */
+    .feature-off { display: none !important; }
+    .shared-llm-options { display: contents; }
+    .shared-llm-heading {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
 
     .compare-card {
       margin: 0 0 16px;
@@ -581,12 +613,17 @@
       z-index: 1;
     }
     .compare-controls select:disabled {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: none;
       cursor: not-allowed;
       opacity: 0.7;
     }
     .compare-box {
       display: flex;
-      align-items: center;
+      /* Pinned like the single-branch composer: centring makes the send button
+         slide down as the textarea grows. */
+      align-items: flex-start;
       gap: 10px;
       padding: 10px 10px 10px 14px;
       border: 1px solid var(--border-strong);
@@ -1019,6 +1056,25 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    .answer-heading {
+      margin: 18px 0 8px;
+      color: var(--fg);
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .answer-heading:first-child { margin-top: 0; }
+    h3.answer-heading { font-size: 17px; }
+    h4.answer-heading { font-size: 15px; }
+    h5.answer-heading,
+    h6.answer-heading { font-size: 14px; color: var(--muted); }
+    .answer-list {
+      margin: 8px 0;
+      padding-left: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .answer-list li { overflow-wrap: anywhere; }
     .answer-text {
       min-width: 0;
       max-width: 100%;
@@ -1408,6 +1464,9 @@
       color: var(--text); font-size: 13px; outline: none; max-width: 165px;
     }
     .repo-picker:disabled {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: none;
       opacity: 1;
       cursor: default;
       color: var(--text);
@@ -1434,6 +1493,624 @@
       .header-context { order:3; width:100%; }
       .header-context .repo-picker { flex:1; max-width:none; width:50%; }
       .admin-return-btn { flex:1 1 auto; max-width:none; }
+    }
+
+    /* ---------- Codex-inspired workspace shell ---------- */
+    body {
+      overflow: hidden;
+      background-image: var(--bg-grad);
+    }
+    .container.app-shell {
+      width: 100%;
+      max-width: none;
+      height: 100vh;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: 304px minmax(0, 1fr);
+    }
+    .workspace-sidebar {
+      min-width: 0;
+      padding: 18px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      background: var(--bg-soft);
+      border-right: 1px solid var(--border);
+    }
+    .workspace-sidebar .header {
+      gap: 10px;
+      margin: 0 2px 6px;
+      flex-wrap: nowrap;
+    }
+    .workspace-sidebar .logo-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+      box-shadow: 0 7px 18px -8px rgba(95, 227, 154, 0.65), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+    }
+    .workspace-sidebar .brand-logout {
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+    }
+    .workspace-sidebar .logo-mark::before { inset: 9px; }
+    .workspace-sidebar .title { font-size: 19px; }
+    .workspace-sidebar .subtitle { display: none; }
+    .workspace-sidebar .header-spacer { display: block; }
+    .workspace-sidebar .theme-toggle {
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    .workspace-sidebar .ask-mode-tab {
+      width: 100%;
+      min-width: 0;
+      min-height: 40px;
+      padding: 9px 11px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      border: 0;
+      border-radius: 10px;
+      color: var(--muted);
+      background: transparent;
+      box-shadow: none;
+      text-align: left;
+    }
+    .workspace-sidebar .ask-mode-tab:hover {
+      color: var(--text);
+      background: rgba(148, 163, 184, 0.10);
+      transform: none;
+    }
+    .workspace-sidebar .ask-mode-tab svg { flex: none; }
+    .workspace-sidebar .ask-mode-switch {
+      order: 2;
+      margin: 0;
+      gap: 4px;
+      flex-direction: column;
+      flex-wrap: nowrap;
+    }
+    .workspace-sidebar .new-chat-button { order: 1; }
+    .workspace-sidebar .branch-status { order: 3; }
+    .workspace-sidebar .llm-card { order: 4; }
+    .workspace-sidebar .chat-sidebar-section { order: 5; }
+    .workspace-sidebar .ask-mode-tab.active {
+      color: var(--text);
+      background: var(--accent-soft);
+      border: 0;
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .workspace-sidebar .admin-return-btn {
+      flex: none;
+      max-width: none;
+    }
+    .workspace-sidebar .llm-card {
+      margin: 0;
+      padding: 13px;
+      border-radius: 12px;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    .workspace-sidebar .llm-card { border-color: var(--border); }
+    .workspace-sidebar .card-head { margin-bottom: 10px; }
+    .workspace-sidebar .llm-options,
+    .workspace-sidebar .personal-llm-actions,
+    .workspace-sidebar .personal-llm { gap: 7px; }
+    .workspace-sidebar .llm-option,
+    .workspace-sidebar .personal-llm-actions button {
+      width: 100%;
+      min-width: 0;
+      padding: 8px 10px;
+      justify-content: flex-start;
+      font-size: 12px;
+    }
+    .workspace-sidebar .personal-llm input,
+    .workspace-sidebar .personal-llm select {
+      flex-basis: 100%;
+      font-size: 12px;
+    }
+    .workspace-sidebar .personal-llm .btn-primary { max-width: none; }
+    .chat-sidebar-section {
+      /* Not a flex-grow region: the sidebar itself scrolls, so the chat list
+         is never squeezed to fit alongside the cards above it. */
+      flex: none;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .chat-sidebar-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0 8px 8px;
+    }
+    .chat-sidebar-head .chat-sidebar-heading { margin: 0; }
+    .chat-new-button {
+      flex: none;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .chat-new-button:hover {
+      color: var(--fg);
+      border-color: var(--border-strong);
+    }
+    .chat-sidebar-heading {
+      margin: 0 8px 8px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .chat-list {
+      flex: none;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-right: 3px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-strong) transparent;
+    }
+    .chat-list-empty {
+      padding: 9px 10px;
+      color: var(--faint);
+      font-size: 12px;
+    }
+    .chat-list-item {
+      position: relative;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      border-radius: 9px;
+    }
+    .chat-list-item:hover,
+    .chat-list-item.active { background: rgba(148, 163, 184, 0.09); }
+    .chat-list-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+    .chat-list-open,
+    .chat-list-delete {
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .chat-list-open {
+      padding: 9px 8px 9px 11px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      text-align: left;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-list-item.active .chat-list-open { color: var(--text); }
+    .chat-list-delete {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--faint);
+      opacity: 0;
+    }
+    .chat-list-item:hover .chat-list-delete,
+    .chat-list-item:focus-within .chat-list-delete { opacity: 1; }
+    .chat-list-open:hover,
+    .chat-list-delete:hover { border: 0; background: rgba(148, 163, 184, 0.10); transform: none; }
+    .chat-list-delete:hover { color: var(--danger); }
+    .chat-hover-preview {
+      position: fixed;
+      z-index: 110;
+      width: min(330px, calc(100vw - 32px));
+      padding: 14px 16px;
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      background: var(--card-solid);
+      box-shadow: var(--shadow);
+      pointer-events: none;
+    }
+    .chat-preview-title {
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-preview-snippet {
+      display: -webkit-box;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+    .conversation-pane {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+    .conversation-corner-controls {
+      position: absolute;
+      z-index: 6;
+      top: 18px;
+      left: 18px;
+      right: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      pointer-events: none;
+    }
+    .conversation-corner-controls .history-toggle,
+    .conversation-corner-controls .theme-toggle {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: var(--card-solid);
+      box-shadow: 0 10px 28px -18px rgba(0, 0, 0, 0.75);
+      pointer-events: auto;
+    }
+    .conversation-scroll {
+      min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 76px 32px 28px;
+      scrollbar-gutter: stable;
+    }
+    .conversation-content {
+      width: min(900px, 100%);
+      min-height: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+    }
+    .ask-welcome {
+      flex: 1;
+      min-height: 330px;
+      display: grid;
+      place-items: center;
+      padding: 40px 20px 22px;
+      text-align: center;
+    }
+    .ask-welcome-inner {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .welcome-mark {
+      width: 56px;
+      height: 56px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(95, 227, 154, 0.28);
+      border-radius: 19px;
+      color: var(--accent);
+      background: var(--accent-soft);
+      box-shadow: 0 18px 38px -24px rgba(95, 227, 154, 0.8);
+    }
+    .ask-welcome h1 {
+      max-width: 720px;
+      margin: 0;
+      font-size: clamp(28px, 3.3vw, 44px);
+      line-height: 1.12;
+      letter-spacing: -0.035em;
+    }
+    .ask-welcome p {
+      max-width: 560px;
+      margin: -5px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .conversation-content:has(#result > :not(.empty-state)) .ask-welcome {
+      display: none;
+    }
+    .conversation-content .branch-status {
+      width: 100%;
+      margin: 0 0 14px;
+    }
+    .conversation-content .result-card {
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .conversation-content .result-card:has(#result > .empty-state) {
+      display: none;
+    }
+    .conversation-turn {
+      width: 100%;
+      min-width: 0;
+      padding: 8px 0 28px;
+      border-bottom: 1px solid var(--border);
+    }
+    .conversation-turn + .conversation-turn { padding-top: 26px; }
+    .conversation-turn:last-child { border-bottom: 0; }
+    .conversation-user {
+      width: fit-content;
+      max-width: min(78%, 680px);
+      margin-left: auto;
+      padding: 12px 15px;
+      border: 1px solid var(--border);
+      border-radius: 16px 16px 4px 16px;
+      color: var(--text);
+      background: var(--accent-soft);
+      overflow-wrap: anywhere;
+    }
+    #result .conversation-user p { margin: 0; }
+    .conversation-speaker {
+      margin-bottom: 4px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .conversation-assistant {
+      min-width: 0;
+      padding: 18px 4px 0;
+    }
+    .conversation-restored .conversation-assistant { padding-top: 14px; }
+    .answer-feedback {
+      margin-top: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .answer-feedback-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .answer-feedback-button {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      border-radius: 9px;
+      color: var(--faint);
+      background: transparent;
+      box-shadow: none;
+    }
+    .answer-feedback-button:hover {
+      color: var(--text);
+      border: 0;
+      background: rgba(148, 163, 184, 0.10);
+      transform: none;
+    }
+    .answer-feedback-button.active[data-rating="liked"] {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .answer-feedback-button.active[data-rating="disliked"] {
+      color: var(--danger);
+      background: rgba(255, 107, 107, 0.10);
+    }
+    .answer-feedback-reasons {
+      max-width: min(100%, 520px);
+      padding: 10px;
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 7px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card-solid);
+    }
+    .answer-feedback-reasons span {
+      width: 100%;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+    .answer-feedback-reason {
+      padding: 7px 10px;
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(148, 163, 184, 0.08);
+      font-size: 11px;
+      box-shadow: none;
+    }
+    .answer-feedback-reason:hover,
+    .answer-feedback-reason.active {
+      color: var(--text);
+      border-color: rgba(95, 227, 154, 0.36);
+      background: var(--accent-soft);
+      transform: none;
+    }
+    .answer-feedback-status {
+      min-height: 15px;
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .composer-dock {
+      position: relative;
+      z-index: 4;
+      grid-row: 2;
+      min-width: 0;
+      padding: 10px 32px 26px;
+      background: linear-gradient(to bottom, transparent, var(--bg) 24%);
+    }
+    .composer-inner {
+      width: min(900px, 100%);
+      margin: 0 auto;
+    }
+    .conversation-scroll { grid-row: 1; }
+    .composer-dock .hero { margin: 0; }
+    .composer-context {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-bottom: 0;
+      border-radius: 15px 15px 0 0;
+      background: var(--card-solid);
+    }
+    .composer-context .header-context {
+      display: flex;
+      flex: 1;
+      gap: 7px;
+      min-width: 0;
+    }
+    .composer-context .repo-picker {
+      max-width: 210px;
+      padding: 7px 9px;
+      border: 0;
+      background: transparent;
+      font-size: 12px;
+    }
+    .composer-context .hero-heading {
+      margin: 0;
+      justify-content: flex-end;
+    }
+    .composer-context .hero-label { display: none; }
+    .composer-context .answer-style-option {
+      min-height: 26px;
+      padding: 2px 8px;
+    }
+    .composer-dock .ask-box {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      grid-template-areas: "input attach submit";
+      align-items: end;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 0 0 19px 19px;
+      background: var(--card-solid);
+      box-shadow: 0 22px 54px -30px rgba(0, 0, 0, 0.85);
+    }
+    .composer-dock .ask-input-stack { grid-area: input; }
+    .composer-dock #question {
+      min-height: 42px;
+      max-height: 160px;
+      padding: 9px 4px 8px;
+      font-size: 16px;
+    }
+    /* The box grows downward, so bottom- or centre-aligned controls drift with
+       it. Pinning them to the top keeps the cluster still while text wraps. */
+    .composer-dock .image-attach-btn { grid-area: attach; align-self: start; }
+    .composer-dock #mainAskCancelBtn { grid-area: submit; align-self: start; }
+    .composer-dock .ask-box > .btn-primary {
+      grid-area: submit;
+      min-width: 74px;
+      align-self: start;
+    }
+    .composer-dock .ask-box > .chat-submit-button,
+    .composer-dock .compare-box .chat-submit-button,
+    .chat-submit-button {
+      width: 42px;
+      min-width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 50%;
+    }
+    .composer-dock .compare-box .chat-submit-button { flex: none; }
+    .composer-dock .ask-box:has(#mainAskCancelBtn:not([hidden])) > .btn-primary {
+      display: none;
+    }
+    .composer-dock .compare-card {
+      margin: 0;
+      padding: 18px;
+      border-radius: 18px;
+      background: var(--card-solid);
+    }
+    .composer-dock .compare-card .answer-style-selector { margin-left: auto; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 900px) {
+      body { overflow: auto; }
+      .container.app-shell {
+        height: auto;
+        min-height: 100vh;
+        display: block;
+      }
+      .workspace-sidebar {
+        overflow: visible;
+        padding: 14px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .workspace-sidebar .header { flex-wrap: nowrap; }
+      .sidebar-primary-nav { flex-direction: row; flex-wrap: wrap; }
+      .sidebar-nav-button,
+      .workspace-sidebar .ask-mode-tab { width: auto; flex: 1 1 160px; }
+      .workspace-sidebar .ask-mode-switch { flex: 1 1 100%; flex-direction: row; }
+      .workspace-sidebar .llm-card { width: 100%; }
+      .conversation-pane { min-height: 72vh; overflow: visible; }
+      .conversation-scroll { overflow: visible; padding: 70px 18px 20px; }
+      .ask-welcome { min-height: 280px; }
+      .composer-dock { position: sticky; bottom: 0; padding: 8px 16px 16px; }
+      .composer-context { align-items: stretch; flex-direction: column; }
+      .composer-context .header-context { order: initial; width: 100%; }
+      .composer-context .header-context .repo-picker { width: 50%; max-width: none; }
+      .composer-context .hero-heading { width: 100%; justify-content: flex-start; }
+    }
+
+    @media (max-width: 560px) {
+      .conversation-scroll { padding-inline: 14px; }
+      .composer-dock { padding-inline: 10px; }
+      .ask-welcome { min-height: 230px; padding-inline: 0; }
+      .ask-welcome h1 { font-size: 28px; }
+      .composer-context .answer-style-selector { gap: 5px; }
+      .composer-context .answer-style-option { font-size: 9px; }
+      .composer-dock .ask-box { grid-template-columns: minmax(0, 1fr) auto auto; }
+      .composer-dock .ask-box > .chat-submit-button { min-width: 42px; padding: 0; }
+      .composer-dock .compare-box .chat-submit-button {
+        width: 42px;
+        min-width: 42px;
+        padding: 0;
+        align-self: flex-end;
+      }
     }
   </style>
   <script>
@@ -1524,40 +2201,29 @@
     </div>
   </div>
 
-  <div class="container">
+  <div class="container app-shell">
+    <aside class="workspace-sidebar" aria-label="CodeAtlas workspace">
     <header class="header">
-      <button class="history-toggle" type="button" onclick="toggleQuestionHistory()"
-        aria-label="Open question history" title="Question history"
-        aria-controls="questionHistoryPanel" aria-expanded="false">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2" stroke-linecap="round"
-          stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
-        </svg>
+      <button class="theme-toggle" onclick="logout()" aria-label="Sign out and go to home page" title="Sign out">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
       </button>
-      <div class="logo-mark" aria-hidden="true"></div>
+      <button class="brand-logout" type="button" onclick="logout()"
+        aria-label="Sign out and go to home page" title="Sign out and go home">
+        <span class="logo-mark" aria-hidden="true"></span>
+      </button>
       <div class="brand">
         <div class="title">CodeAtlas</div>
         <div class="subtitle">Graph-powered codebase intelligence</div>
       </div>
       <div class="header-spacer"></div>
-      <div class="header-context single-repo-flow">
-        <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
-        <select id="branchPicker" class="repo-picker" onchange="onBranchChange()" title="Indexed branch" style="display:none;"></select>
-      </div>
-      <button class="theme-toggle" onclick="logout()" aria-label="Sign out" title="Sign out">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
-      </button>
-      <button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle light and dark mode" title="Toggle theme">
-        <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="4"></circle>
-          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
-        </svg>
-        <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-        </svg>
-      </button>
     </header>
+    <button type="button" class="ask-mode-tab new-chat-button" onclick="startNewChat()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 20h9"></path>
+        <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"></path>
+      </svg>
+      New chat
+    </button>
     <div id="branchStatusBar" class="branch-status hidden single-repo-flow">
       <div class="branch-status-copy">
         <div id="branchStatusTitle" class="branch-status-title"></div>
@@ -1576,9 +2242,11 @@
     <!-- LLM choice -->
     <section class="card llm-card span-2">
       <div class="card-head"><span class="card-dot"></span><h2 class="card-title">My LLM key</h2></div>
+      <div id="sharedLlmHeading" class="shared-llm-heading" hidden>Shared LLM</div>
       <div class="llm-options" role="group" aria-label="LLM provider">
         <!-- Ollama remains a disabled backend placeholder for a future release. -->
-        <button type="button" class="llm-option" data-llm-mode="mimo">Use Mimo v2.5</button>
+        <!-- Shared LLM buttons are rendered from the deployment's configuration. -->
+        <span id="sharedLlmOptions" class="shared-llm-options"></span>
         <button id="personalLlmToggle" type="button" class="llm-option"
           aria-expanded="false"
           aria-controls="personalLlmActions personalLlmConfig"
@@ -1634,16 +2302,61 @@
     <div class="ask-mode-switch" role="tablist" aria-label="Question mode">
       <button id="singleAskModeBtn" type="button" class="ask-mode-tab active"
         role="tab" aria-selected="true" aria-controls="singleAskFlow"
-        onclick="setAskMode('single')">Ask a single branch</button>
+        onclick="setAskMode('single')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
+        Ask a single branch
+      </button>
       <button id="compareAskModeBtn" type="button" class="ask-mode-tab"
         role="tab" aria-selected="false" aria-controls="compareAskFlow"
-        onclick="setAskMode('compare')">Compare 2 branches</button>
+        onclick="setAskMode('compare')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"></path><path d="m9 8-4 4 4 4m6-8 4 4-4 4"></path></svg>
+        Compare 2 branches
+      </button>
       <button id="adminReturnBtn" type="button" class="ask-mode-tab admin-return-btn"
         onclick="goBackToAdminConsole()" hidden>Go back to admin console</button>
     </div>
+    <section class="chat-sidebar-section" aria-labelledby="chatSidebarHeading">
+      <div class="chat-sidebar-head">
+        <h2 id="chatSidebarHeading" class="chat-sidebar-heading">Chats</h2>
+        <button type="button" class="chat-new-button" onclick="startNewChat()"
+          aria-label="New chat" title="New chat">+</button>
+      </div>
+      <div id="chatList" class="chat-list"></div>
+    </section>
+    </aside>
+
+    <main class="conversation-pane">
+      <div class="conversation-corner-controls" role="group" aria-label="Conversation controls">
+        <button class="history-toggle" type="button" onclick="toggleQuestionHistory()"
+          aria-label="Open question history" title="Question history"
+          aria-controls="questionHistoryPanel" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path>
+          </svg>
+        </button>
+        <button class="theme-toggle" onclick="toggleTheme()"
+          aria-label="Toggle light and dark mode" title="Toggle theme">
+          <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+          </svg>
+          <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="composer-dock">
+        <div class="composer-inner">
 
     <!-- Main ask -->
     <section id="singleAskFlow" class="hero single-repo-flow">
+      <div class="composer-context">
+        <div class="header-context single-repo-flow">
+          <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
+          <select id="branchPicker" class="repo-picker" onchange="onBranchChange()" title="Indexed branch" style="display:none;"></select>
+        </div>
       <div class="hero-heading">
         <div class="hero-label">Ask CodeAtlas</div>
         <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
@@ -1659,15 +2372,10 @@
           </button>
         </div>
       </div>
+      </div>
       <div class="ask-box">
-        <span class="ask-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="7"></circle>
-            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-          </svg>
-        </span>
         <div class="ask-input-stack">
-          <textarea id="question" rows="1" placeholder="Ask anything about this codebase…" autocomplete="off"></textarea>
+          <textarea id="question" rows="1" placeholder="Ask about a feature, risk, or roadmap decision…" autocomplete="off"></textarea>
           <div id="queryImagePreview" class="query-image-preview" hidden></div>
         </div>
         <input id="queryImageInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
@@ -1682,7 +2390,14 @@
           </svg>
         </button>
         <button type="button" id="mainAskCancelBtn" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request" hidden>&times;</button>
-        <button class="btn-primary" onclick="ask()">Ask</button>
+        <button type="button" class="btn-primary chat-submit-button" onclick="ask()"
+          aria-label="Send message" title="Send message">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"></path>
+            <path d="m5 12 7-7 7 7"></path>
+          </svg>
+          <span class="sr-only">Send message</span>
+        </button>
       </div>
     </section>
 
@@ -1720,10 +2435,35 @@
         <textarea id="compareQuestion" rows="1"
           placeholder="Compare changes, flows, features, screens, or implementation choices…"
           autocomplete="off"></textarea>
-        <button id="compareAskBtn" type="button" class="btn-primary" onclick="compareBranches()">Compare</button>
+        <button id="compareAskBtn" type="button" class="btn-primary chat-submit-button"
+          onclick="compareBranches()" aria-label="Send comparison" title="Send comparison">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"></path>
+            <path d="m5 12 7-7 7 7"></path>
+          </svg>
+          <span class="sr-only">Send comparison</span>
+        </button>
       </div>
       <p id="compareHint" class="compare-hint"></p>
     </section>
+        </div>
+      </div>
+
+      <div class="conversation-scroll">
+        <div class="conversation-content">
+          <section class="ask-welcome" aria-labelledby="askWelcomeTitle">
+            <div class="ask-welcome-inner">
+              <div class="welcome-mark" aria-hidden="true">
+                <svg width="29" height="29" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 9 4.5 12 8 15"></path>
+                  <path d="m16 9 3.5 3-3.5 3"></path>
+                  <path d="m14 5-4 14"></path>
+                </svg>
+              </div>
+              <h1 id="askWelcomeTitle">Turn product questions into confident decisions.</h1>
+              <p>Trace a feature, assess impact, compare branches, or attach a screenshot for grounded answers from your codebase.</p>
+            </div>
+          </section>
 
     <!-- Result -->
     <section class="card result-card span-2">
@@ -1736,21 +2476,21 @@
     </section>
 
     <!-- Secondary tools -->
-    <div class="tools single-repo-flow">
-      <section class="card">
+    <div class="tools single-repo-flow" id="secondaryTools">
+      <section class="card" id="repoSummaryCard">
         <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Repo Summary</h2></div>
         <button onclick="loadSummary()">Load Summary</button>
         <div id="summary"></div>
       </section>
 
-      <section class="card">
+      <section class="card" id="flowExplorerCard">
         <div class="card-head"><span class="card-dot"></span><h2 class="card-title">Flow Explorer</h2></div>
         <div id="flowButtons" class="row">
           <span class="src">Select a repository to load flows.</span>
         </div>
       </section>
 
-      <details class="card advanced-card span-2">
+      <details class="card advanced-card span-2" id="graphSearchCard">
         <summary>
           <span class="card-dot"></span>
           <h2 class="card-title">Advanced graph search</h2>
@@ -1764,9 +2504,13 @@
         </div>
       </details>
     </div>
+        </div>
+      </div>
+    </main>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"
     aria-atomic="true"></div>
+  <div id="chatHoverPreview" class="chat-hover-preview" role="tooltip" hidden></div>
 
   <script>
     function toggleTheme() {
@@ -1786,6 +2530,8 @@
     let BRANCHES = [];
     let BRANCH_POLL_TIMER = null;
     let LLM_MODE = 'mimo';
+    let SHARED_LLMS = [];
+    let DEFAULT_SHARED_LLM = '';
     let PERSONAL_KEY_CONFIGURED = false;
     let TOAST_TIMER = null;
     let CONVERSATION_ID = null;
@@ -1796,8 +2542,17 @@
     let ACTIVE_REQUEST_CONTROLLER = null;
     let ACTIVE_ACTIVITY_POLL = null;
     let AUTH_CONFIG = {};
+    let UI_FEATURES = {};
+    let CURRENT_USER_ID = null;
     let QUESTION_HISTORY = [];
+    let CHAT_SESSIONS = [];
+    let ACTIVE_CHAT_ID = '';
+    let CHAT_PERSISTENCE_READY = false;
+    const CHAT_SYNC_TIMERS = new Map();
     const QUESTION_HISTORY_STORAGE_KEY = 'codeatlas-question-history';
+    const ACTIVE_CHAT_STORAGE_KEY = 'codeatlas-active-chat';
+    const CHAT_SESSIONS_STORAGE_KEY = 'codeatlas-chat-sessions';
+    const CHAT_CACHE_OWNER_KEY = 'codeatlas-chat-cache-owner';
     const QUERY_IMAGE_MAX_COUNT = 3;
     const QUERY_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
     const QUERY_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -1822,12 +2577,58 @@
               answer: item.answer ? String(item.answer) : '',
               answeredAt: item.answeredAt || null,
               createdAt: item.createdAt || new Date().toISOString(),
+              chatId: String(item.chatId || 'legacy-chat'),
+              feedbackId: String(item.feedbackId || createAnswerFeedbackId()),
+              feedbackRating: item.feedbackRating === 'liked'
+                || (
+                  item.feedbackRating === 'disliked'
+                  && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+                    .includes(item.feedbackReason)
+                )
+                ? item.feedbackRating
+                : null,
+              feedbackReason: item.feedbackRating === 'disliked'
+                && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+                  .includes(item.feedbackReason)
+                ? item.feedbackReason
+                : null,
             }))
           : [];
+        const storedChats = JSON.parse(
+          sessionStorage.getItem(CHAT_SESSIONS_STORAGE_KEY) || '[]'
+        );
+        CHAT_SESSIONS = Array.isArray(storedChats)
+          ? storedChats.filter(chat => chat && chat.id).map(chat => ({
+              id: String(chat.id),
+              title: String(chat.title || 'New chat'),
+              preview: String(chat.preview || ''),
+              createdAt: chat.createdAt || new Date().toISOString(),
+              updatedAt: chat.updatedAt || chat.createdAt || new Date().toISOString(),
+              conversationId: chat.conversationId ? String(chat.conversationId) : null,
+              askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+              workspace: chat.workspace || null,
+              branchId: Number(chat.branchId) || null,
+              compareBranchA: Number(chat.compareBranchA) || null,
+              compareBranchB: Number(chat.compareBranchB) || null,
+              llmMode: chat.llmMode || null,
+              answerUserType: chat.answerUserType || null,
+            }))
+          : [];
+        migrateHistoryChats();
+        const savedActiveChat = sessionStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
+        ACTIVE_CHAT_ID = CHAT_SESSIONS.some(chat => chat.id === savedActiveChat)
+          ? savedActiveChat
+          : mostRecentChat()?.id || createChatId();
+        ensureActiveChatSession();
+        sessionStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, ACTIVE_CHAT_ID);
       } catch (e) {
         QUESTION_HISTORY = [];
+        CHAT_SESSIONS = [];
+        ACTIVE_CHAT_ID = createChatId();
+        ensureActiveChatSession();
       }
       renderQuestionHistory();
+      restoreConversationTranscript();
     }
 
     function saveQuestionHistory() {
@@ -1836,11 +2637,698 @@
           QUESTION_HISTORY_STORAGE_KEY,
           JSON.stringify(QUESTION_HISTORY),
         );
+        sessionStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, ACTIVE_CHAT_ID);
+        sessionStorage.setItem(
+          CHAT_SESSIONS_STORAGE_KEY,
+          JSON.stringify(CHAT_SESSIONS),
+        );
       } catch (e) {}
+    }
+
+    function clearLocalChatCache() {
+      QUESTION_HISTORY = [];
+      CHAT_SESSIONS = [];
+      ACTIVE_CHAT_ID = '';
+      try {
+        sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY);
+        sessionStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_SESSIONS_STORAGE_KEY);
+      } catch (e) {}
+    }
+
+    function normalizeSavedTurn(item, chatId) {
+      if (!item || !String(item.question || '').trim()) return null;
+      return {
+        id: String(item.id || `history-${Date.now()}-${Math.random().toString(36).slice(2)}`),
+        question: String(item.question || ''),
+        type: String(item.type || 'Question'),
+        answer: item.answer ? String(item.answer) : '',
+        answeredAt: item.answeredAt || null,
+        createdAt: item.createdAt || new Date().toISOString(),
+        chatId: String(chatId),
+        feedbackId: String(item.feedbackId || createAnswerFeedbackId()),
+        feedbackRating: item.feedbackRating === 'liked'
+          || (
+            item.feedbackRating === 'disliked'
+            && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+              .includes(item.feedbackReason)
+          )
+          ? item.feedbackRating
+          : null,
+        feedbackReason: item.feedbackRating === 'disliked'
+          && ['too_vague', 'too_simple', 'too_complex', 'not_relevant']
+            .includes(item.feedbackReason)
+          ? item.feedbackReason
+          : null,
+      };
+    }
+
+    function normalizeSavedChat(chat) {
+      if (!chat || !chat.id) return null;
+      return {
+        id: String(chat.id),
+        title: String(chat.title || 'New chat'),
+        preview: String(chat.preview || ''),
+        createdAt: chat.createdAt || chat.serverCreatedAt || new Date().toISOString(),
+        updatedAt: chat.updatedAt || chat.serverUpdatedAt || chat.createdAt || new Date().toISOString(),
+        conversationId: chat.conversationId ? String(chat.conversationId) : null,
+        askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+        workspace: chat.workspace || null,
+        branchId: Number(chat.branchId) || null,
+        compareBranchA: Number(chat.compareBranchA) || null,
+        compareBranchB: Number(chat.compareBranchB) || null,
+        llmMode: chat.llmMode || null,
+        answerUserType: chat.answerUserType || null,
+      };
+    }
+
+    function chatPayloadForServer(chatId) {
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!chat) return null;
+      return {
+        title: chat.title || 'New chat',
+        preview: chat.preview || '',
+        createdAt: chat.createdAt || null,
+        updatedAt: chat.updatedAt || null,
+        conversationId: chat.conversationId || null,
+        askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+        workspace: chat.workspace || null,
+        branchId: Number(chat.branchId) || null,
+        compareBranchA: Number(chat.compareBranchA) || null,
+        compareBranchB: Number(chat.compareBranchB) || null,
+        llmMode: chat.llmMode || null,
+        answerUserType: chat.answerUserType || null,
+        turns: QUESTION_HISTORY
+          .filter(item => item.chatId === chatId)
+          .map(({
+            id,
+            question,
+            type,
+            answer,
+            answeredAt,
+            createdAt,
+            feedbackId,
+            feedbackRating,
+            feedbackReason,
+          }) => ({
+            id,
+            question,
+            type,
+            answer: answer || '',
+            answeredAt: answeredAt || null,
+            createdAt: createdAt || null,
+            feedbackId: feedbackId || null,
+            feedbackRating: feedbackRating || null,
+            feedbackReason: feedbackReason || null,
+          })),
+      };
+    }
+
+    async function persistChatToServer(chatId) {
+      if (!CURRENT_USER_ID) return;
+      const payload = chatPayloadForServer(chatId);
+      if (!payload || !payload.turns.length) return;
+      try {
+        const response = await fetch(`/auth/me/chats/${encodeURIComponent(chatId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (handle401(response)) return;
+        if (!response.ok) throw new Error(`Chat save failed (${response.status})`);
+      } catch (error) {
+        console.warn('Unable to save chat to this account.', error);
+      }
+    }
+
+    function queueChatSync(chatId) {
+      if (!CHAT_PERSISTENCE_READY || !chatId) return;
+      const existing = CHAT_SYNC_TIMERS.get(chatId);
+      if (existing) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        CHAT_SYNC_TIMERS.delete(chatId);
+        persistChatToServer(chatId);
+      }, 350);
+      CHAT_SYNC_TIMERS.set(chatId, timer);
+    }
+
+    async function deleteChatFromServer(chatId) {
+      if (!CURRENT_USER_ID || !chatId) return;
+      const pending = CHAT_SYNC_TIMERS.get(chatId);
+      if (pending) window.clearTimeout(pending);
+      CHAT_SYNC_TIMERS.delete(chatId);
+      try {
+        const response = await fetch(`/auth/me/chats/${encodeURIComponent(chatId)}`, {
+          method: 'DELETE',
+        });
+        if (handle401(response)) return;
+        if (!response.ok) throw new Error(`Chat deletion failed (${response.status})`);
+      } catch (error) {
+        console.warn('Unable to delete the saved chat from this account.', error);
+      }
+    }
+
+    async function loadSavedChats(userId) {
+      const owner = String(userId);
+      let cachedOwner = '';
+      try { cachedOwner = sessionStorage.getItem(CHAT_CACHE_OWNER_KEY) || ''; } catch (e) {}
+      if (cachedOwner && cachedOwner !== owner) {
+        clearLocalChatCache();
+      }
+      try { sessionStorage.setItem(CHAT_CACHE_OWNER_KEY, owner); } catch (e) {}
+
+      const localChats = [...CHAT_SESSIONS];
+      const localTurns = [...QUESTION_HISTORY];
+      const localActiveChatId = ACTIVE_CHAT_ID;
+      try {
+        const response = await fetch('/auth/me/chats', { cache: 'no-store' });
+        if (handle401(response)) return false;
+        if (!response.ok) throw new Error(`Saved chats failed (${response.status})`);
+        const data = await response.json();
+        const remoteRows = Array.isArray(data.chats) ? data.chats : [];
+        const remoteIds = new Set();
+        const mergedChats = [];
+        const mergedTurns = [];
+        const localOnlyIds = [];
+
+        remoteRows.forEach(row => {
+          const remoteChat = normalizeSavedChat(row);
+          if (!remoteChat) return;
+          remoteIds.add(remoteChat.id);
+          const localChat = localChats.find(chat => chat.id === remoteChat.id);
+          const useLocal = localChat
+            && Date.parse(localChat.updatedAt || 0) > Date.parse(remoteChat.updatedAt || 0);
+          const selectedChat = useLocal ? normalizeSavedChat(localChat) : remoteChat;
+          mergedChats.push(selectedChat);
+          const selectedTurns = useLocal
+            ? localTurns.filter(turn => turn.chatId === remoteChat.id)
+            : (Array.isArray(row.turns) ? row.turns : []);
+          selectedTurns.forEach(turn => {
+            const normalized = normalizeSavedTurn(turn, remoteChat.id);
+            if (normalized) mergedTurns.push(normalized);
+          });
+          if (useLocal) localOnlyIds.push(remoteChat.id);
+        });
+
+        localChats.forEach(chat => {
+          if (remoteIds.has(chat.id)) return;
+          const turns = localTurns.filter(turn => turn.chatId === chat.id);
+          const isEmptyPlaceholder = !turns.length && chat.title === 'New chat';
+          if (isEmptyPlaceholder && remoteRows.length) return;
+          const normalizedChat = normalizeSavedChat(chat);
+          if (!normalizedChat) return;
+          mergedChats.push(normalizedChat);
+          turns.forEach(turn => {
+            const normalized = normalizeSavedTurn(turn, chat.id);
+            if (normalized) mergedTurns.push(normalized);
+          });
+          if (turns.length) localOnlyIds.push(chat.id);
+        });
+
+        CHAT_SESSIONS = mergedChats;
+        QUESTION_HISTORY = mergedTurns;
+        if (!CHAT_SESSIONS.length) {
+          ACTIVE_CHAT_ID = createChatId();
+          CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+        } else {
+          ACTIVE_CHAT_ID = CHAT_SESSIONS.some(chat => chat.id === localActiveChatId)
+            ? localActiveChatId
+            : mostRecentChat().id;
+        }
+        saveQuestionHistory();
+        renderQuestionHistory();
+        renderChatList();
+        CHAT_PERSISTENCE_READY = true;
+        [...new Set(localOnlyIds)].forEach(queueChatSync);
+        return true;
+      } catch (error) {
+        console.warn('Unable to load saved chats for this account.', error);
+        CHAT_PERSISTENCE_READY = false;
+        if (!CHAT_SESSIONS.length) {
+          ACTIVE_CHAT_ID = createChatId();
+          CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+        }
+        return false;
+      }
+    }
+
+    function createChatId() {
+      if (window.crypto?.randomUUID) return `chat-${window.crypto.randomUUID()}`;
+      return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+
+    function createAnswerFeedbackId() {
+      if (window.crypto?.randomUUID) return `feedback-${window.crypto.randomUUID()}`;
+      return `feedback-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    }
+
+    function createChatSession(id = createChatId(), title = 'New chat') {
+      const now = new Date().toISOString();
+      return {
+        id,
+        title,
+        preview: '',
+        createdAt: now,
+        updatedAt: now,
+        conversationId: null,
+        askMode: ASK_MODE,
+        workspace: WORKSPACE,
+        branchId: BRANCH_ID,
+        compareBranchA: Number(document.getElementById('compareBranchA')?.value) || null,
+        compareBranchB: Number(document.getElementById('compareBranchB')?.value) || null,
+        llmMode: LLM_MODE,
+        answerUserType: effectiveAnswerUserType(),
+      };
+    }
+
+    function mostRecentChat() {
+      return [...CHAT_SESSIONS].sort(
+        (left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))
+      )[0] || null;
+    }
+
+    function migrateHistoryChats() {
+      const chatIds = [...new Set(QUESTION_HISTORY.map(item => item.chatId))];
+      chatIds.forEach(chatId => {
+        if (CHAT_SESSIONS.some(chat => chat.id === chatId)) return;
+        const turns = QUESTION_HISTORY.filter(item => item.chatId === chatId);
+        const first = turns[0];
+        const last = turns[turns.length - 1];
+        const chat = createChatSession(
+          chatId,
+          first?.question ? first.question.slice(0, 56) : 'Previous chat',
+        );
+        chat.createdAt = first?.createdAt || chat.createdAt;
+        chat.updatedAt = last?.answeredAt || last?.createdAt || chat.updatedAt;
+        chat.preview = last?.answer || last?.question || '';
+        CHAT_SESSIONS.push(chat);
+      });
+    }
+
+    function ensureActiveChatSession() {
+      let chat = CHAT_SESSIONS.find(item => item.id === ACTIVE_CHAT_ID);
+      if (!chat) {
+        chat = createChatSession(ACTIVE_CHAT_ID || createChatId());
+        ACTIVE_CHAT_ID = chat.id;
+        CHAT_SESSIONS.push(chat);
+      }
+      return chat;
+    }
+
+    function updateActiveChatSession(patch = {}) {
+      const chat = ensureActiveChatSession();
+      Object.assign(chat, {
+        askMode: ASK_MODE,
+        workspace: WORKSPACE,
+        branchId: BRANCH_ID,
+        compareBranchA: Number(document.getElementById('compareBranchA')?.value) || null,
+        compareBranchB: Number(document.getElementById('compareBranchB')?.value) || null,
+        llmMode: LLM_MODE,
+        answerUserType: effectiveAnswerUserType(),
+        updatedAt: new Date().toISOString(),
+        ...patch,
+      });
+      saveQuestionHistory();
+      renderChatList();
+      queueChatSync(chat.id);
+      return chat;
+    }
+
+    function restoredConversationTurn(item) {
+      const answer = String(item.answer || '').trim();
+      return `
+        <section class="conversation-turn conversation-restored">
+          <div class="conversation-user">
+            <div class="conversation-speaker">${escapeHtml(item.type || 'You')}</div>
+            <p>${escapeHtml(item.question)}</p>
+          </div>
+          <div class="conversation-assistant">
+            <div class="conversation-speaker">CodeAtlas</div>
+            ${
+              answer
+                ? `<div class="answer">${renderAnswer(answer)}</div>
+                  ${answerFeedbackControls(item.id, item.question)}`
+                : '<p class="empty-state">This response was not completed.</p>'
+            }
+          </div>
+        </section>
+      `;
+    }
+
+    const ANSWER_FEEDBACK_REASON_LABELS = {
+      too_vague: 'Too vague',
+      too_simple: 'Too simple',
+      too_complex: 'Too complex',
+      not_relevant: 'Out of context',
+    };
+
+    function answerFeedbackControls(historyId, question) {
+      const item = historyId
+        ? QUESTION_HISTORY.find(entry => entry.id === historyId)
+        : null;
+      const feedbackId = item?.feedbackId || createAnswerFeedbackId();
+      const rating = item?.feedbackRating || '';
+      const reason = item?.feedbackReason || '';
+      const chat = item
+        ? CHAT_SESSIONS.find(entry => entry.id === item.chatId)
+        : null;
+      const workspace = chat?.workspace || WORKSPACE || '';
+      const savedQuestion = item?.question || String(question || '');
+      return `
+        <div class="answer-feedback"
+          data-feedback-id="${escapeHtml(feedbackId)}"
+          data-history-id="${escapeHtml(historyId || '')}"
+          data-workspace="${escapeHtml(workspace)}"
+          data-question="${escapeHtml(savedQuestion)}">
+          <div class="answer-feedback-actions" role="group" aria-label="Rate this answer">
+            <button type="button"
+              class="answer-feedback-button${rating === 'liked' ? ' active' : ''}"
+              data-rating="liked" aria-label="Like this answer" title="Like"
+              aria-pressed="${rating === 'liked'}"
+              onclick="submitAnswerFeedback(this, 'liked')">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M7 10v12H3V10h4Z"></path><path d="M7 10l5-8 2 1v6h5a2 2 0 0 1 2 2l-2 9a2 2 0 0 1-2 2H7"></path>
+              </svg>
+            </button>
+            <button type="button"
+              class="answer-feedback-button${rating === 'disliked' ? ' active' : ''}"
+              data-rating="disliked" aria-label="Dislike this answer" title="Dislike"
+              aria-pressed="${rating === 'disliked'}" aria-expanded="false"
+              onclick="showAnswerFeedbackReasons(this)">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 14V2h4v12h-4Z"></path><path d="m17 14-5 8-2-1v-6H5a2 2 0 0 1-2-2l2-9a2 2 0 0 1 2-2h10"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="answer-feedback-reasons" hidden>
+            <span>What could be improved?</span>
+            ${Object.entries(ANSWER_FEEDBACK_REASON_LABELS).map(([value, label]) => `
+              <button type="button"
+                class="answer-feedback-reason${reason === value ? ' active' : ''}"
+                data-reason="${value}"
+                onclick="submitAnswerFeedback(this, 'disliked', '${value}')">
+                ${escapeHtml(label)}
+              </button>
+            `).join('')}
+          </div>
+          <div class="answer-feedback-status" role="status" aria-live="polite">${
+            rating ? 'Feedback saved anonymously.' : ''
+          }</div>
+        </div>
+      `;
+    }
+
+    function showAnswerFeedbackReasons(button) {
+      const wrapper = button.closest('.answer-feedback');
+      const reasons = wrapper?.querySelector('.answer-feedback-reasons');
+      if (!wrapper || !reasons) return;
+      const willOpen = reasons.hidden;
+      reasons.hidden = !willOpen;
+      button.setAttribute('aria-expanded', String(willOpen));
+      if (willOpen) reasons.querySelector('button')?.focus();
+    }
+
+    function applyAnswerFeedbackState(wrapper, satisfaction, reason) {
+      wrapper.querySelectorAll('.answer-feedback-button').forEach(button => {
+        const active = button.dataset.rating === satisfaction;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      wrapper.querySelectorAll('.answer-feedback-reason').forEach(button => {
+        button.classList.toggle('active', button.dataset.reason === reason);
+      });
+      const reasons = wrapper.querySelector('.answer-feedback-reasons');
+      if (reasons) reasons.hidden = true;
+      const dislike = wrapper.querySelector('[data-rating="disliked"]');
+      if (dislike) dislike.setAttribute('aria-expanded', 'false');
+    }
+
+    async function submitAnswerFeedback(button, satisfaction, reason = null) {
+      const wrapper = button.closest('.answer-feedback');
+      if (!wrapper) return;
+      const status = wrapper.querySelector('.answer-feedback-status');
+      const controls = wrapper.querySelectorAll('button');
+      controls.forEach(control => { control.disabled = true; });
+      if (status) status.textContent = 'Saving feedback…';
+      try {
+        const response = await fetch('/auth/me/answer-feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          keepalive: true,
+          body: JSON.stringify({
+            feedback_id: wrapper.dataset.feedbackId,
+            workspace: wrapper.dataset.workspace,
+            question: wrapper.dataset.question,
+            satisfaction,
+            reason,
+          }),
+        });
+        if (handle401(response)) return;
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Unable to save feedback.');
+        applyAnswerFeedbackState(wrapper, satisfaction, reason);
+        const historyId = wrapper.dataset.historyId;
+        const item = QUESTION_HISTORY.find(entry => entry.id === historyId);
+        if (item) {
+          item.feedbackId = wrapper.dataset.feedbackId;
+          item.feedbackRating = satisfaction;
+          item.feedbackReason = reason;
+          saveQuestionHistory();
+          queueChatSync(item.chatId);
+        }
+        if (status) status.textContent = 'Feedback saved anonymously.';
+      } catch (error) {
+        if (status) status.textContent = error.message || 'Unable to save feedback.';
+      } finally {
+        controls.forEach(control => { control.disabled = false; });
+      }
+    }
+
+    function feedbackIdForHistory(historyId) {
+      if (!historyId) return null;
+      return QUESTION_HISTORY.find(entry => entry.id === historyId)?.feedbackId || null;
+    }
+
+    function restoreConversationTranscript() {
+      const result = document.getElementById('result');
+      const turns = QUESTION_HISTORY.filter(item => item.chatId === ACTIVE_CHAT_ID);
+      if (!result || !turns.length) return;
+      result.innerHTML = turns.map(restoredConversationTurn).join('');
+    }
+
+    function renderChatList() {
+      const list = document.getElementById('chatList');
+      if (!list) return;
+      const chats = [...CHAT_SESSIONS].sort(
+        (left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt))
+      );
+      if (!chats.length) {
+        list.innerHTML = '<div class="chat-list-empty">No chats yet.</div>';
+        return;
+      }
+      list.innerHTML = chats.map(chat => `
+        <div class="chat-list-item${chat.id === ACTIVE_CHAT_ID ? ' active' : ''}"
+          data-chat-id="${escapeHtml(chat.id)}"
+          onmouseenter="showChatPreview(this, this.dataset.chatId)"
+          onmouseleave="hideChatPreview()">
+          <button type="button" class="chat-list-open"
+            onclick="switchChat(this.closest('.chat-list-item').dataset.chatId)"
+            onfocus="showChatPreview(this.closest('.chat-list-item'), this.closest('.chat-list-item').dataset.chatId)"
+            onblur="hideChatPreview()"
+            aria-label="Open chat ${escapeHtml(chat.title)}">
+            ${escapeHtml(chat.title)}
+          </button>
+          <button type="button" class="chat-list-delete"
+            onclick="deleteChat(this.closest('.chat-list-item').dataset.chatId)"
+            aria-label="Delete chat ${escapeHtml(chat.title)}" title="Delete chat">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path>
+            </svg>
+          </button>
+        </div>
+      `).join('');
+    }
+
+    function showChatPreview(source, chatId) {
+      const preview = document.getElementById('chatHoverPreview');
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!preview || !source || !chat || window.innerWidth <= 900) return;
+      const turns = QUESTION_HISTORY.filter(item => item.chatId === chatId);
+      const last = turns[turns.length - 1];
+      const snippet = last?.answer || last?.question || 'Start a conversation in this chat.';
+      preview.innerHTML = `
+        <div class="chat-preview-title">${escapeHtml(chat.title)}</div>
+        <div class="chat-preview-snippet">${escapeHtml(snippet)}</div>
+      `;
+      preview.hidden = false;
+      const sourceRect = source.getBoundingClientRect();
+      const left = Math.min(
+        sourceRect.right + 12,
+        window.innerWidth - preview.offsetWidth - 16,
+      );
+      const top = Math.max(
+        16,
+        Math.min(sourceRect.top, window.innerHeight - preview.offsetHeight - 16),
+      );
+      preview.style.left = `${left}px`;
+      preview.style.top = `${top}px`;
+    }
+
+    function hideChatPreview() {
+      const preview = document.getElementById('chatHoverPreview');
+      if (preview) preview.hidden = true;
+    }
+
+    function chatMatchesCurrentContext(chat) {
+      if (!chat) return false;
+      if (chat.askMode && chat.askMode !== ASK_MODE) return false;
+      if (chat.workspace && chat.workspace !== WORKSPACE) return false;
+      if (chat.branchId && Number(chat.branchId) !== Number(BRANCH_ID)) return false;
+      if (ASK_MODE === 'compare') {
+        const left = Number(document.getElementById('compareBranchA')?.value) || null;
+        const right = Number(document.getElementById('compareBranchB')?.value) || null;
+        if (chat.compareBranchA && Number(chat.compareBranchA) !== left) return false;
+        if (chat.compareBranchB && Number(chat.compareBranchB) !== right) return false;
+      }
+      if (chat.llmMode && chat.llmMode !== LLM_MODE) return false;
+      if (chat.answerUserType && chat.answerUserType !== effectiveAnswerUserType()) return false;
+      return true;
+    }
+
+    function switchChat(chatId, options = {}) {
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!chat) return;
+      if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
+      hideChatPreview();
+      ACTIVE_CHAT_ID = chat.id;
+      setAskMode(chat.askMode || 'single', { resetResult: false, focus: false });
+      if (ASK_MODE === 'compare') {
+        const left = document.getElementById('compareBranchA');
+        const right = document.getElementById('compareBranchB');
+        if (left && Array.from(left.options).some(option => Number(option.value) === chat.compareBranchA)) {
+          left.value = String(chat.compareBranchA);
+        }
+        if (right && Array.from(right.options).some(option => Number(option.value) === chat.compareBranchB)) {
+          right.value = String(chat.compareBranchB);
+        }
+        updateCompareBranchStatus();
+      }
+      CONVERSATION_ID = chatMatchesCurrentContext(chat)
+        ? chat.conversationId || null
+        : null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      const result = document.getElementById('result');
+      if (result) result.innerHTML = resultEmptyState(ASK_MODE);
+      restoreConversationTranscript();
+      saveQuestionHistory();
+      renderChatList();
+      if (options.focus !== false) {
+        const input = ASK_MODE === 'compare'
+          ? document.getElementById('compareQuestion')
+          : document.getElementById('question');
+        input?.focus();
+      }
+    }
+
+    function deleteChat(chatId) {
+      const chat = CHAT_SESSIONS.find(item => item.id === chatId);
+      if (!chat || !window.confirm(`Delete “${chat.title}”?`)) return;
+      hideChatPreview();
+      const deletingActiveChat = chat.id === ACTIVE_CHAT_ID;
+      if (deletingActiveChat && ACTIVE_REQUEST_CONTROLLER) {
+        ACTIVE_REQUEST_CONTROLLER.abort();
+      }
+      QUESTION_HISTORY = QUESTION_HISTORY.filter(item => item.chatId !== chat.id);
+      CHAT_SESSIONS = CHAT_SESSIONS.filter(item => item.id !== chat.id);
+      deleteChatFromServer(chat.id);
+      if (deletingActiveChat) {
+        const nextChat = mostRecentChat();
+        if (nextChat) {
+          ACTIVE_CHAT_ID = nextChat.id;
+          switchChat(nextChat.id, { focus: false });
+        } else {
+          ACTIVE_CHAT_ID = createChatId();
+          CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+          CONVERSATION_ID = null;
+          const result = document.getElementById('result');
+          if (result) result.innerHTML = resultEmptyState(ASK_MODE);
+        }
+      }
+      saveQuestionHistory();
+      renderQuestionHistory();
+      renderChatList();
+      showToast('Chat deleted.');
+    }
+
+    function retireConversationActions() {
+      document.querySelectorAll(
+        '#result .follow-up-panel, #result .clarification-banner, #result .investigate-actions'
+      ).forEach(element => element.remove());
+    }
+
+    function startConversationTurn(question, type = 'You') {
+      const result = document.getElementById('result');
+      if (!result) return null;
+      retireConversationActions();
+      if (Array.from(result.children).some(
+        child => !child.classList.contains('conversation-turn')
+      )) {
+        result.replaceChildren();
+      }
+      const turn = document.createElement('section');
+      turn.className = 'conversation-turn';
+      turn.innerHTML = `
+        <div class="conversation-user">
+          <div class="conversation-speaker">${escapeHtml(type)}</div>
+          <p>${escapeHtml(question)}</p>
+        </div>
+        <div class="conversation-assistant" aria-live="polite"></div>
+      `;
+      result.appendChild(turn);
+      return {
+        turn,
+        answer: turn.querySelector('.conversation-assistant'),
+      };
+    }
+
+    function startNewChat() {
+      if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      const currentChat = CHAT_SESSIONS.find(chat => chat.id === ACTIVE_CHAT_ID);
+      const currentTurns = QUESTION_HISTORY.some(item => item.chatId === ACTIVE_CHAT_ID);
+      if (!currentChat || currentTurns || currentChat.title !== 'New chat') {
+        ACTIVE_CHAT_ID = createChatId();
+        CHAT_SESSIONS.push(createChatSession(ACTIVE_CHAT_ID));
+      } else {
+        Object.assign(currentChat, createChatSession(currentChat.id));
+      }
+      saveQuestionHistory();
+      renderQuestionHistory();
+      renderChatList();
+      closeQuestionHistoryDialog();
+      closeQuestionHistory();
+      clearQueryImages();
+      const question = document.getElementById('question');
+      const compareQuestion = document.getElementById('compareQuestion');
+      if (question) {
+        question.value = '';
+        autoResizeTextarea(question);
+      }
+      if (compareQuestion) {
+        compareQuestion.value = '';
+        autoResizeTextarea(compareQuestion);
+      }
+      const result = document.getElementById('result');
+      if (result) result.innerHTML = resultEmptyState(ASK_MODE);
+      const focusTarget = ASK_MODE === 'compare' ? compareQuestion : question;
+      focusTarget?.focus();
+      showToast('New chat started.');
     }
 
     function renderQuestionHistory() {
       const list = document.getElementById('questionHistoryList');
+      renderChatList();
       if (!list) return;
       if (!QUESTION_HISTORY.length) {
         list.innerHTML = '<div class="question-history-empty">No questions in this session yet.</div>';
@@ -1880,9 +3368,20 @@
         answer: '',
         answeredAt: null,
         createdAt: new Date().toISOString(),
+        chatId: ACTIVE_CHAT_ID || 'legacy-chat',
+        feedbackId: createAnswerFeedbackId(),
+        feedbackRating: null,
+        feedbackReason: null,
       };
       QUESTION_HISTORY.push(item);
-      saveQuestionHistory();
+      const chat = ensureActiveChatSession();
+      const nextTitle = chat.title === 'New chat'
+        ? normalized.slice(0, 56)
+        : chat.title;
+      updateActiveChatSession({
+        title: nextTitle,
+        preview: normalized,
+      });
       renderQuestionHistory();
       return item.id;
     }
@@ -1893,7 +3392,10 @@
       if (!item) return;
       item.answer = String(answer || '').trim().slice(0, 20000);
       item.answeredAt = new Date().toISOString();
-      saveQuestionHistory();
+      updateActiveChatSession({
+        preview: item.answer || item.question,
+        conversationId: CONVERSATION_ID,
+      });
       renderQuestionHistory();
     }
 
@@ -2615,12 +4117,42 @@
         : 'You do not have access to this repository. Please contact admin to get access.';
     }
 
-    async function initAuth() {
-      try {
-        AUTH_CONFIG = await (await fetch('/auth/config', { cache: 'no-store' })).json();
-      } catch (e) {
-        AUTH_CONFIG = {};
+    // Remote config: which optional surfaces to hide. Defaults to hiding them
+    // so a failed fetch never flashes a surface that is meant to be off.
+    const UI_FEATURE_TARGETS = {
+      repo_summary_hidden: 'repoSummaryCard',
+      flow_explorer_hidden: 'flowExplorerCard',
+      graph_search_hidden: 'graphSearchCard',
+    };
+
+    function featureHidden(key) {
+      return UI_FEATURES[key] !== false;
+    }
+
+    function applyUiFeatureFlags() {
+      Object.entries(UI_FEATURE_TARGETS).forEach(([key, elementId]) => {
+        const element = document.getElementById(elementId);
+        if (element) element.classList.toggle('feature-off', featureHidden(key));
+      });
+      const tools = document.getElementById('secondaryTools');
+      if (tools) {
+        const allHidden = Object.keys(UI_FEATURE_TARGETS).every(featureHidden);
+        tools.classList.toggle('feature-off', allHidden);
       }
+    }
+
+    async function initAuth() {
+      const [authConfig, uiConfig] = await Promise.all([
+        fetch('/auth/config', { cache: 'no-store' })
+          .then(res => res.json())
+          .catch(() => ({})),
+        fetch('/ui-config', { cache: 'no-store' })
+          .then(res => res.json())
+          .catch(() => ({})),
+      ]);
+      AUTH_CONFIG = authConfig;
+      UI_FEATURES = (uiConfig && uiConfig.features) || {};
+      applyUiFeatureFlags();
       const res = await fetch('/auth/me');
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
@@ -2631,6 +4163,7 @@
         return false;
       }
       CURRENT_USER_TYPE = data.user.user_type || 'dev_team';
+      CURRENT_USER_ID = data.user.id;
       const adminReturnBtn = document.getElementById('adminReturnBtn');
       if (adminReturnBtn) {
         adminReturnBtn.hidden = !(ADMIN_TEST_MODE && data.user.role === 'admin');
@@ -2640,6 +4173,11 @@
       await loadBranches();
       await loadFlowButtons();
       await loadLlmStatus();
+      await loadSavedChats(data.user.id);
+      const activeChat = CHAT_SESSIONS.find(chat => chat.id === ACTIVE_CHAT_ID);
+      if (activeChat) {
+        switchChat(activeChat.id, { focus: false });
+      }
       showLogin(false);
       return true;
     }
@@ -2655,30 +4193,102 @@
       WORKSPACE = null;
       BRANCH_ID = null;
       CURRENT_USER_TYPE = 'dev_team';
+      CURRENT_USER_ID = null;
       PRODUCT_ANSWER_OVERRIDE = false;
       stopBranchPolling();
       CONVERSATION_ID = null;
       QUESTION_HISTORY = [];
-      try { sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY); } catch (e) {}
+      CHAT_SESSIONS = [];
+      ACTIVE_CHAT_ID = '';
+      CHAT_PERSISTENCE_READY = false;
+      CHAT_SYNC_TIMERS.forEach(timer => window.clearTimeout(timer));
+      CHAT_SYNC_TIMERS.clear();
+      try {
+        sessionStorage.removeItem(QUESTION_HISTORY_STORAGE_KEY);
+        sessionStorage.removeItem(ACTIVE_CHAT_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_SESSIONS_STORAGE_KEY);
+        sessionStorage.removeItem(CHAT_CACHE_OWNER_KEY);
+      } catch (e) {}
       renderQuestionHistory();
       window.location.href = '/';   // back to the landing page
     }
 
+    // ---------- Shared LLM options ----------
+    // Which shared LLMs exist is deployment configuration, so the buttons are
+    // rendered from it rather than hardcoded.
+    function sharedLlmMode(id) { return `shared:${id}`; }
+
+    function defaultSharedLlmMode() {
+      if (DEFAULT_SHARED_LLM) return sharedLlmMode(DEFAULT_SHARED_LLM);
+      if (SHARED_LLMS.length) return sharedLlmMode(SHARED_LLMS[0].id);
+      return 'mimo';
+    }
+
+    // "mimo"/"shared" are pre-registry values for "the shared tier" (from
+    // before multiple named shared LLMs existed) and may still be in a
+    // returning user's localStorage. They're not a deliberate choice of the
+    // Mimo model specifically, so they resolve to today's configured default
+    // shared LLM, same as a first-time visit with no saved mode at all.
+    function resolveSharedLlmMode(mode) {
+      if (!mode) return defaultSharedLlmMode();
+      if (mode === 'mimo' || mode === 'shared') {
+        return defaultSharedLlmMode();
+      }
+      if (String(mode || '').startsWith('shared:')) {
+        const id = String(mode).slice('shared:'.length);
+        return SHARED_LLMS.some(item => item.id === id)
+          ? sharedLlmMode(id)
+          : defaultSharedLlmMode();
+      }
+      return mode;
+    }
+
+    function renderSharedLlmOptions() {
+      const host = document.getElementById('sharedLlmOptions');
+      const heading = document.getElementById('sharedLlmHeading');
+      if (!host) return;
+      if (!SHARED_LLMS.length) {
+        // No shared LLM configured: keep the original single button so the
+        // option never silently disappears.
+        // Nothing configured: keep the shared option available, but the
+        // WebView never names a specific model.
+        host.innerHTML = '<button type="button" class="llm-option" data-llm-mode="mimo">Use shared LLM</button>';
+        if (heading) heading.hidden = true;
+        return;
+      }
+      host.innerHTML = SHARED_LLMS.map(item => `
+        <button type="button" class="llm-option"
+          data-llm-mode="${escapeHtml(sharedLlmMode(item.id))}"
+          title="${escapeHtml(item.model)}">Use ${escapeHtml(item.name)}</button>
+      `).join('');
+      // The section title only earns its place when there is a choice to make.
+      if (heading) heading.hidden = SHARED_LLMS.length < 2;
+    }
+
+    function selectedSharedLlm() {
+      if (!String(LLM_MODE || '').startsWith('shared:')) return null;
+      const id = String(LLM_MODE).slice('shared:'.length);
+      return SHARED_LLMS.find(item => item.id === id) || null;
+    }
+
     // ---------- LLM mode ----------
     function getSavedLlmMode() {
+      // Returns '' when the user has never chosen, so a first visit lands on
+      // the configured default shared LLM instead of a hardcoded name.
       try {
-        const saved = localStorage.getItem('codeatlas-llm-mode') || 'mimo';
+        const saved = localStorage.getItem('codeatlas-llm-mode') || '';
         if (saved === 'ollama') {
-          localStorage.setItem('codeatlas-llm-mode', 'mimo');
-          return 'mimo';
+          localStorage.removeItem('codeatlas-llm-mode');
+          return '';
         }
         return saved;
       }
-      catch (e) { return 'mimo'; }
+      catch (e) { return ''; }
     }
 
     function setLlmMode(mode) {
-      LLM_MODE = mode === 'ollama' ? 'mimo' : (mode || 'mimo');
+      const requested = (mode === 'ollama' || !mode) ? 'mimo' : mode;
+      LLM_MODE = requested === 'personal' ? 'personal' : resolveSharedLlmMode(requested);
       CONVERSATION_ID = null;
       try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
       updateLlmModeUi();
@@ -2887,7 +4497,10 @@
           ? 'Selected: personal LLM key.'
           : 'Add a personal API key to use this option.';
       } else {
-        status.textContent = 'Selected: Mimo v2.5.';
+        const shared = selectedSharedLlm();
+        status.textContent = shared
+          ? `Selected: ${shared.name}.`
+          : 'Selected: shared LLM.';
       }
     }
 
@@ -2921,10 +4534,12 @@
     }
 
     async function loadLlmStatus() {
-      LLM_MODE = getSavedLlmMode();
+      const savedMode = getSavedLlmMode();
       try {
         const s = await (await fetch('/auth/me/llm')).json();
         PERSONAL_KEY_CONFIGURED = Boolean(s.configured);
+        SHARED_LLMS = Array.isArray(s.shared_llms) ? s.shared_llms : [];
+        DEFAULT_SHARED_LLM = s.default_shared_llm || '';
         if (s.configured) {
           document.getElementById('keyModel').value = s.model || '';
           document.getElementById('keyBaseUrl').value = s.base_url || '';
@@ -2933,6 +4548,11 @@
       } catch (e) {
         PERSONAL_KEY_CONFIGURED = false;
       }
+      renderSharedLlmOptions();
+      // Resolve after the options are known: a saved id that no longer exists,
+      // or the legacy "mimo", lands on the configured default.
+      LLM_MODE = savedMode === 'personal' ? 'personal' : resolveSharedLlmMode(savedMode);
+      try { localStorage.setItem('codeatlas-llm-mode', LLM_MODE); } catch (e) {}
       updateLlmModeUi();
     }
 
@@ -3128,16 +4748,39 @@
       state.timer = window.setInterval(poll, 900);
     }
 
-    function cleanAnswerText(value) {
-      return String(value ?? '')
-        .replace(/\*\*([^*\n]+)\*\*/g, '$1')
-        .replace(/__([^_\n]+)__/g, '$1')
-        .replace(/\*\*/g, '')
-        .replace(/__/g, '');
+    // Emphasis outside inline code. `__` is deliberately not treated as bold:
+    // in a codebase tool it collides with names like __init__, which the old
+    // stripping turned into "init".
+    // Why the agent loop was skipped. The server has always returned this;
+    // without showing it, a silent downgrade to one-shot looks like a normal
+    // answer that simply failed to find anything. Rendered as text on its own
+    // line rather than a tooltip, so it survives a screenshot. Shared by the
+    // single-branch and comparison answers.
+    function agentFallbackNotice(data) {
+      const reason = String(data?.agent_fallback_reason || '').trim();
+      if (!reason) return { chip: '', line: '' };
+      return {
+        chip: ' · agent unavailable',
+        line: `<p class="src" style="margin-top:-6px">agent fallback: ${escapeHtml(reason.slice(0, 400))}</p>`,
+      };
+    }
+
+    function renderEmphasis(value) {
+      return value
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*\*/g, '');
     }
 
     function renderInlineAnswer(value) {
-      return escapeHtml(value).replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      // Split on inline-code spans first so ** inside them stays literal.
+      return escapeHtml(value)
+        .split(/(`[^`\n]+`)/g)
+        .map(part => (
+          part.length > 1 && part.startsWith('`') && part.endsWith('`')
+            ? `<code>${part.slice(1, -1)}</code>`
+            : renderEmphasis(part)
+        ))
+        .join('');
     }
 
     function tableCells(line) {
@@ -3145,6 +4788,28 @@
       if (value.startsWith('|')) value = value.slice(1);
       if (value.endsWith('|')) value = value.slice(0, -1);
       return value.split('|').map(cell => cell.trim());
+    }
+
+    // `---` on its own line is a horizontal rule, which is dropped rather than
+    // drawn. A table separator always contains `|`, so the two never collide.
+    function isHorizontalRule(line) {
+      return /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(String(line ?? ''));
+    }
+
+    function headingMatch(line) {
+      const match = /^\s{0,3}(#{1,6})\s+(.*\S)\s*$/.exec(String(line ?? ''));
+      if (!match) return null;
+      // The answer card already owns an <h2>, so the model's top level (# or
+      // ##, whichever it uses) sits directly beneath it at h3 and nests down.
+      return { level: Math.min(6, Math.max(3, match[1].length + 1)), text: match[2] };
+    }
+
+    function listItemMatch(line) {
+      const bullet = /^\s{0,3}[-*+]\s+(.*)$/.exec(String(line ?? ''));
+      if (bullet) return { ordered: false, text: bullet[1] };
+      const ordered = /^\s{0,3}\d{1,9}[.)]\s+(.*)$/.exec(String(line ?? ''));
+      if (ordered) return { ordered: true, text: ordered[1] };
+      return null;
     }
 
     function isTableSeparator(line) {
@@ -3155,13 +4820,18 @@
     }
 
     function renderAnswer(value) {
-      const lines = cleanAnswerText(value).replace(/\r\n?/g, '\n').split('\n');
+      const lines = String(value ?? '').replace(/\r\n?/g, '\n').split('\n');
       const rendered = [];
       let textLines = [];
 
       const flushText = () => {
         if (!textLines.length) return;
-        rendered.push(`<div class="answer-text">${renderInlineAnswer(textLines.join('\n'))}</div>`);
+        // Collapse runs of blank lines to one so paragraph spacing stays even
+        // — dropping a `---` otherwise leaves a double gap behind it.
+        const text = textLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+        if (text) {
+          rendered.push(`<div class="answer-text">${renderInlineAnswer(text)}</div>`);
+        }
         textLines = [];
       };
 
@@ -3211,6 +4881,44 @@
           continue;
         }
 
+        const heading = headingMatch(line);
+        if (heading) {
+          flushText();
+          rendered.push(
+            `<h${heading.level} class="answer-heading">${renderInlineAnswer(heading.text)}</h${heading.level}>`
+          );
+          index += 1;
+          continue;
+        }
+
+        if (isHorizontalRule(line)) {
+          // The model emits `---` freely between points. Drawing a rule for
+          // each one is visual noise, so it is dropped; the blank lines around
+          // it already separate the sections.
+          index += 1;
+          continue;
+        }
+
+        const listStart = listItemMatch(line);
+        if (listStart) {
+          flushText();
+          const ordered = listStart.ordered;
+          const items = [];
+          while (index < lines.length) {
+            const item = listItemMatch(lines[index]);
+            if (!item || item.ordered !== ordered) break;
+            items.push(item.text);
+            index += 1;
+          }
+          const tag = ordered ? 'ol' : 'ul';
+          rendered.push(
+            `<${tag} class="answer-list">` +
+            items.map(item => `<li>${renderInlineAnswer(item)}</li>`).join('') +
+            `</${tag}>`
+          );
+          continue;
+        }
+
         textLines.push(line);
         index += 1;
       }
@@ -3230,15 +4938,20 @@
       const res = await fetch(wsUrl(`/repo/nodes/${encodedNodeId}`));
       if (handle401(res)) return;
       const data = await res.json();
+      const activeTurn = startConversationTurn(
+        data.name ? `Inspect ${data.name}` : 'Inspect code node',
+        'Code node',
+      );
+      const result = activeTurn?.answer || document.getElementById('result');
 
       if (!res.ok) {
-        document.getElementById('result').innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        result.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
         return;
       }
 
       const links = data.connected_links || [];
 
-      document.getElementById('result').innerHTML = `
+      result.innerHTML = `
         <h2>${escapeHtml(data.name)}</h2>
         <p><b>Node:</b> ${escapeHtml(data.node)}</p>
         <div class="src">${escapeHtml(`${data.source_file || ''} ${data.source_location || ''}`.trim())}</div>
@@ -3275,7 +4988,8 @@
 
       await loadNode(node);
 
-      document.getElementById('result').scrollIntoView({
+      const result = document.getElementById('result');
+      (result.lastElementChild || result).scrollIntoView({
         behavior: 'smooth',
         block: 'start'
       });
@@ -3319,6 +5033,7 @@
     }
 
     async function loadFlowButtons() {
+      if (featureHidden('flow_explorer_hidden')) return;
       const target = document.getElementById('flowButtons');
       if (!target) return;
       if (!WORKSPACE) {
@@ -3447,13 +5162,14 @@
       const input = document.getElementById('compareQuestion');
       const question = input ? input.value.trim() : '';
       if (!question) return;
-      CONVERSATION_ID = null;
-      await submitCompareQuestion(question);
+      const followUp = Boolean(CONVERSATION_ID);
+      await submitCompareQuestion(question, { followUp });
     }
 
     function comparisonRetrievalLabel(data) {
       const toolCalls = data.agent_tool_calls || (data.agent_trace || []).length;
       if (data.session_cache_hit) return 'answered from session cache';
+      if (data.repo_cache_hit) return 'answered from shared repo cache';
       if (data.deep_investigation) {
         return data.retrieval_mode === 'compare_agentic'
           ? `comparison deep investigation · ${toolCalls} tool calls`
@@ -3472,8 +5188,13 @@
         : 'one-shot evidence';
     }
 
-    function renderCompareResult(data, requestQuestion, options = {}) {
-      const result = document.getElementById('result');
+    function renderCompareResult(
+      data,
+      requestQuestion,
+      options = {},
+      result = document.getElementById('result'),
+      historyId = null,
+    ) {
       const prov = data.provider_used || '';
       const provLabel = prov.startsWith('user:') ? 'your key'
         : prov.startsWith('ollama:') ? 'local Ollama' : 'shared LLM';
@@ -3483,12 +5204,11 @@
         : '';
       const usage = data.token_usage || {};
       const totalTokens = Number(usage.total_tokens);
-      const tokenLabel = data.session_cache_hit
+      const tokenLabel = (data.session_cache_hit || data.repo_cache_hit)
         ? ' · <span title="No new LLM request was made.">0 new tokens</span>'
         : usage.available && Number.isFinite(totalTokens)
           ? ` · ${totalTokens.toLocaleString()} tokens`
           : ' · tokens unavailable';
-      const questionLabel = options.followUp ? 'Follow-up question' : 'Comparison question';
       const investigateAction = data.investigate_deeply_available
         ? `
           <div class="investigate-actions">
@@ -3503,18 +5223,22 @@
         LAST_FOLLOW_UP_QUESTION = '';
       }
       CONVERSATION_ID = data.conversation_id || null;
+      updateActiveChatSession({
+        conversationId: CONVERSATION_ID,
+        preview: data.answer || requestQuestion,
+      });
+
+      const compareFallback = agentFallbackNotice(data);
 
       result.innerHTML = `
         ${followUpComposer(data.needs_clarification)}
         <h2>CodeAtlas Branch Comparison</h2>
-        <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(timingLabel)}${tokenLabel}</p>
-        <div class="follow-up-question-recap">
-          <div class="follow-up-question-recap-label">${questionLabel}</div>
-          <p>${escapeHtml(data.question || requestQuestion)}</p>
-        </div>
+        <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · branch comparison · ${escapeHtml(comparisonRetrievalLabel(data))}${escapeHtml(compareFallback.chip)}${escapeHtml(timingLabel)}${tokenLabel}</p>
+        ${compareFallback.line}
         <div class="answer">${renderAnswer(data.answer)}</div>
         ${investigateAction}
         ${compareEvidenceSection(data)}
+        ${answerFeedbackControls(historyId, requestQuestion)}
       `;
       bindFollowUpInput();
     }
@@ -3522,12 +5246,17 @@
     async function submitCompareQuestion(requestQuestion, options = {}) {
       const left = document.getElementById('compareBranchA');
       const right = document.getElementById('compareBranchB');
-      const result = document.getElementById('result');
+      const resultContainer = document.getElementById('result');
       if (!requestQuestion) return;
       if (!requireWorkspace()) return;
       if (!left.value || !right.value || left.value === right.value) {
-        result.innerHTML = '<div class="error-box"><h2>Select two branches</h2><p>Choose two different indexed branches to compare.</p></div>';
+        resultContainer.innerHTML = '<div class="error-box"><h2>Select two branches</h2><p>Choose two different indexed branches to compare.</p></div>';
         return;
+      }
+      const compareInput = document.getElementById('compareQuestion');
+      if (compareInput) {
+        compareInput.value = '';
+        autoResizeTextarea(compareInput);
       }
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
@@ -3538,6 +5267,15 @@
           options.followUp ? 'Follow-up' : 'Comparison question',
         );
       }
+      const feedbackHistoryId = historyId || options.feedbackHistoryId || null;
+      const feedbackId = feedbackIdForHistory(feedbackHistoryId);
+      const activeTurn = startConversationTurn(
+        requestQuestion,
+        deepInvestigation
+          ? 'Deep investigation'
+          : options.followUp ? 'Follow-up' : 'You',
+      );
+      const result = activeTurn?.answer || resultContainer;
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       const activityRequestId = createActivityRequestId();
@@ -3570,7 +5308,7 @@
             </div>
             ${answerActivityPanel()}
           `;
-      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (activeTurn?.turn || result).scrollIntoView({ behavior: 'smooth', block: 'start' });
       startAnswerActivityPolling(activityRequestId);
 
       try {
@@ -3580,6 +5318,7 @@
           signal: controller.signal,
           body: JSON.stringify({
             question: requestQuestion,
+            feedback_id: feedbackId,
             left_branch: Number(left.value),
             right_branch: Number(right.value),
             llm_mode: LLM_MODE,
@@ -3602,7 +5341,13 @@
           return;
         }
 
-        renderCompareResult(data, requestQuestion, options);
+        renderCompareResult(
+          data,
+          requestQuestion,
+          options,
+          result,
+          historyId || options.feedbackHistoryId || null,
+        );
         updateQuestionHistoryAnswer(historyId, data.answer);
       } catch (error) {
         if (error && error.name === 'AbortError') {
@@ -3630,25 +5375,9 @@
 
 
     function followUpComposer(needsClarification) {
-      const clarificationBanner = needsClarification
-        ? `<div class="clarification-banner">CodeAtlas is asking a clarifying question above. Answer it in the field below to continue.</div>`
+      return needsClarification
+        ? '<div class="clarification-banner">CodeAtlas needs one detail before continuing. Reply in the main message field below.</div>'
         : '';
-      return `
-        ${clarificationBanner}
-        <div class="follow-up-panel">
-          <label class="follow-up-label" for="followUpQuestion">Ask a follow-up question</label>
-          <div class="follow-up-box">
-            <textarea
-              id="followUpQuestion"
-              rows="1"
-              placeholder="Ask about this answer, or enter a different question…"
-              autocomplete="off"
-            ></textarea>
-            <button type="button" class="btn-primary" onclick="askFollowUp()">Ask follow-up</button>
-          </div>
-          <p class="follow-up-hint">Related questions reuse verified evidence for speed. Choose Investigate deeply when you want a fresh repository check.</p>
-        </div>
-      `;
     }
 
     function bindFollowUpInput() {
@@ -3672,8 +5401,10 @@
       const question = input.value.trim();
       if (!question) return;
       if (!requireWorkspace()) return;
-      CONVERSATION_ID = null;
-      await submitQuestion(question);
+      const followUp = Boolean(CONVERSATION_ID);
+      input.value = '';
+      autoResizeTextarea(input);
+      await submitQuestion(question, { followUp });
     }
 
     async function askFollowUp() {
@@ -3691,21 +5422,27 @@
     async function investigateDeeply() {
       if (!LAST_FOLLOW_UP_QUESTION) return;
       if (!requireWorkspace()) return;
+      const sourceTurn = [...QUESTION_HISTORY].reverse().find(item => (
+        item.chatId === ACTIVE_CHAT_ID
+        && item.question === LAST_FOLLOW_UP_QUESTION
+      ));
       if (ASK_MODE === 'compare') {
         await submitCompareQuestion(LAST_FOLLOW_UP_QUESTION, {
           followUp: true,
           deepInvestigation: true,
+          feedbackHistoryId: sourceTurn?.id || null,
         });
         return;
       }
       await submitQuestion(LAST_FOLLOW_UP_QUESTION, {
         followUp: true,
         deepInvestigation: true,
+        feedbackHistoryId: sourceTurn?.id || null,
       });
     }
 
     async function submitQuestion(requestQuestion, options = {}) {
-      const result = document.getElementById('result');
+      const resultContainer = document.getElementById('result');
       const productFlowSummary = Boolean(
         options.flowSummary && effectiveAnswerUserType() === 'product_team'
       );
@@ -3725,6 +5462,17 @@
           options.followUp ? 'Follow-up' : 'Question',
         );
       }
+      const feedbackHistoryId = historyId || options.feedbackHistoryId || null;
+      const feedbackId = feedbackIdForHistory(feedbackHistoryId);
+      const activeTurn = startConversationTurn(
+        requestQuestion,
+        productFlowSummary
+          ? 'Flow summary'
+          : deepInvestigation
+            ? 'Deep investigation'
+            : options.followUp ? 'Follow-up' : 'You',
+      );
+      const result = activeTurn?.answer || resultContainer;
       const controller = new AbortController();
       ACTIVE_REQUEST_CONTROLLER = controller;
       setMainAskCancelVisible(true);
@@ -3767,7 +5515,7 @@
           ${answerActivityPanel()}
         `;
 
-      result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      (activeTurn?.turn || result).scrollIntoView({ behavior: 'smooth', block: 'start' });
       startAnswerActivityPolling(activityRequestId);
 
       try {
@@ -3783,6 +5531,7 @@
                 }
               : {
                   question: requestQuestion,
+                  feedback_id: feedbackId,
                   llm_mode: LLM_MODE,
                   answer_user_type: effectiveAnswerUserType(),
                   follow_up: Boolean(options.followUp),
@@ -3862,6 +5611,8 @@
         const followUpToolCalls = data.agent_tool_calls || agentTrace.length;
         const retrievalLabel = data.session_cache_hit
           ? 'answered from session cache'
+          : data.repo_cache_hit
+          ? 'answered from shared repo cache'
           : data.deep_investigation
             ? data.retrieval_mode === 'agentic'
               ? `follow-up deep investigation · ${followUpToolCalls} tool calls`
@@ -3875,6 +5626,7 @@
           : data.retrieval_mode === 'agentic'
             ? `agentic retrieval · ${followUpToolCalls} tool calls`
             : 'one-shot retrieval fallback';
+        const { chip: fallbackReason, line: fallbackReasonLine } = agentFallbackNotice(data);
         const totalMs = Number(data.timings_ms?.total);
         const timingLabel = Number.isFinite(totalMs)
           ? ` · ${(totalMs / 1000).toFixed(1)}s server time`
@@ -3893,7 +5645,7 @@
             `Cached input ${Number(usage.cached_input_tokens).toLocaleString()}`,
           );
         }
-        const tokenLabel = data.session_cache_hit
+        const tokenLabel = (data.session_cache_hit || data.repo_cache_hit)
           ? ' · <span title="No new LLM request was made.">0 new tokens</span>'
           : usage.available && Number.isFinite(totalTokens)
           ? ` · <span title="${escapeHtml(tokenBreakdown.join(' · '))}">${totalTokens.toLocaleString()} tokens</span>`
@@ -3905,21 +5657,14 @@
         const answerMetadata = productFlowSummary
           ? `<p class="src" style="margin-top:0">Product team flow summary${tokenLabel}</p>`
           : `
-            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(timingLabel)}${tokenLabel}</p>
+            <p class="src" style="margin-top:0">answered by <b>${escapeHtml(provLabel)}</b> · ${escapeHtml(prov)} · ${escapeHtml(retrievalLabel)}${escapeHtml(fallbackReason)}${escapeHtml(timingLabel)}${tokenLabel}</p>
             ${versionLabel ? `<p class="src" style="margin-top:-6px">${escapeHtml(versionLabel)}</p>` : ''}
+            ${fallbackReasonLine}
           `;
         const investigateAction = data.investigate_deeply_available
           ? `
             <div class="investigate-actions">
               <button type="button" class="btn-primary" onclick="investigateDeeply()">Investigate deeply</button>
-            </div>
-          `
-          : '';
-        const followUpQuestionRecap = options.followUp
-          ? `
-            <div class="follow-up-question-recap">
-              <div class="follow-up-question-recap-label">Follow-up question</div>
-              <p>${escapeHtml(data.question || requestQuestion)}</p>
             </div>
           `
           : '';
@@ -3929,14 +5674,21 @@
           LAST_FOLLOW_UP_QUESTION = '';
         }
         CONVERSATION_ID = data.conversation_id || null;
+        updateActiveChatSession({
+          conversationId: CONVERSATION_ID,
+          preview: data.answer || requestQuestion,
+        });
         result.innerHTML = `
           ${followUpComposer(data.needs_clarification)}
-          ${followUpQuestionRecap}
           <h2>CodeAtlas Answer</h2>
           ${answerMetadata}
           <div class="answer">${renderAnswer(data.answer)}</div>
           ${investigateAction}
           ${contextSection}
+          ${answerFeedbackControls(
+            historyId || options.feedbackHistoryId || null,
+            requestQuestion,
+          )}
         `;
         if (imageAttachments.length) {
           clearQueryImages();
@@ -3984,7 +5736,11 @@
     }
 
     function renderResult(data) {
-      const result = document.getElementById('result');
+      const activeTurn = startConversationTurn(
+        data.title || 'Repository summary',
+        'Repository tool',
+      );
+      const result = activeTurn?.answer || document.getElementById('result');
 
       if (data.title && data.high_level_flow) {
         result.innerHTML = `
@@ -4046,11 +5802,13 @@
         });
       }
 
-      document.querySelectorAll('.llm-option[data-llm-mode]').forEach(button => {
-        button.addEventListener('click', function() {
-          closePersonalLlmPanel();
-          setLlmMode(button.getAttribute('data-llm-mode'));
-        });
+      // Delegated: shared LLM buttons are rendered from configuration after
+      // this runs, so binding each button here would leave them inert.
+      document.addEventListener('click', function(event) {
+        const button = event.target.closest('.llm-option[data-llm-mode]');
+        if (!button) return;
+        closePersonalLlmPanel();
+        setLlmMode(button.getAttribute('data-llm-mode'));
       });
 
       const askInput = document.getElementById('question');

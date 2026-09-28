@@ -195,6 +195,43 @@ class ConversationStoreTests(unittest.TestCase):
             question="How does login work?",
         ))
 
+    def test_repo_answer_cache_can_be_cleared_by_workspace(self):
+        response = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+        }
+        self.store.store_repo_cached_answer(
+            workspace="repo-main",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+            response=response,
+        )
+        self.store.store_repo_cached_answer(
+            workspace="other-repo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+            response=response,
+        )
+
+        cleared = self.store.clear_repo_cached_answers(workspaces={"repo-main"})
+
+        self.assertEqual(cleared, 1)
+        self.assertIsNone(self.store.get_repo_cached_answer(
+            workspace="repo-main",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+        ))
+        self.assertIsNotNone(self.store.get_repo_cached_answer(
+            workspace="other-repo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+        ))
+
     def test_state_expires_without_affecting_normal_requests(self):
         store = ConversationStore(ttl_seconds=1, max_states=2)
         with patch("app.conversations.time.monotonic", side_effect=[100.0, 102.0]):
@@ -217,6 +254,160 @@ class ConversationStoreTests(unittest.TestCase):
                 repository_revision="rev",
             )
         self.assertIsNone(loaded)
+
+    def test_follow_up_answers_are_scoped_to_their_own_conversation(self):
+        """A follow-up's text only means something inside its own thread."""
+        base = {
+            "session_key": "session-a",
+            "user_id": 7,
+            "workspace": "repo-main",
+            "llm_mode": "mimo",
+            "user_type": "dev_team",
+            "repository_revision": "branch:abc123",
+        }
+        response = {
+            "question": "what about failures?",
+            "answer": "Login failures are rejected in src/auth.py:L8-L12.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {},
+        }
+        self.store.store_cached_answer(
+            **base,
+            question="what about failures?",
+            response=response,
+            conversation_id="thread-a",
+        )
+
+        self.assertIsNotNone(self.store.get_cached_answer(
+            **base,
+            question="What about   failures?",
+            conversation_id="thread-a",
+        ))
+        # The same follow-up text in a different thread is a different question.
+        self.assertIsNone(self.store.get_cached_answer(
+            **base,
+            question="what about failures?",
+            conversation_id="thread-b",
+        ))
+        # And it must not leak into standalone, session-wide lookups either.
+        self.assertIsNone(self.store.get_cached_answer(
+            **base,
+            question="what about failures?",
+        ))
+
+    def test_root_turn_outlives_the_recent_turn_window(self):
+        context = {
+            "llm_context_preview": {
+                "question": "How does login work?",
+                "nodes": [{"name": "Auth", "source": "src/auth.py L1-L20"}],
+            }
+        }
+        state = self.store.create(
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            context=context,
+            question="How does login work?",
+            answer="Login is verified in src/auth.py:L1-L20.",
+        )
+        self.store.append(
+            state.conversation_id,
+            question="What if it fails?",
+            answer="Rejected in src/auth.py:L8-L12.",
+            context=context,
+        )
+        latest = self.store.append(
+            state.conversation_id,
+            question="And on retry?",
+            answer="Backoff in src/auth.py:L30-L36.",
+            context=context,
+        )
+
+        self.assertNotIn(
+            "How does login work?",
+            [turn["question"] for turn in latest.turns[-2:]],
+        )
+        evidence = main.compact_follow_up_evidence(latest)
+        self.assertIn("How does login work?", evidence)
+        self.assertIn("Login is verified in src/auth.py:L1-L20.", evidence)
+
+    def test_root_evidence_is_restored_only_after_a_full_retrieval_fallback(self):
+        root_context = {
+            "llm_context_preview": {
+                "question": "How does login work?",
+                "nodes": [{"name": "Auth", "source": "src/auth.py L1-L20"}],
+            }
+        }
+        state = self.store.create(
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            context=root_context,
+            question="How does login work?",
+            answer="Login is verified in src/auth.py:L1-L20.",
+        )
+
+        # Reused-evidence follow-up: the thread still stands on its own
+        # evidence, so no anchor block is added and the prompt is unchanged.
+        reused = self.store.append(
+            state.conversation_id,
+            question="What if it fails?",
+            answer="Rejected in src/auth.py:L8-L12.",
+            context=root_context,
+        )
+        self.assertNotIn(
+            "that started this conversation, from the same indexed commit",
+            main.compact_follow_up_evidence(reused),
+        )
+
+        # A fallback to full retrieval replaces the thread's evidence.
+        after_fallback = self.store.append(
+            state.conversation_id,
+            question="Where are tokens stored?",
+            answer="In src/token.py:L5-L9.",
+            context={
+                "llm_context_preview": {
+                    "question": "Where are tokens stored?",
+                    "nodes": [{"name": "Token", "source": "src/token.py L5-L9"}],
+                }
+            },
+        )
+        evidence = main.compact_follow_up_evidence(after_fallback)
+        self.assertIn("src/token.py L5-L9", evidence)
+        self.assertIn("src/auth.py L1-L20", evidence)
+
+    def test_related_follow_up_matches_the_root_not_only_the_last_turn(self):
+        state = self.store.create(
+            user_id=7,
+            workspace="repo-main",
+            llm_mode="mimo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            context={"llm_context_preview": {"question": "How does login work?"}},
+            question="How does login work?",
+            answer="Login is verified in src/auth.py:L1-L20.",
+        )
+        moved_on = self.store.append(
+            state.conversation_id,
+            question="Where are tokens stored?",
+            answer="In src/token.py:L5-L9.",
+            context={"llm_context_preview": {"question": "Where are tokens stored?"}},
+        )
+
+        # Shares nothing with the previous turn, but is plainly about the
+        # question that started the thread.
+        self.assertTrue(main.is_related_follow_up(
+            moved_on,
+            "Is login validation cached?",
+        ))
+        self.assertFalse(main.is_related_follow_up(
+            moved_on,
+            "Explain the payment settlement scheduler.",
+        ))
 
     def test_related_follow_up_detects_references_and_topic_overlap(self):
         self.assertTrue(main.is_related_follow_up(
@@ -317,6 +508,8 @@ class ConversationEndpointTests(unittest.TestCase):
             )
 
         generate_fast.assert_not_called()
+        # The deep investigation still runs, but it now carries the thread so a
+        # referential follow-up is not retrieved and answered from scratch.
         full.assert_called_once_with(
             "Does it handle expired tokens?",
             workspace="repo-main",
@@ -324,6 +517,7 @@ class ConversationEndpointTests(unittest.TestCase):
             allow_shared_fallback=True,
             llm_mode="mimo",
             user_type="dev_team",
+            conversation_state=state,
         )
         self.assertTrue(result["deep_investigation"])
         self.assertFalse(result["follow_up_reused"])
@@ -369,6 +563,109 @@ class ConversationEndpointTests(unittest.TestCase):
         self.assertFalse(result["follow_up_reused"])
         self.assertTrue(result["follow_up_fallback"])
         self.assertIn("follow_up_gate", result["timings_ms"])
+
+    def test_full_retrieval_fallback_keeps_the_thread_topic(self):
+        """A referential follow-up must not be retrieved or answered cold.
+
+        Reproduces the reported bug: asking "what are the main features of the
+        earnings screen?" then "do we have ads in this screen?" came back asking
+        which screen the user meant, because the fallback dropped the thread."""
+        state = ConversationStore(ttl_seconds=30, max_states=10).create(
+            user_id=7,
+            workspace="riderapp",
+            llm_mode="mimo",
+            user_type="product_team",
+            repository_revision="branch:abc123",
+            context={
+                "llm_context_preview": {
+                    "question": "what are the main features of earnings screen?",
+                    "nodes": [{"name": "Earnings", "source": "ui/Earnings.kt L1-L80"}],
+                }
+            },
+            question="what are the main features of earnings screen?",
+            answer="The earnings screen shows daily payout, incentives and trip history.",
+        )
+        seen = {}
+
+        def fake_build_context(question, limit=16, workspace=None, activity_callback=None):
+            seen["retrieval_question"] = question
+            return {
+                "question": question,
+                "llm_context_preview": {"question": question, "nodes": []},
+            }
+
+        def fake_generate(context, **kwargs):
+            seen["agent_context"] = kwargs.get("agent_context", "")
+            return {
+                "answer": "Ads are not present on that screen.",
+                "provider_used": "shared:mimo-v2.5",
+                "retrieval_mode": "agentic",
+                "agent_trace": [],
+                "rounds": 1,
+                "tool_calls": 1,
+            }
+
+        for deep in (False, True):
+            seen.clear()
+            with patch.object(main, "build_context", fake_build_context), patch.object(
+                main, "generate", fake_generate
+            ), patch.object(main, "RepositoryToolbox"), patch.object(
+                main, "repository_version_payload", return_value=None
+            ), patch.object(
+                main,
+                "generate_fast_follow_up",
+                side_effect=main.FollowUpNeedsEvidence("more evidence"),
+            ):
+                response = main.answer_follow_up(
+                    "do we have ads in this screen?",
+                    state,
+                    workspace="riderapp",
+                    llm_mode="mimo",
+                    user_type="product_team",
+                    deep_investigation=deep,
+                )
+
+            # Retrieval can reach the screen the thread is actually about.
+            self.assertIn("earnings", seen["retrieval_question"].lower())
+            # And the model can resolve "this screen" without asking.
+            self.assertIn("earnings screen", seen["agent_context"].lower())
+            # The question the user asked is untouched.
+            self.assertEqual(response["question"], "do we have ads in this screen?")
+
+    def test_plain_question_retrieval_and_prompt_are_untouched(self):
+        seen = {}
+
+        def fake_build_context(question, limit=16, workspace=None, activity_callback=None):
+            seen["retrieval_question"] = question
+            return {
+                "question": question,
+                "llm_context_preview": {"question": question, "nodes": []},
+            }
+
+        def fake_generate(context, **kwargs):
+            seen["agent_context"] = kwargs.get("agent_context", "")
+            return {
+                "answer": "Login is verified in src/auth.py:L1-L20.",
+                "provider_used": "shared:mimo-v2.5",
+                "retrieval_mode": "agentic",
+                "agent_trace": [],
+                "rounds": 1,
+                "tool_calls": 1,
+            }
+
+        with patch.object(main, "build_context", fake_build_context), patch.object(
+            main, "generate", fake_generate
+        ), patch.object(main, "RepositoryToolbox"), patch.object(
+            main, "repository_version_payload", return_value=None
+        ):
+            main.answer_question("How does login work?", workspace="repo-main")
+
+        self.assertEqual(seen["retrieval_question"], "How does login work?")
+        self.assertEqual(seen["agent_context"], "")
+        self.assertEqual(
+            client._agent_question("How does login work?", ""),
+            "How does login work?",
+        )
 
     def test_related_follow_up_reuses_server_evidence(self):
         store = ConversationStore(ttl_seconds=30, max_states=10)
@@ -525,7 +822,21 @@ class ConversationEndpointTests(unittest.TestCase):
             "question": "How does login work?",
             "answer": "Login is verified in src/auth.py:L1-L20.",
             "provider_used": "shared:mimo-v2.5",
-            "context": {"llm_context_preview": {"question": "How does login work?"}},
+            "context": {
+                "query_terms": ["login"],
+                "context_nodes": [
+                    {"name": "Auth", "source_file": "src/auth.py", "source_location": "L1-L20"},
+                ],
+                "source_hits": [
+                    {
+                        "path": "src/auth.py",
+                        "snippets": [
+                            {"start_line": 1, "end_line": 20, "code": "fun login() = verifyCredentials()"},
+                        ],
+                    },
+                ],
+                "llm_context_preview": {"question": "How does login work?"},
+            },
         }
 
         common_patches = (
@@ -566,7 +877,77 @@ class ConversationEndpointTests(unittest.TestCase):
 
         full.assert_not_called()
         self.assertEqual(result["answer"], first_answer["answer"])
-        self.assertTrue(result["session_cache_hit"])
+        self.assertTrue(result["repo_cache_hit"])
+        self.assertEqual(result["retrieval_mode"], "repo_cache")
+        self.assertNotIn("session_cache_hit", result)
+
+    def test_ungrounded_shared_answer_is_not_promoted_to_repo_cache(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        first_user = {
+            "id": 7,
+            "user_type": "dev_team",
+            "_session_key": "session-a",
+        }
+        second_user_session = {
+            "id": 8,
+            "user_type": "dev_team",
+            "_session_key": "session-b",
+        }
+        weak_answer = {
+            "question": "What does this app do?",
+            "answer": "This app processes image buffers.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": {
+                "query_terms": ["app"],
+                "context_nodes": [],
+                "source_hits": [],
+                "llm_context_preview": {"question": "What does this app do?"},
+            },
+        }
+        fresh_answer = {
+            "question": "What does this app do?",
+            "answer": "Fresh grounded answer.",
+            "provider_used": "shared:mimo-v2.5",
+            "context": weak_answer["context"],
+        }
+
+        common_patches = (
+            patch.object(main, "conversation_store", store),
+            patch.object(main, "enforce_rate_limit"),
+            patch.object(main, "enforce_strict_branch_freshness"),
+            patch.object(
+                main.db,
+                "get_repo_by_workspace",
+                return_value={"allow_shared_fallback": 1},
+            ),
+            patch.object(main, "load_user_llm", return_value=None),
+            patch.object(main, "repository_revision", return_value="branch:abc123"),
+        )
+        for item in common_patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+        with patch.object(main, "answer_question", side_effect=[weak_answer, fresh_answer]) as full:
+            main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="What does this app do?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                first_user,
+            )
+            result = main.ask_llm_endpoint(
+                main.AskRequest(
+                    question="what does this app do?",
+                    llm_mode="mimo",
+                ),
+                "repo-main",
+                second_user_session,
+            )
+
+        self.assertEqual(full.call_count, 2)
+        self.assertEqual(result["answer"], fresh_answer["answer"])
+        self.assertNotIn("repo_cache_hit", result)
 
     def test_product_answer_reuses_cached_dev_evidence_without_full_retrieval(self):
         store = ConversationStore(ttl_seconds=30, max_states=10)

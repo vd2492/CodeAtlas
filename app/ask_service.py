@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -32,12 +33,41 @@ _ANALYTICS_EXECUTOR = ThreadPoolExecutor(
     max_workers=max(1, int(os.environ.get("CODEATLAS_ANALYTICS_MAX_WORKERS", "1"))),
     thread_name_prefix="codeatlas-analytics",
 )
+_FEEDBACK_ID_RE = re.compile(r"^feedback-[A-Za-z0-9_-]{12,119}$")
 
 
 def _main():
     from . import main
 
     return main
+
+
+def _record_anonymous_question(request, repo: Optional[dict]) -> str:
+    """Persist an accepted question without recording the authenticated actor."""
+    if not repo:
+        return ""
+    supplied_id = str(getattr(request, "feedback_id", None) or "").strip()
+    if not supplied_id:
+        # Backward-compatible API clients can omit feedback tracking entirely.
+        return ""
+    if supplied_id and not _FEEDBACK_ID_RE.fullmatch(supplied_id):
+        raise HTTPException(status_code=400, detail="Invalid feedback id.")
+    feedback_id = supplied_id
+    question = str(getattr(request, "question", "") or "").strip()
+    if not question or len(question) > 20_000:
+        raise HTTPException(status_code=400, detail="Invalid feedback question.")
+    try:
+        db.upsert_answer_feedback(
+            feedback_id,
+            repo["slug"],
+            repo["name"],
+            question,
+            "unrated",
+        )
+    except Exception:
+        # Feedback collection must never break the established answer path.
+        logger.exception("Unable to record anonymous answer feedback")
+    return feedback_id
 
 
 def _record_token_usage_event(payload: dict) -> None:
@@ -114,8 +144,9 @@ def answer_single_request(
     main = _main()
     if enforce_limit:
         main.enforce_rate_limit(user["id"])
-    main.enforce_strict_branch_freshness(workspace)
     repo = db.get_repo_by_workspace(workspace)
+    _record_anonymous_question(request, repo)
+    main.enforce_strict_branch_freshness(workspace)
     allow_shared = bool(repo["allow_shared_fallback"]) if repo else True
     user_llm = request.user_llm or main.load_user_llm(user["id"])
     llm_mode = (request.llm_mode or "auto").lower()
@@ -132,8 +163,14 @@ def answer_single_request(
     session_key = str(user.get("_session_key") or "")
     use_session_cache = not (
         request.deep_investigation
-        or (llm_mode == "mimo" and not allow_shared)
+        or (main.is_shared_llm_mode(llm_mode) and not allow_shared)
         or image_attachments
+    )
+    # A follow-up's text only means something inside its own thread, so it is
+    # looked up (and later stored) under a thread-scoped key. Standalone
+    # questions keep the session-wide key they have always used.
+    cache_conversation_id = (
+        str(request.conversation_id or "") if request.follow_up else ""
     )
     if use_session_cache:
         cached_response = main.conversation_store.get_cached_answer(
@@ -144,6 +181,7 @@ def answer_single_request(
             user_type=user_type,
             repository_revision=revision,
             question=request.question,
+            conversation_id=cache_conversation_id,
         )
         if cached_response:
             response = main._session_cached_answer_response(
@@ -172,6 +210,7 @@ def answer_single_request(
             response["answer_user_type"] = user_type
             return response
 
+    shared_llm_scope = main._shared_llm_cache_scope(llm_mode, user_llm)
     use_repo_cache = (
         allow_shared
         and not request.follow_up
@@ -185,9 +224,10 @@ def answer_single_request(
             user_type=user_type,
             repository_revision=revision,
             question=request.question,
+            shared_llm_id=shared_llm_scope,
         )
         if repo_cached_response:
-            response = main._session_cached_answer_response(
+            response = main._repo_cached_answer_response(
                 repo_cached_response,
                 request.question,
                 workspace,
@@ -238,6 +278,7 @@ def answer_single_request(
                         user_type="dev_team",
                         repository_revision=revision,
                         question=request.question,
+                        shared_llm_id=shared_llm_scope,
                     )
                 if source_cached_response:
                     try:
@@ -283,6 +324,7 @@ def answer_single_request(
                                 repository_revision=revision,
                                 question=request.question,
                                 response=response,
+                                shared_llm_id=shared_llm_scope,
                             )
                         schedule_answer_token_usage(
                             user,
@@ -338,6 +380,7 @@ def answer_single_request(
                     repository_revision=revision,
                     question=request.question,
                     response=response,
+                    conversation_id=state.conversation_id,
                 )
                 schedule_answer_token_usage(
                     user,
@@ -391,6 +434,7 @@ def answer_single_request(
                     repository_revision=revision,
                     question=request.question,
                     response=response,
+                    shared_llm_id=shared_llm_scope,
                 )
             schedule_answer_token_usage(
                 user,
@@ -429,6 +473,7 @@ def answer_compare_request(
     if enforce_limit:
         main.enforce_rate_limit(user["id"])
     repo = repo or main._resolve_compare_base_repo(workspace, user)
+    _record_anonymous_question(request, repo)
     left = left or main._resolve_compare_branch(repo, request.left_branch, "Branch A")
     right = right or main._resolve_compare_branch(repo, request.right_branch, "Branch B")
     if left["branch"]["id"] == right["branch"]["id"]:
@@ -447,7 +492,11 @@ def answer_compare_request(
     session_key = str(user.get("_session_key") or "")
     use_session_cache = not (
         request.deep_investigation
-        or (llm_mode == "mimo" and not allow_shared)
+        or (main.is_shared_llm_mode(llm_mode) and not allow_shared)
+    )
+    # Same thread scoping as the ask path above.
+    cache_conversation_id = (
+        str(request.conversation_id or "") if request.follow_up else ""
     )
     if use_session_cache:
         cached_response = main.conversation_store.get_cached_answer(
@@ -458,6 +507,7 @@ def answer_compare_request(
             user_type=user_type,
             repository_revision=comparison_revision,
             question=request.question,
+            conversation_id=cache_conversation_id,
         )
         if cached_response:
             response = main._session_cached_answer_response(
@@ -533,6 +583,7 @@ def answer_compare_request(
                     repository_revision=comparison_revision,
                     question=request.question,
                     response=response,
+                    conversation_id=state.conversation_id,
                 )
                 schedule_answer_token_usage(
                     user,

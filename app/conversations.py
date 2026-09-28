@@ -64,6 +64,15 @@ class ConversationState:
     user_type: str
     repository_revision: str
     context: dict
+    # The opening turn of the thread, pinned for its lifetime. `turns` is a
+    # rolling window and `context` is replaced whenever a follow-up falls back
+    # to full retrieval, so without these the question that started the thread
+    # stops being visible to later follow-ups. root_context holds only the
+    # llm_context_preview subtree — the part follow-up prompts actually read —
+    # rather than a second copy of the full retrieval context.
+    root_question: str = ""
+    root_answer: str = ""
+    root_context: dict = field(default_factory=dict)
     turns: list[dict] = field(default_factory=list)
     updated_at: float = field(default_factory=time.monotonic)
 
@@ -112,12 +121,21 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        conversation_id: str = "",
     ) -> Optional[tuple[str, ...]]:
+        """conversation_id scopes follow-up answers to their own thread.
+
+        A follow-up's text ("what about failures?") only means something
+        relative to the thread it was asked in, so caching it under the bare
+        question would serve one thread's answer to an unrelated thread in the
+        same session. Standalone questions pass "" and keep the session-wide
+        identity they have always had."""
         normalized_question = cls.normalize_question(question)
         if not normalized_question:
             return None
         return (
             str(session_key or ""),
+            str(conversation_id or ""),
             str(int(user_id)),
             str(workspace),
             str(llm_mode),
@@ -134,11 +152,13 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        shared_llm_id: str = "",
     ) -> Optional[tuple[str, ...]]:
-        """Shared across every user/session — deliberately excludes session_key,
-        user_id, and llm_mode. Callers only use this for requests guaranteed to
-        be served by the shared LLM tier, so llm_mode never needs to disambiguate
-        entries here the way it does for the per-session cache above."""
+        """Shared across every user/session — deliberately excludes session_key
+        and user_id. It is scoped by shared_llm_id rather than by llm_mode:
+        callers only use this for requests guaranteed to be served by a shared
+        LLM, but with more than one configured, two shared models answering the
+        same question must not share an entry."""
         normalized_question = cls.normalize_question(question)
         if not normalized_question:
             return None
@@ -146,6 +166,7 @@ class ConversationStore:
             str(workspace),
             str(user_type),
             str(repository_revision),
+            str(shared_llm_id or ""),
             normalized_question,
         )
 
@@ -224,6 +245,17 @@ class ConversationStore:
             user_type=str(user_type),
             repository_revision=str(repository_revision),
             context=copy.deepcopy(context or {}),
+            root_question=str(question or "")[:2000],
+            root_answer=str(answer or "")[:CONVERSATION_MAX_ANSWER_CHARS],
+            root_context=(
+                {
+                    "llm_context_preview": copy.deepcopy(
+                        (context or {}).get("llm_context_preview") or {}
+                    )
+                }
+                if (context or {}).get("llm_context_preview")
+                else {}
+            ),
             turns=[self._bounded_turn(question, answer)],
             updated_at=now,
         )
@@ -277,6 +309,7 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        conversation_id: str = "",
     ) -> Optional[dict]:
         cache_key = self._answer_cache_key(
             session_key=session_key,
@@ -286,6 +319,7 @@ class ConversationStore:
             user_type=user_type,
             repository_revision=repository_revision,
             question=question,
+            conversation_id=conversation_id,
         )
         if cache_key is None:
             return None
@@ -312,6 +346,7 @@ class ConversationStore:
         repository_revision: str,
         question: str,
         response: dict,
+        conversation_id: str = "",
     ) -> None:
         cache_key = self._answer_cache_key(
             session_key=session_key,
@@ -321,6 +356,7 @@ class ConversationStore:
             user_type=user_type,
             repository_revision=repository_revision,
             question=question,
+            conversation_id=conversation_id,
         )
         if cache_key is None or not cacheable_answer(response.get("answer")):
             return
@@ -343,12 +379,14 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        shared_llm_id: str = "",
     ) -> Optional[dict]:
         cache_key = self._repo_answer_cache_key(
             workspace=workspace,
             user_type=user_type,
             repository_revision=repository_revision,
             question=question,
+            shared_llm_id=shared_llm_id,
         )
         if cache_key is None:
             return None
@@ -371,6 +409,7 @@ class ConversationStore:
         user_type: str,
         repository_revision: str,
         question: str,
+        shared_llm_id: str = "",
         response: dict,
     ) -> None:
         cache_key = self._repo_answer_cache_key(
@@ -378,6 +417,7 @@ class ConversationStore:
             user_type=user_type,
             repository_revision=repository_revision,
             question=question,
+            shared_llm_id=shared_llm_id,
         )
         if cache_key is None or not cacheable_answer(response.get("answer")):
             return
@@ -392,6 +432,28 @@ class ConversationStore:
                 "updated_at": now,
             }
             self._prune_locked(now)
+
+    def clear_repo_cached_answers(
+        self,
+        *,
+        workspaces,
+        repository_revision: Optional[str] = None,
+    ) -> int:
+        workspace_set = {str(workspace) for workspace in workspaces if str(workspace or "").strip()}
+        if not workspace_set:
+            return 0
+        revision = str(repository_revision) if repository_revision is not None else None
+        with self._lock:
+            keys = [
+                cache_key
+                for cache_key in self._repo_answer_cache
+                if cache_key
+                and cache_key[0] in workspace_set
+                and (revision is None or len(cache_key) > 2 and cache_key[2] == revision)
+            ]
+            for cache_key in keys:
+                self._repo_answer_cache.pop(cache_key, None)
+            return len(keys)
 
     def append(
         self,

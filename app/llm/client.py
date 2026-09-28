@@ -2,7 +2,7 @@
 
 Resolution order for every question:
   1. The user's own LLM key (BYOK), if supplied.
-  2. The shared/admin-configured endpoint ("Mimo") as a fallback.
+  2. A shared/admin-configured LLM as a fallback (see app.config).
 
 The dormant Ollama implementation is retained behind CODEATLAS_ENABLE_OLLAMA
 for a future release, but is disabled by default and is not exposed in the UI.
@@ -11,6 +11,7 @@ Admins can disable the shared tier per repo for sensitive codebases.
 
 import ipaddress
 import json
+import logging
 import os
 import random
 import re
@@ -26,6 +27,11 @@ from urllib.parse import urlparse
 import requests
 
 from ..agent.tools import ASK_USER_TOOL_NAME, TOOL_DEFINITIONS
+from ..config import (
+    is_shared_llm_mode,
+    shared_llm,
+    shared_llm_id_for_mode,
+)
 
 REQUEST_TIMEOUT = 90
 PROVIDER_RETRIES = max(
@@ -43,7 +49,51 @@ AGENT_ENABLED = os.environ.get("CODEATLAS_AGENT_ENABLED", "true").lower() not in
 OLLAMA_ENABLED = os.environ.get(
     "CODEATLAS_ENABLE_OLLAMA", "false"
 ).lower() in {"1", "true", "yes"}
+logger = logging.getLogger(__name__)
+
 AGENT_MAX_ROUNDS = max(1, int(os.environ.get("CODEATLAS_AGENT_MAX_ROUNDS", "8")))
+AGENT_MAX_OUTPUT_TOKENS = max(
+    256, int(os.environ.get("CODEATLAS_AGENT_MAX_OUTPUT_TOKENS", "1800"))
+)
+# Reasoning models bill hidden reasoning against the same completion budget as
+# the visible output, so a cap sized for a classic chat model can be spent
+# thinking before the model ever emits a tool call. They start with more room.
+AGENT_REASONING_OUTPUT_TOKENS = max(
+    AGENT_MAX_OUTPUT_TOKENS,
+    int(os.environ.get("CODEATLAS_AGENT_REASONING_OUTPUT_TOKENS", "8000")),
+)
+AGENT_OUTPUT_TOKEN_CEILING = max(
+    AGENT_REASONING_OUTPUT_TOKENS,
+    int(os.environ.get("CODEATLAS_AGENT_OUTPUT_TOKEN_CEILING", "32000")),
+)
+AGENT_TRUNCATION_RETRIES = max(
+    0, int(os.environ.get("CODEATLAS_AGENT_TRUNCATION_RETRIES", "2"))
+)
+# /v1/chat/completions refuses function tools for reasoning models unless
+# reasoning is switched off, which costs exactly the multi-step investigation
+# those models are wanted for. /v1/responses supports tools with reasoning
+# intact, so reasoning models are routed there and fall back automatically.
+OPENAI_RESPONSES_MODE = os.environ.get(
+    "CODEATLAS_OPENAI_RESPONSES_API", "auto"
+).strip().lower()
+# Provider-accepted reasoning levels, lowest to highest. An unrecognised value
+# would be rejected by the provider, and because an unexpected /v1/responses
+# failure falls back to /v1/chat/completions, a typo here would silently return
+# reasoning models to the non-reasoning path. Validate instead.
+AGENT_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+_requested_reasoning_effort = os.environ.get(
+    "CODEATLAS_AGENT_REASONING_EFFORT", "medium"
+).strip().lower()
+if _requested_reasoning_effort in AGENT_REASONING_EFFORTS:
+    AGENT_REASONING_EFFORT = _requested_reasoning_effort
+else:
+    AGENT_REASONING_EFFORT = "medium"
+    logging.getLogger(__name__).warning(
+        "Ignoring CODEATLAS_AGENT_REASONING_EFFORT=%r; expected one of %s. Using %r.",
+        _requested_reasoning_effort,
+        ", ".join(AGENT_REASONING_EFFORTS),
+        AGENT_REASONING_EFFORT,
+    )
 AGENT_MAX_TOOL_CALLS = max(1, int(os.environ.get("CODEATLAS_AGENT_MAX_TOOL_CALLS", "24")))
 LLM_ALLOWED_HOSTS = {
     host.strip().lower().rstrip(".")
@@ -312,6 +362,15 @@ def _final_answer(answer: str, provider: str, context: dict = None) -> str:
     return answer
 
 
+def _toolbox_allows_ask_user(toolbox) -> bool:
+    definitions = getattr(toolbox, "tool_definitions", None)
+    if definitions is None:
+        return True
+    return any(
+        definition.get("name") == ASK_USER_TOOL_NAME for definition in definitions
+    )
+
+
 def _agent_system_prompt(toolbox) -> str:
     config = getattr(toolbox, "config", None)
     instruction = str(
@@ -336,6 +395,15 @@ def _agent_system_prompt(toolbox) -> str:
                 else AGENT_SYSTEM_PROMPT
             )
         )
+    if not _toolbox_allows_ask_user(toolbox):
+        # The tool is gone from this call, so the prompt must not keep telling
+        # the model to reach for it.
+        prompt += (
+            "\n\nThis conversation has already asked the user a clarifying "
+            "question and they have replied. Do not ask another one. If names "
+            "remain ambiguous, investigate the most likely candidates and "
+            "answer for them, saying which one you took the question to mean."
+        )
     if instruction:
         prompt += (
             "\n\nRepository-specific pre-search instruction: apply the following "
@@ -350,6 +418,10 @@ def _agent_system_prompt(toolbox) -> str:
             f"tools and evidence internally.\n{response_instruction}"
         )
     return prompt
+
+
+class ResponsesApiUnsupported(RuntimeError):
+    """This endpoint does not serve /v1/responses; use /v1/chat/completions."""
 
 
 class AgenticUnsupported(RuntimeError):
@@ -496,72 +568,8 @@ def _provider_retry_delay(attempt: int, response=None) -> float:
     )
 
 
-# OpenAI's reasoning models (o-series, gpt-5 and later) reject two parameters
-# the chat-completions payloads here have always sent: "max_tokens" was renamed
-# to "max_completion_tokens", and "temperature" only accepts its default. Both
-# come back as a 400 that names the offending parameter, so rather than
-# maintaining a model allowlist that goes stale, adapt on that specific error
-# and replay the request once per parameter.
-def _adapt_openai_payload(payload: dict, message: str, param: str) -> bool:
-    """Rewrite payload in place for one rejected-parameter 400. True if changed."""
-    if param == "max_tokens" and "max_completion_tokens" in message:
-        payload["max_completion_tokens"] = payload.pop("max_tokens", None)
-        return True
-    if param == "temperature":
-        payload.pop("temperature", None)
-        return True
-    return False
-
-
-def _unsupported_parameter(response) -> str | None:
-    """The parameter an OpenAI 400 blames, if it names one.
-
-    Not keyed on error.code: the reasoning_effort/function-tools rejection
-    comes back with a null code and only fills in "param".
-    """
-    if response.status_code != 400:
-        return None
-    return _error_object(response).get("param")
-
-
-def _error_object(response) -> dict:
-    """The body's "error" object, or {} when absent, not JSON, or a bare string."""
-    try:
-        error = (response.json() or {}).get("error")
-    except (ValueError, AttributeError):
-        return {}
-    return error if isinstance(error, dict) else {}
-
-
-def _needs_responses_endpoint(response) -> bool:
-    """True when the model refuses function tools on /chat/completions.
-
-    gpt-5.6 and later return this rather than running the tool loop. Setting
-    reasoning_effort to "none" also clears it, but that guts the planning the
-    agent depends on: in a 48-item run it produced exactly one ask_user call
-    per question and read zero files. The /v1/responses endpoint keeps both.
-    """
-    if response.status_code != 400:
-        return False
-    message = _error_object(response).get("message") or ""
-    return "/v1/responses" in message and "tools" in message.lower()
-
-
 def _post_with_retries(*args, **kwargs):
     """POST once plus bounded retries for temporary network/provider failures."""
-    payload = kwargs.get("json")
-    for _ in range(3):  # at most one fixup per offending parameter
-        response = _post_once(*args, **kwargs)
-        if not isinstance(payload, dict):
-            return response
-        param = _unsupported_parameter(response)
-        message = _error_object(response).get("message", "") if param else ""
-        if not param or not _adapt_openai_payload(payload, message, param):
-            return response
-    return _post_once(*args, **kwargs)
-
-
-def _post_once(*args, **kwargs):
     for attempt in range(PROVIDER_RETRIES + 1):
         try:
             response = requests.post(*args, **kwargs)
@@ -582,6 +590,109 @@ def _post_once(*args, **kwargs):
         time.sleep(_provider_retry_delay(attempt, response))
 
     raise RuntimeError("Provider retry loop exited unexpectedly")
+
+
+def _openai_model_uses_completion_tokens(model: str) -> bool:
+    """Return whether an OpenAI-style model expects the newer token parameter."""
+    normalized = str(model or "").strip().lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4")) or "luna" in normalized
+
+
+def _agent_output_budget(model: str) -> int:
+    """Starting completion budget for one agent round.
+
+    Reasoning models spend this budget on hidden reasoning before emitting a
+    tool call, so they get materially more headroom than a chat model needs."""
+    if _openai_model_uses_completion_tokens(model):
+        return AGENT_REASONING_OUTPUT_TOKENS
+    return AGENT_MAX_OUTPUT_TOKENS
+
+
+def _grown_output_budget(budget: int) -> int:
+    return min(max(1, int(budget)) * 2, AGENT_OUTPUT_TOKEN_CEILING)
+
+
+def _openai_truncated(choice: dict) -> bool:
+    return str((choice or {}).get("finish_reason") or "").lower() == "length"
+
+
+def _anthropic_truncated(data: dict) -> bool:
+    return str((data or {}).get("stop_reason") or "").lower() == "max_tokens"
+
+
+def _truncated_before_tool_error(model: str, budget: int) -> "AgenticUnsupported":
+    """Distinct from 'declined to use tools'. Without this the two are reported
+    identically, and a model that simply ran out of room looks like one that
+    refused to search the repository."""
+    return AgenticUnsupported(
+        f"{model} hit its {budget}-token completion cap before finishing a tool "
+        "call; raise CODEATLAS_AGENT_REASONING_OUTPUT_TOKENS or "
+        "CODEATLAS_AGENT_OUTPUT_TOKEN_CEILING"
+    )
+
+
+def _openai_payload(model: str, payload: dict) -> dict:
+    """Build an OpenAI-compatible payload for newer and legacy models."""
+    normalized = dict(payload)
+    if _openai_model_uses_completion_tokens(model):
+        if "max_tokens" in normalized and "max_completion_tokens" not in normalized:
+            normalized["max_completion_tokens"] = normalized.pop("max_tokens")
+        # Newer reasoning models only support their default sampling behavior.
+        if normalized.get("temperature") not in (None, 1):
+            normalized.pop("temperature", None)
+        # /v1/chat/completions refuses function tools for a reasoning model
+        # unless reasoning is switched off for that call:
+        #   "Function tools with reasoning_effort are not supported for
+        #    <model> in /v1/chat/completions. To use function tools, use
+        #    /v1/responses or set reasoning_effort to 'none'."
+        # Without this every agentic request is rejected before the model runs,
+        # and the loop silently downgrades to one-shot retrieval.
+        if normalized.get("tools") and "reasoning_effort" not in normalized:
+            normalized["reasoning_effort"] = "none"
+    return normalized
+
+
+def _post_openai_with_compatibility(url: str, model: str, payload: dict, **kwargs):
+    """POST to an OpenAI-compatible endpoint, adapting legacy token errors once."""
+    request_payload = _openai_payload(model, payload)
+    response = _post_with_retries(url, json=request_payload, **kwargs)
+    detail = str(getattr(response, "text", "") or "").lower()
+    if (
+        response.status_code in {400, 422}
+        and "max_tokens" in detail
+        and "max_completion_tokens" in detail
+        and "max_completion_tokens" not in request_payload
+        and "max_tokens" in request_payload
+    ):
+        fallback_payload = dict(request_payload)
+        fallback_payload["max_completion_tokens"] = fallback_payload.pop("max_tokens")
+        request_payload = fallback_payload
+        response = _post_with_retries(url, json=request_payload, **kwargs)
+    detail = str(getattr(response, "text", "") or "").lower()
+    if (
+        response.status_code in {400, 422}
+        and "temperature" in detail
+        and "default" in detail
+        and "temperature" in request_payload
+    ):
+        fallback_payload = dict(request_payload)
+        fallback_payload.pop("temperature", None)
+        request_payload = fallback_payload
+        response = _post_with_retries(url, json=request_payload, **kwargs)
+    detail = str(getattr(response, "text", "") or "").lower()
+    if response.status_code in {400, 422} and "reasoning_effort" in detail:
+        fallback_payload = dict(request_payload)
+        if "reasoning_effort" not in request_payload:
+            # The model refuses tools while reasoning is on and we never asked
+            # for it explicitly, so ask for it to be off.
+            fallback_payload["reasoning_effort"] = "none"
+        else:
+            # We did send it and the provider still objects, so it does not
+            # accept the parameter at all. Drop it rather than retry forever.
+            fallback_payload.pop("reasoning_effort", None)
+        if fallback_payload != request_payload:
+            response = _post_with_retries(url, json=fallback_payload, **kwargs)
+    return response
 
 
 def build_prompt(context: dict) -> str:
@@ -877,15 +988,16 @@ def _final_openai_answer(
         "role": "user",
         "content": _budget_exhausted_prompt(product_answer),
     })
-    response = _post_with_retries(
+    response = _post_openai_with_compatibility(
         f"{base_url.rstrip('/')}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
+        model,
+        {
             "model": model,
             "messages": messages,
             "temperature": 0.2,
             "max_tokens": 1800,
         },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         timeout=REQUEST_TIMEOUT,
         allow_redirects=False,
     )
@@ -966,6 +1078,244 @@ def _anthropic_cache_settings(base_url: str) -> dict:
     return {}
 
 
+def _use_responses_api(model: str) -> bool:
+    """Reasoning models need /v1/responses to keep reasoning while using tools."""
+    if OPENAI_RESPONSES_MODE in {"0", "false", "no", "off", "never"}:
+        return False
+    if OPENAI_RESPONSES_MODE in {"1", "true", "yes", "on", "always"}:
+        return True
+    return _openai_model_uses_completion_tokens(model)
+
+
+def _openai_responses_tools(tool_definitions: list[dict]) -> list[dict]:
+    """Responses declares function tools flat, not nested under "function"."""
+    return [
+        {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["parameters"],
+        }
+        for tool in tool_definitions
+    ]
+
+
+def _responses_user_content(text: str, image_attachments: list[dict] = None) -> list[dict]:
+    images = _image_attachments(image_attachments)
+    content = [{
+        "type": "input_text",
+        "text": text + (_image_context_text(len(images)) if images else ""),
+    }]
+    for image in images:
+        content.append({
+            "type": "input_image",
+            "image_url": f"data:{image['mime_type']};base64,{image['data']}",
+        })
+    return content
+
+
+def _responses_function_calls(items: list[dict]) -> list[dict]:
+    return [item for item in items if item.get("type") == "function_call"]
+
+
+def _responses_answer_text(items: list[dict]) -> str:
+    parts = []
+    for item in items:
+        if item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+            continue
+        for block in content or []:
+            if block.get("type") in {"output_text", "text"}:
+                parts.append(str(block.get("text") or ""))
+    return "".join(parts).strip()
+
+
+def _responses_truncated(data: dict) -> bool:
+    if str((data or {}).get("status") or "").lower() != "incomplete":
+        return False
+    reason = str(((data or {}).get("incomplete_details") or {}).get("reason") or "")
+    return reason.lower() == "max_output_tokens"
+
+
+def _responses_request_error(response, model: str, image_attachments: list[dict] = None):
+    """Classify a /v1/responses failure.
+
+    A gateway that does not implement the endpoint is not a real failure: the
+    caller retries on /v1/chat/completions instead."""
+    if response.status_code < 400:
+        return
+    detail = response.text[:500]
+    lower = detail.lower()
+    if response.status_code == 404:
+        raise ResponsesApiUnsupported(f"{model} has no /v1/responses endpoint: {detail}")
+    if response.status_code in {400, 422} and any(
+        token in lower
+        for token in ("unknown parameter", "unrecognized request argument", "unknown field")
+    ) and any(
+        token in lower for token in ("input", "instructions", "reasoning", "max_output_tokens")
+    ):
+        raise ResponsesApiUnsupported(f"{model} rejected the /v1/responses shape: {detail}")
+    if _image_attachments(image_attachments) and _is_image_request_rejection(response):
+        raise ImageInputUnsupported(IMAGE_INPUT_UNSUPPORTED_MESSAGE)
+    if response.status_code in {400, 404, 422} and any(
+        token in lower
+        for token in ("tool", "function", "unknown field", "unexpected field", "not supported")
+    ):
+        raise AgenticUnsupported(f"{model} rejected tool calling: {detail}")
+    raise RuntimeError(f"[{response.status_code}] {detail}")
+
+
+def _final_responses_answer(
+    base_url: str,
+    api_key: str,
+    model: str,
+    instructions: str,
+    input_items: list[dict],
+    product_answer: bool = False,
+) -> str:
+    """Ask for a final answer from the evidence already gathered, no tools."""
+    items = list(input_items)
+    items.append({
+        "role": "user",
+        "content": [{"type": "input_text", "text": _budget_exhausted_prompt(product_answer)}],
+    })
+    response = _post_with_retries(
+        f"{base_url.rstrip('/')}/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "instructions": instructions,
+            "input": items,
+            "max_output_tokens": AGENT_REASONING_OUTPUT_TOKENS,
+            "reasoning": {"effort": AGENT_REASONING_EFFORT},
+            "store": False,
+        },
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=False,
+    )
+    _responses_request_error(response, model)
+    return _require_answer(_responses_answer_text(response.json().get("output") or []), model)
+
+
+def _openai_responses_agent(
+    base_url: str,
+    api_key: str,
+    model: str,
+    question: str,
+    toolbox,
+    tool_definitions: list[dict],
+    agent_context: str = "",
+    require_tool: bool = True,
+    image_attachments: list[dict] = None,
+) -> dict:
+    """Agent loop over /v1/responses, which allows tools and reasoning together."""
+    system_prompt = _agent_system_prompt(toolbox)
+    product_answer = _product_toolbox_answer(toolbox)
+    input_items = [{
+        "role": "user",
+        "content": _responses_user_content(
+            _agent_question(question, agent_context, product_answer=product_answer),
+            image_attachments,
+        ),
+    }]
+    tools = _openai_responses_tools(tool_definitions)
+    tool_call_count = 0
+    budget = _agent_output_budget(model)
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    for round_number in range(1, AGENT_MAX_ROUNDS + 1):
+        for attempt in range(AGENT_TRUNCATION_RETRIES + 1):
+            payload = {
+                "model": model,
+                "instructions": system_prompt,
+                "input": input_items,
+                "tools": tools,
+                "max_output_tokens": budget,
+                "reasoning": {"effort": AGENT_REASONING_EFFORT},
+                # Repository code must not be retained by the provider.
+                "store": False,
+            }
+            if round_number == 1 and require_tool:
+                payload["tool_choice"] = "required"
+            response = _post_with_retries(
+                f"{base_url.rstrip('/')}/responses",
+                headers=headers,
+                json=payload,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+            )
+            if 300 <= response.status_code < 400:
+                raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+            _responses_request_error(response, model, image_attachments)
+            data = response.json()
+            items = data.get("output") or []
+            calls = _responses_function_calls(items)
+            if not _responses_truncated(data):
+                break
+            if attempt >= AGENT_TRUNCATION_RETRIES or budget >= AGENT_OUTPUT_TOKEN_CEILING:
+                raise _truncated_before_tool_error(model, budget)
+            budget = _grown_output_budget(budget)
+
+        ask_call = next(
+            (call for call in calls if call.get("name") == ASK_USER_TOOL_NAME),
+            None,
+        )
+        if ask_call is not None:
+            asked = str(
+                _tool_arguments(ask_call.get("arguments")).get("question") or ""
+            ).strip()
+            if asked:
+                toolbox.trace.append(_ask_user_trace_entry(asked))
+                return {
+                    "answer": _require_answer(asked, model),
+                    "rounds": round_number,
+                    "tool_calls": tool_call_count,
+                    "needs_clarification": True,
+                }
+        if not calls:
+            if require_tool and tool_call_count == 0:
+                raise AgenticUnsupported(f"{model} answered without using repository tools")
+            return {
+                "answer": _require_answer(_responses_answer_text(items), model),
+                "rounds": round_number,
+                "tool_calls": tool_call_count,
+            }
+
+        # Echo the model's own turn back before the results it asked for.
+        input_items.extend(items)
+        for call in calls:
+            name = call.get("name") or ""
+            if tool_call_count >= AGENT_MAX_TOOL_CALLS:
+                result = json.dumps({
+                    "ok": False,
+                    "error": "tool-call budget exhausted; answer with collected evidence",
+                })
+            else:
+                result = toolbox.call(name, _tool_arguments(call.get("arguments")))
+                tool_call_count += 1
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": call.get("call_id") or call.get("id") or f"call_{tool_call_count}",
+                "output": result,
+            })
+
+    return {
+        "answer": _final_responses_answer(
+            base_url,
+            api_key,
+            model,
+            system_prompt,
+            input_items,
+            product_answer=product_answer,
+        ),
+        "rounds": AGENT_MAX_ROUNDS + 1,
+        "tool_calls": tool_call_count,
+    }
+
+
 def _openai_agent(
     base_url: str,
     api_key: str,
@@ -996,31 +1346,44 @@ def _openai_agent(
     tools = _openai_tools(tool_definitions)
     tool_call_count = 0
 
+    budget = _agent_output_budget(model)
+
     for round_number in range(1, AGENT_MAX_ROUNDS + 1):
-        response = _post_with_retries(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
+        # A round may be retried with more headroom: a truncated turn carries no
+        # usable tool call, and treating that as "the model declined to search"
+        # is what silently downgrades reasoning models to one-shot retrieval.
+        for attempt in range(AGENT_TRUNCATION_RETRIES + 1):
+            request_payload = {
                 "model": model,
                 "messages": messages,
                 "tools": tools,
                 "temperature": 0.2,
-                "max_tokens": 1800,
-            },
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=False,
-        )
-        if 300 <= response.status_code < 400:
-            raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-        if _needs_responses_endpoint(response):
-            return _openai_responses_agent(
-                base_url, api_key, model, question, toolbox, tool_definitions,
-                agent_context=agent_context, require_tool=require_tool,
-                image_attachments=image_attachments,
+                "max_tokens": budget,
+            }
+            # The first round must ground the answer in repository evidence. Once a
+            # tool has run, later rounds may choose between another tool call and a
+            # final answer as usual.
+            if round_number == 1 and require_tool:
+                request_payload["tool_choice"] = "required"
+            response = _post_openai_with_compatibility(
+                f"{base_url.rstrip('/')}/chat/completions",
+                model,
+                request_payload,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
             )
-        _tool_request_error(response, model, image_attachments)
-        message = response.json()["choices"][0]["message"]
-        tool_calls = message.get("tool_calls") or []
+            if 300 <= response.status_code < 400:
+                raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+            _tool_request_error(response, model, image_attachments)
+            choice = response.json()["choices"][0]
+            message = choice.get("message") or {}
+            tool_calls = message.get("tool_calls") or []
+            if not _openai_truncated(choice):
+                break
+            if attempt >= AGENT_TRUNCATION_RETRIES or budget >= AGENT_OUTPUT_TOKEN_CEILING:
+                raise _truncated_before_tool_error(model, budget)
+            budget = _grown_output_budget(budget)
         ask_call = next(
             (
                 call for call in tool_calls
@@ -1085,130 +1448,6 @@ def _openai_agent(
     }
 
 
-AGENT_REASONING_EFFORT = os.environ.get("CODEATLAS_AGENT_REASONING_EFFORT", "medium")
-
-
-def _responses_tools(tool_definitions: list[dict]) -> list[dict]:
-    """/v1/responses takes function tools flat; /chat/completions nests them."""
-    return [{"type": "function", **definition} for definition in tool_definitions]
-
-
-def _responses_text(payload: dict) -> str:
-    return "".join(
-        part.get("text", "")
-        for item in payload.get("output", [])
-        if item.get("type") == "message"
-        for part in item.get("content", [])
-    )
-
-
-def _openai_responses_agent(
-    base_url: str,
-    api_key: str,
-    model: str,
-    question: str,
-    toolbox,
-    tool_definitions: list[dict],
-    agent_context: str = "",
-    require_tool: bool = True,
-    image_attachments: list[dict] = None,
-) -> dict:
-    """Agent loop over /v1/responses, for models that refuse tools elsewhere.
-
-    Mirrors _openai_agent's contract. The one structural difference: every
-    item the model emits must be replayed on the next turn, reasoning items
-    included — sending a function_call without the reasoning item that
-    produced it is rejected outright.
-    """
-    system_prompt = _agent_system_prompt(toolbox)
-    product_answer = _product_toolbox_answer(toolbox)
-    items = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": _agent_question(question, agent_context, product_answer=product_answer),
-        },
-    ]
-    tools = _responses_tools(tool_definitions)
-    tool_call_count = 0
-    url = f"{base_url.rstrip('/')}/responses"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-    for round_number in range(1, AGENT_MAX_ROUNDS + 1):
-        response = _post_with_retries(
-            url,
-            headers=headers,
-            json={
-                "model": model,
-                "input": items,
-                "tools": tools,
-                "reasoning": {"effort": AGENT_REASONING_EFFORT},
-            },
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=False,
-        )
-        if 300 <= response.status_code < 400:
-            raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-        _tool_request_error(response, model, image_attachments)
-        payload = response.json()
-
-        calls = [item for item in payload.get("output", []) if item.get("type") == "function_call"]
-
-        ask_call = next((c for c in calls if c.get("name") == ASK_USER_TOOL_NAME), None)
-        if ask_call is not None:
-            asked = str(_tool_arguments(ask_call.get("arguments")).get("question") or "").strip()
-            if asked:
-                toolbox.trace.append(_ask_user_trace_entry(asked))
-                return {
-                    "answer": _require_answer(asked, model),
-                    "rounds": round_number,
-                    "tool_calls": tool_call_count,
-                    "needs_clarification": True,
-                }
-
-        if not calls:
-            if require_tool and tool_call_count == 0:
-                raise AgenticUnsupported(f"{model} answered without using repository tools")
-            return {
-                "answer": _require_answer(_responses_text(payload), model),
-                "rounds": round_number,
-                "tool_calls": tool_call_count,
-            }
-
-        # Replay the whole output, not just the calls: the reasoning items are
-        # required alongside the function_calls they produced.
-        items.extend(payload.get("output", []))
-        for call in calls:
-            if tool_call_count >= AGENT_MAX_TOOL_CALLS:
-                result = json.dumps({
-                    "ok": False,
-                    "error": "tool-call budget exhausted; answer with collected evidence",
-                })
-            else:
-                result = toolbox.call(call.get("name") or "", _tool_arguments(call.get("arguments")))
-                tool_call_count += 1
-            items.append({
-                "type": "function_call_output",
-                "call_id": call.get("call_id"),
-                "output": result,
-            })
-
-    items.append({"role": "user", "content": _budget_exhausted_prompt(product_answer)})
-    final = _post_with_retries(
-        url,
-        headers=headers,
-        json={"model": model, "input": items, "reasoning": {"effort": AGENT_REASONING_EFFORT}},
-        timeout=REQUEST_TIMEOUT,
-        allow_redirects=False,
-    )
-    _tool_request_error(final, model, image_attachments)
-    return {
-        "answer": _require_answer(_responses_text(final.json()), model),
-        "rounds": AGENT_MAX_ROUNDS + 1,
-        "tool_calls": tool_call_count,
-    }
-
-
 def _anthropic_agent(
     base_url: str,
     api_key: str,
@@ -1242,28 +1481,38 @@ def _anthropic_agent(
         "Content-Type": "application/json",
     }
 
+    budget = _agent_output_budget(model)
+
     for round_number in range(1, AGENT_MAX_ROUNDS + 1):
-        response = _post_with_retries(
-            url,
-            headers=headers,
-            json={
-                "model": model,
-                "max_tokens": 1800,
-                "temperature": 0.2,
-                "system": system_prompt,
-                "messages": messages,
-                "tools": tools,
-                **_anthropic_cache_settings(base_url),
-            },
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=False,
-        )
-        if 300 <= response.status_code < 400:
-            raise RuntimeError(f"{model} returned a redirect, which is not allowed")
-        _tool_request_error(response, model, image_attachments)
-        data = response.json()
-        blocks = data.get("content") or []
-        tool_uses = [block for block in blocks if block.get("type") == "tool_use"]
+        # Same truncation retry as the OpenAI loop: a turn cut off at the cap
+        # has no usable tool call and must not be read as a refusal to search.
+        for attempt in range(AGENT_TRUNCATION_RETRIES + 1):
+            response = _post_with_retries(
+                url,
+                headers=headers,
+                json={
+                    "model": model,
+                    "max_tokens": budget,
+                    "temperature": 0.2,
+                    "system": system_prompt,
+                    "messages": messages,
+                    "tools": tools,
+                    **_anthropic_cache_settings(base_url),
+                },
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+            )
+            if 300 <= response.status_code < 400:
+                raise RuntimeError(f"{model} returned a redirect, which is not allowed")
+            _tool_request_error(response, model, image_attachments)
+            data = response.json()
+            blocks = data.get("content") or []
+            tool_uses = [block for block in blocks if block.get("type") == "tool_use"]
+            if not _anthropic_truncated(data):
+                break
+            if attempt >= AGENT_TRUNCATION_RETRIES or budget >= AGENT_OUTPUT_TOKEN_CEILING:
+                raise _truncated_before_tool_error(model, budget)
+            budget = _grown_output_budget(budget)
         ask_call = next(
             (block for block in tool_uses if block.get("name") == ASK_USER_TOOL_NAME),
             None,
@@ -1476,10 +1725,10 @@ def _openai_chat(
     context: dict,
     image_attachments: list[dict] = None,
 ) -> str:
-    resp = _post_with_retries(
+    resp = _post_openai_with_compatibility(
         f"{base_url.rstrip('/')}/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
+        model,
+        {
             "model": model,
             "messages": [
                 {"role": "system", "content": _system_prompt(context)},
@@ -1494,6 +1743,7 @@ def _openai_chat(
             "temperature": 0.2,
             "max_tokens": 1400,
         },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         timeout=REQUEST_TIMEOUT,
         allow_redirects=False,
     )
@@ -1587,6 +1837,12 @@ def _fast_follow_up_system_prompt(context: dict) -> str:
         f"evidence. {evidence_output_rule} "
         "If the evidence is incomplete, ambiguous, stale, or about a different "
         f"topic, output exactly {FOLLOW_UP_NEEDS_EVIDENCE} and nothing else."
+        "\n\nThe reader has already read the earlier answers in this "
+        "conversation. Answer only what this follow-up adds: do not restate "
+        "prior answers, re-introduce components already described, or re-explain "
+        "background that has been covered. Open with the answer itself, with no "
+        "preamble and no restatement of the question. Keep it to a few sentences "
+        "or a short list unless the question genuinely requires more."
         + (
             "\n\nAudience-specific final-answer requirements:\n"
             f"{audience_instruction}"
@@ -1611,13 +1867,10 @@ def _openai_fast_follow_up(
     question: str,
     evidence: str,
 ) -> str:
-    response = _post_with_retries(
+    response = _post_openai_with_compatibility(
         f"{base_url.rstrip('/')}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
+        model,
+        {
             "model": model,
             "messages": [
                 {"role": "system", "content": _fast_follow_up_system_prompt(context)},
@@ -1628,6 +1881,10 @@ def _openai_fast_follow_up(
             ],
             "temperature": 0.1,
             "max_tokens": FOLLOW_UP_MAX_TOKENS,
+        },
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
         },
         timeout=REQUEST_TIMEOUT,
         allow_redirects=False,
@@ -1718,14 +1975,21 @@ def _ollama_available(base_url: str) -> bool:
         return False
 
 
-def _configured_shared_creds(model: str = None) -> dict:
+def _configured_shared_creds(model: str = None, llm_id: str = None) -> dict:
+    """Credentials for one configured shared LLM, or the default one.
+
+    Which shared LLMs exist is environment configuration (see app.config), so
+    replacing or adding one needs no change here."""
+    entry = shared_llm(llm_id) or {}
     return {
-        "provider": os.getenv("CODEATLAS_LLM_PROVIDER", "openai_compatible"),
-        "base_url": os.getenv("CODEATLAS_LLM_BASE_URL", ""),
-        "api_key": os.getenv("CODEATLAS_LLM_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY"),
-        "model": model or os.getenv("CODEATLAS_LLM_MODEL", "mimo-v2.5"),
+        "provider": entry.get("provider") or "openai_compatible",
+        "base_url": entry.get("base_url") or "",
+        "api_key": entry.get("api_key") or "",
+        # No fallback model name: with nothing configured there is no endpoint
+        # or key either, so the caller fails on that rather than on a guess.
+        "model": model or entry.get("model") or "",
+        "shared_llm_id": entry.get("id") or "",
+        "shared_llm_name": entry.get("name") or entry.get("model") or "",
     }
 
 
@@ -1829,10 +2093,39 @@ def _call_agent_with_creds(
             require_tool,
             image_attachments,
         )
+    model = model or "gpt-4o-mini"
+    if _use_responses_api(model):
+        try:
+            return _openai_responses_agent(
+                base_url,
+                api_key,
+                model,
+                question,
+                toolbox,
+                tool_definitions,
+                agent_context,
+                require_tool,
+                image_attachments,
+            )
+        except (ImageInputUnsupported, AgenticUnsupported):
+            # A genuine agentic outcome, not an endpoint problem. Let the caller
+            # decide (it downgrades to one-shot); retrying the same question on
+            # chat/completions with reasoning off would not do better.
+            raise
+        except Exception as exc:
+            # Endpoint missing, or any unexpected /v1/responses failure: retry on
+            # chat/completions so this can never leave the caller worse off than
+            # before the Responses path existed.
+            logger.warning(
+                "/v1/responses failed for %s, retrying on /v1/chat/completions: %s",
+                model,
+                exc,
+            )
+            toolbox.trace.clear()
     return _openai_agent(
         base_url,
         api_key,
-        model or "gpt-4o-mini",
+        model,
         question,
         toolbox,
         tool_definitions,
@@ -1875,6 +2168,13 @@ def _attempt_with_creds(
             }
         except AgenticUnsupported as exc:
             fallback_reason = str(exc)
+            # Downgrading to one-shot silently is what made this hard to see:
+            # the answer looks normal while the repository was never searched.
+            logger.warning(
+                "Agentic retrieval unavailable for %s; falling back to one-shot. Reason: %s",
+                creds.get("model") or creds.get("provider") or "agent",
+                fallback_reason,
+            )
 
     return {
         "answer": _call_with_creds(creds, context, image_attachments),
@@ -1918,6 +2218,11 @@ def _attempt_ollama(
             }
         except AgenticUnsupported as exc:
             fallback_reason = str(exc)
+            logger.warning(
+                "Agentic retrieval unavailable for %s; falling back to one-shot. Reason: %s",
+                model,
+                fallback_reason,
+            )
 
     return {
         "answer": _ollama_chat(base_url, model, context, image_attachments),
@@ -1991,14 +2296,12 @@ def generate_fast_follow_up(
             "tool_calls": 0,
         }
 
-    if mode == "mimo":
+    if is_shared_llm_mode(mode):
         if not allow_shared_fallback:
-            raise RuntimeError("Mimo/shared LLM is disabled for this repository.")
-        shared = _configured_shared_creds(
-            os.getenv("CODEATLAS_MIMO_MODEL", "mimo-v2.5")
-        )
+            raise RuntimeError("The shared LLM is disabled for this repository.")
+        shared = _configured_shared_creds(llm_id=shared_llm_id_for_mode(mode))
         if not shared["base_url"] or not shared["api_key"]:
-            raise RuntimeError("Mimo/shared LLM is not configured.")
+            raise RuntimeError("The shared LLM is not configured.")
         return run(shared, f"shared:{shared['model']}")
 
     errors = []
@@ -2046,7 +2349,7 @@ def generate(
     """Generate an answer with the first working provider tier.
 
     user_llm: optional {provider, base_url, api_key, model} from the requesting
-              user (BYOK). allow_shared_fallback: when False, the shared "Mimo"
+              user (BYOK). allow_shared_fallback: when False, the shared
               endpoint (tier 2) is skipped (per-repo privacy control). When a
               question and toolbox are supplied, each tier first attempts an
               agentic tool loop and falls back to one-shot RAG only when that
@@ -2093,13 +2396,13 @@ def generate(
         )
         return {**result, "provider_used": f"ollama:{ollama_model}"}
 
-    # Explicit mode — shared Mimo endpoint only.
-    if mode == "mimo":
+    # Explicit mode — one shared LLM only.
+    if is_shared_llm_mode(mode):
         if not allow_shared_fallback:
-            raise RuntimeError("Mimo/shared LLM is disabled for this repository.")
-        shared = _configured_shared_creds(os.getenv("CODEATLAS_MIMO_MODEL", "mimo-v2.5"))
+            raise RuntimeError("The shared LLM is disabled for this repository.")
+        shared = _configured_shared_creds(llm_id=shared_llm_id_for_mode(mode))
         if not shared["base_url"] or not shared["api_key"]:
-            raise RuntimeError("Mimo/shared LLM is not configured.")
+            raise RuntimeError("The shared LLM is not configured.")
         result = _attempt_with_creds(
             shared,
             context,

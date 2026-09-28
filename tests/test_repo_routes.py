@@ -3,9 +3,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app import config, db
+from app.conversations import ConversationStore
 from app.repos import routes as repo_routes
 
 
@@ -173,6 +174,54 @@ class RepositoryGrantTests(unittest.TestCase):
         self.assertEqual(second_result["already_granted_count"], 1)
         self.assertTrue(db.user_has_repo(first["id"], "roadmap"))
         self.assertTrue(db.user_has_repo(second["id"], "roadmap"))
+
+    def test_clear_repo_answer_cache_clears_repo_and_branch_workspaces(self):
+        store = ConversationStore(ttl_seconds=30, max_states=10)
+        db.create_repo_branch(
+            self.repo["id"],
+            "release/1.0",
+            workspace="roadmap--branch-1",
+        )
+        response = {
+            "question": "How does login work?",
+            "answer": "Login is verified in src/auth.py:L1-L20.",
+            "provider_used": "shared:mimo-v2.5",
+        }
+        for workspace in ("roadmap", "roadmap--branch-1", "other-repo"):
+            store.store_repo_cached_answer(
+                workspace=workspace,
+                user_type="dev_team",
+                repository_revision="branch:abc123",
+                question="How does login work?",
+                response=response,
+            )
+
+        with patch.object(repo_routes, "conversation_store", store):
+            result = repo_routes.clear_repo_answer_cache(
+                "roadmap",
+                Response(),
+                admin=self.admin,
+            )
+
+        self.assertEqual(result["cleared"], 2)
+        self.assertIsNone(store.get_repo_cached_answer(
+            workspace="roadmap",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+        ))
+        self.assertIsNone(store.get_repo_cached_answer(
+            workspace="roadmap--branch-1",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+        ))
+        self.assertIsNotNone(store.get_repo_cached_answer(
+            workspace="other-repo",
+            user_type="dev_team",
+            repository_revision="branch:abc123",
+            question="How does login work?",
+        ))
 
 
 if __name__ == "__main__":

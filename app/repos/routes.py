@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from .. import db
 from ..auth.sessions import require_admin
 from ..config import DEFAULT_WORKSPACE, repo_clone_dir, retrieval_config_path
+from ..conversations import conversation_store
 from ..llm.admission import LLMCapacityError, llm_admission
 from ..retrieval.config_schema import (
     RetrievalConfig,
@@ -352,6 +353,33 @@ def list_members(slug: str, admin: dict = Depends(require_admin)):
     implicitly and are not listed here)."""
     repo = _require_repo(slug)
     return {"members": db.list_repo_members(repo["id"])}
+
+
+@router.post("/{slug}/answer-cache/clear")
+def clear_repo_answer_cache(
+    slug: str,
+    response: Response,
+    admin: dict = Depends(require_admin),
+):
+    """Clear only shared repo answer-cache entries for this repository."""
+    repo = _require_repo(slug)
+    workspaces = {str(repo.get("workspace") or "")}
+    for branch in db.list_repo_branches(repo["id"]):
+        workspace = str(branch.get("workspace") or "").strip()
+        if workspace:
+            workspaces.add(workspace)
+    cleared = conversation_store.clear_repo_cached_answers(workspaces=workspaces)
+    db.record_audit(
+        admin.get("username"),
+        "clear_answer_cache",
+        slug,
+        f"{cleared} shared repo answer cache entries",
+    )
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return {
+        "repo": {"slug": repo["slug"], "workspace": repo["workspace"]},
+        "cleared": cleared,
+    }
 
 
 @router.patch("/{slug}")

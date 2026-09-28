@@ -1,15 +1,16 @@
-"""SQLite storage for users, repositories, sessions, and per-user repo access.
+"""SQLite storage for users, repositories, sessions, chats, and repo access.
 
 Phase 2 wires the auth and repo-lifecycle routers to these helpers. Per-repo
 retrieval tuning is stored as JSON on disk (see app/retrieval/config_schema.py),
 not here.
 """
 
+import json
 import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import (
     DB_PATH,
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS repo_branches (
     freshness_interval_seconds INTEGER NOT NULL DEFAULT 300,
     is_legacy                  INTEGER NOT NULL DEFAULT 0,
     is_default                 INTEGER NOT NULL DEFAULT 0,
+    default_pinned             INTEGER NOT NULL DEFAULT 0,
     created_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                 TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (repo_id, name)
@@ -100,6 +102,35 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS user_chats (
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    chat_id      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    preview      TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, chat_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_chats_updated
+ON user_chats(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS answer_feedback (
+    feedback_id  TEXT PRIMARY KEY,
+    repo_slug    TEXT NOT NULL,
+    repo_name    TEXT NOT NULL,
+    question     TEXT NOT NULL,
+    satisfaction TEXT NOT NULL DEFAULT 'unrated'
+                 CHECK (satisfaction IN ('unrated', 'liked', 'disliked')),
+    reason       TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_answer_feedback_repo
+ON answer_feedback(repo_slug, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,6 +224,38 @@ def init_db() -> None:
         }
         if "expires_at" not in session_columns:
             conn.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+        feedback_schema = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'answer_feedback'"
+        ).fetchone()
+        if feedback_schema and "'unrated'" not in (feedback_schema["sql"] or ""):
+            # SQLite cannot widen a CHECK constraint in place. Rebuild only this
+            # additive, identity-free table while preserving any existing ratings.
+            conn.execute("DROP INDEX IF EXISTS idx_answer_feedback_repo")
+            conn.execute(
+                "ALTER TABLE answer_feedback RENAME TO answer_feedback_legacy"
+            )
+            conn.execute(
+                "CREATE TABLE answer_feedback ("
+                "feedback_id TEXT PRIMARY KEY, repo_slug TEXT NOT NULL, "
+                "repo_name TEXT NOT NULL, question TEXT NOT NULL, "
+                "satisfaction TEXT NOT NULL DEFAULT 'unrated' "
+                "CHECK (satisfaction IN ('unrated', 'liked', 'disliked')), "
+                "reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), "
+                "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
+            )
+            conn.execute(
+                "INSERT INTO answer_feedback "
+                "(feedback_id, repo_slug, repo_name, question, satisfaction, reason, "
+                "created_at, updated_at) SELECT feedback_id, repo_slug, repo_name, "
+                "question, satisfaction, reason, created_at, updated_at "
+                "FROM answer_feedback_legacy"
+            )
+            conn.execute("DROP TABLE answer_feedback_legacy")
+            conn.execute(
+                "CREATE INDEX idx_answer_feedback_repo "
+                "ON answer_feedback(repo_slug, created_at DESC)"
+            )
         branch_columns = {
             row["name"] for row in conn.execute(
                 "PRAGMA table_info(repo_branches)"
@@ -212,6 +275,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE repo_branches "
                 "ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0"
+            )
+        if "default_pinned" not in branch_columns:
+            conn.execute(
+                "ALTER TABLE repo_branches "
+                "ADD COLUMN default_pinned INTEGER NOT NULL DEFAULT 0"
             )
         token_usage_columns = {
             row["name"] for row in conn.execute(
@@ -499,6 +567,134 @@ def delete_session(token: str) -> None:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 
+# --- Per-user Ask chats ------------------------------------------------------
+
+def upsert_user_chat(
+    user_id: int,
+    chat_id: str,
+    title: str,
+    preview: str,
+    payload: Dict[str, Any],
+    max_chats: int = 100,
+) -> None:
+    """Persist one authenticated user's chat and prune their oldest excess rows."""
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO user_chats "
+            "(user_id, chat_id, title, preview, payload_json) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, chat_id) DO UPDATE SET "
+            "title = excluded.title, preview = excluded.preview, "
+            "payload_json = excluded.payload_json, updated_at = datetime('now')",
+            (user_id, chat_id, title, preview, encoded),
+        )
+        stale = conn.execute(
+            "SELECT chat_id FROM user_chats WHERE user_id = ? "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT -1 OFFSET ?",
+            (user_id, max(1, int(max_chats))),
+        ).fetchall()
+        if stale:
+            conn.executemany(
+                "DELETE FROM user_chats WHERE user_id = ? AND chat_id = ?",
+                [(user_id, row["chat_id"]) for row in stale],
+            )
+
+
+def list_user_chats(user_id: int, limit: int = 100) -> List[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT chat_id, title, preview, payload_json, created_at, updated_at "
+            "FROM user_chats WHERE user_id = ? "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+            (user_id, max(1, min(int(limit), 100)),),
+        ).fetchall()
+    chats = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.update({
+            "id": row["chat_id"],
+            "title": row["title"],
+            "preview": row["preview"],
+            "serverCreatedAt": row["created_at"],
+            "serverUpdatedAt": row["updated_at"],
+        })
+        chats.append(payload)
+    return chats
+
+
+def delete_user_chat(user_id: int, chat_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM user_chats WHERE user_id = ? AND chat_id = ?",
+            (user_id, chat_id),
+        )
+        return cursor.rowcount > 0
+
+
+# --- Anonymous answer feedback ----------------------------------------------
+
+def upsert_answer_feedback(
+    feedback_id: str,
+    repo_slug: str,
+    repo_name: str,
+    question: str,
+    satisfaction: str,
+    reason: str = None,
+) -> None:
+    """Store answer feedback without retaining an account or user identifier."""
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO answer_feedback "
+            "(feedback_id, repo_slug, repo_name, question, satisfaction, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(feedback_id) DO UPDATE SET "
+            "satisfaction = CASE "
+            "WHEN excluded.satisfaction = 'unrated' "
+            "AND answer_feedback.satisfaction != 'unrated' "
+            "THEN answer_feedback.satisfaction ELSE excluded.satisfaction END, "
+            "reason = CASE "
+            "WHEN excluded.satisfaction = 'unrated' "
+            "AND answer_feedback.satisfaction != 'unrated' "
+            "THEN answer_feedback.reason ELSE excluded.reason END, "
+            "updated_at = datetime('now')",
+            (
+                feedback_id,
+                repo_slug,
+                repo_name,
+                question,
+                satisfaction,
+                reason,
+            ),
+        )
+
+
+def list_answer_feedback(limit: int = 500, offset: int = 0) -> List[dict]:
+    """Return anonymous feedback grouped by repository ordering for admins."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT repo_slug, repo_name, question, satisfaction, reason, "
+            "created_at, updated_at FROM answer_feedback "
+            "ORDER BY lower(repo_name), repo_slug, created_at DESC, feedback_id "
+            "LIMIT ? OFFSET ?",
+            (
+                max(1, min(int(limit), 1000)),
+                max(0, int(offset)),
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def answer_feedback_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM answer_feedback").fetchone()[0]
+
+
 # --- Repos -------------------------------------------------------------------
 
 def create_repo(slug: str, name: str, source_url: str, clone_method: str,
@@ -690,6 +886,42 @@ def set_repo_default_branch(repo_id: int, branch_name: str) -> None:
             "UPDATE repo_branches SET is_default = CASE WHEN name = ? THEN 1 ELSE 0 END, "
             "updated_at = datetime('now') WHERE repo_id = ?",
             (branch_name, repo_id),
+        )
+
+
+def set_repo_default_branch_pinned(repo_id: int, branch_name: str) -> None:
+    """Admin-chosen default branch. Sticks until another branch is pinned,
+    unlike set_repo_default_branch which discovery re-derives from the
+    remote's HEAD on every call."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE repo_branches SET "
+            "is_default = CASE WHEN name = ? THEN 1 ELSE 0 END, "
+            "default_pinned = CASE WHEN name = ? THEN 1 ELSE 0 END, "
+            "updated_at = datetime('now') WHERE repo_id = ?",
+            (branch_name, branch_name, repo_id),
+        )
+
+
+def reassert_pinned_default_branch(repo_id: int) -> None:
+    """Re-apply an admin's pinned default over is_default, if one exists.
+
+    Callers that mirror the remote's HEAD onto is_default (discovery) or
+    that insert a new branch guessing is_default from the remote's HEAD
+    (approval) call this right after, so a pin set concurrently by another
+    request always wins regardless of statement ordering: it's a single
+    atomic UPDATE, not a separate read-then-write, so there's no window for
+    the two to interleave. No-op when nothing is pinned for this repo.
+    """
+    with connect() as conn:
+        conn.execute(
+            "UPDATE repo_branches SET is_default = default_pinned, "
+            "updated_at = datetime('now') "
+            "WHERE repo_id = ? AND EXISTS ("
+            "  SELECT 1 FROM repo_branches AS pinned "
+            "  WHERE pinned.repo_id = repo_branches.repo_id AND pinned.default_pinned = 1"
+            ")",
+            (repo_id,),
         )
 
 
