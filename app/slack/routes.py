@@ -426,6 +426,19 @@ def _post_channel_message(channel_id: str, thread_ts: str, text: str, blocks: li
     _slack_api("chat.postMessage", payload)
 
 
+def _react_eyes(channel_id: Optional[str], ts: Optional[str]) -> None:
+    """Best-effort :eyes: reaction on a question CodeAtlas is about to
+    answer -- instant acknowledgment while the real answer is generated.
+    Never lets a reaction failure (already reacted, a transient API
+    hiccup) block answering the question."""
+    if not channel_id or not ts:
+        return
+    try:
+        _slack_api("reactions.add", {"channel": channel_id, "timestamp": ts, "name": "eyes"})
+    except Exception:
+        pass
+
+
 def _post_response_url(response_url: str, text: str, blocks: list[dict] = None) -> None:
     if not response_url:
         raise RuntimeError("Slack response_url is not available.")
@@ -1370,6 +1383,7 @@ def _run_mention_job(payload: dict, event: dict) -> None:
     if not channel_id or not slack_user:
         logger.warning("Ignoring Slack event missing channel or user.")
         return
+    _react_eyes(channel_id, event.get("ts"))
     # Everything below (repo inference, branch prep) previously had no
     # safety net: an exception here would vanish in the executor thread
     # with no log and no reply, and since the event is already marked
@@ -1491,9 +1505,11 @@ def _run_thread_follow_up_job(payload: dict, event: dict) -> None:
         # No resolved answer yet for this thread (e.g. it's still waiting on
         # a "which repository?" reply, or the first answer is still in
         # flight) -- fall back to fresh inference, which also covers a bare
-        # repo-name reply resuming the pending question.
+        # repo-name reply resuming the pending question. _run_mention_job
+        # reacts on this event itself, so don't also react here.
         _run_mention_job(payload, event)
         return
+    _react_eyes(channel_id, event.get("ts"))
     values = {
         **context,
         "user_id": slack_user,

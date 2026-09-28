@@ -663,6 +663,60 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertEqual(values["question"], "How does login work?")
 
 
+class SlackReactionTests(unittest.TestCase):
+    """The :eyes: acknowledgment reaction on a question CodeAtlas is about
+    to answer."""
+
+    def test_mention_gets_an_eyes_reaction_on_its_own_message(self):
+        with patch.object(slack_routes, "_slack_api") as api, \
+                patch.object(slack_routes.ask_service, "published_repos", return_value=[]), \
+                patch.object(slack_routes, "_send_user_message"):
+            event = {"type": "app_mention", "channel": "C1", "user": "U1", "ts": "300.001", "text": "<@B1> hi"}
+            payload = {"type": "event_callback", "team_id": "T1", "event_id": "Ev1", "event": event}
+            slack_routes._run_mention_job(payload, event)
+
+        reaction_calls = [c for c in api.call_args_list if c.args[0] == "reactions.add"]
+        self.assertEqual(len(reaction_calls), 1)
+        reaction_payload = reaction_calls[0].args[1]
+        self.assertEqual(reaction_payload["name"], "eyes")
+        self.assertEqual(reaction_payload["channel"], "C1")
+        self.assertEqual(reaction_payload["timestamp"], "300.001")
+
+    def test_reaction_failure_does_not_raise(self):
+        with patch.object(slack_routes, "_slack_api", side_effect=RuntimeError("already_reacted")):
+            slack_routes._react_eyes("C1", "300.001")  # must not raise
+
+    def test_missing_channel_or_ts_is_a_no_op(self):
+        with patch.object(slack_routes, "_slack_api") as api:
+            slack_routes._react_eyes(None, "300.001")
+            slack_routes._react_eyes("C1", None)
+        api.assert_not_called()
+
+    def test_thread_follow_up_reacts_once_not_twice(self):
+        """The context-found path in _run_thread_follow_up_job reacts
+        itself; it must not also go through _run_mention_job's reaction
+        (that fallback path is only for when there's no resolved context
+        yet)."""
+        context = {
+            "team_id": "T1", "channel_id": "C1", "thread_ts": "500.001",
+            "repo_slug": "gandalf", "branch": "main", "conversation_id": "conv-1",
+            "ask_type": slack_routes.ASK_SINGLE, "user_type": slack_routes.USER_PRODUCT,
+        }
+        with patch.object(slack_routes, "_slack_api") as api, \
+                patch.object(slack_routes, "_thread_context", return_value=context), \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            event = {
+                "type": "message", "channel": "C1", "channel_type": "channel", "user": "U1",
+                "ts": "500.002", "thread_ts": "500.001", "text": "and what about logout?",
+            }
+            payload = {"type": "event_callback", "team_id": "T1", "event_id": "Ev1", "event": event}
+            slack_routes._run_thread_follow_up_job(payload, event)
+
+        reaction_calls = [c for c in api.call_args_list if c.args[0] == "reactions.add"]
+        self.assertEqual(len(reaction_calls), 1)
+        run_job.assert_called_once()
+
+
 class SlackEventsTests(unittest.TestCase):
     """@codeatlas mention entry point (Phase A): Events API handshake, auth,
     and dedupe. Repo/branch resolution is covered in SlackMentionJobTests."""
