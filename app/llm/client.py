@@ -116,6 +116,29 @@ SYSTEM_PROMPT = (
     "source files and line numbers for concrete claims."
 )
 
+# possible_ambiguity fires on most searches in a large multi-app repo (11 of 12
+# sampled queries on frodo), because the top hits naturally span apps. Treating
+# it as "ask first" made obedient models ask a clarifying question instead of
+# investigating on 30 of 48 eval items. It is a hint to look at both, not a stop.
+def _ask_user_rule(option_style: str) -> str:
+    return (
+        "A `possible_ambiguity` flag on a tool result is a hint, not an instruction "
+        "to stop: investigate the leading candidates first, and use the one the "
+        "question's wording points to. When the candidates lead to different "
+        "answers and the question doesn't choose, answer for the most likely one "
+        f"and briefly name the other. Use {ASK_USER_TOOL_NAME} only as a last resort, "
+        "after reading the candidates, when they would give materially different "
+        "answers and nothing in the question or the evidence favours one; "
+        f"{option_style}"
+    )
+
+
+_DEV_ASK_RULE = _ask_user_rule("name the specific components or files found.")
+_PRODUCT_ASK_RULE = _ask_user_rule(
+    "describe each option by its user-facing purpose only, never by file, class, "
+    "or code identifier."
+)
+
 AGENT_SYSTEM_PROMPT = (
     "You are CodeAtlas, a codebase investigation agent. You have read-only "
     "tools for searching source, reading files, listing directories, and "
@@ -125,11 +148,9 @@ AGENT_SYSTEM_PROMPT = (
     "You may make multiple tool calls. Do not guess from symbol names alone. "
     "Cite concrete claims as `path/to/file:line` or `path/to/file:Lx-Ly`, using "
     "only lines returned by source tools. If the repository evidence is "
-    "incomplete, say exactly what could not be verified. If a tool result flags "
-    f"`possible_ambiguity` and the question does not say which option is meant, "
-    f"use {ASK_USER_TOOL_NAME} to ask, naming the specific components or files "
-    "found, before investigating further. Never ask to execute code or modify "
-    "files."
+    "incomplete, say exactly what could not be verified. "
+    + _DEV_ASK_RULE
+    + " Never ask to execute code or modify files."
 )
 
 COMPARISON_AGENT_SYSTEM_PROMPT = (
@@ -138,10 +159,8 @@ COMPARISON_AGENT_SYSTEM_PROMPT = (
     "branch separately before comparing them. Do not transfer evidence or "
     "claims from one branch to the other. Cite concrete claims with the "
     "branch label plus file path and line numbers. If either branch lacks "
-    "evidence for the requested behavior, say that explicitly. If a tool result "
-    f"flags `possible_ambiguity` within a branch and the question does not say "
-    f"which option is meant, use {ASK_USER_TOOL_NAME} to ask, naming the specific "
-    "components or files found, before investigating further."
+    "evidence for the requested behavior, say that explicitly. "
+    + _DEV_ASK_RULE
 )
 
 PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
@@ -176,11 +195,8 @@ PRODUCT_TEAM_AGENT_SYSTEM_PROMPT = (
     "English and describe only user-visible behavior, outcomes, conditions, and "
     "caveats. Do not include technical terms, file names, file paths, line numbers, "
     "class names, function or method names, code identifiers, APIs, endpoint paths, "
-    "source citations, or code snippets. Do not guess beyond repository evidence. If "
-    "a tool result flags `possible_ambiguity` between clearly different parts of the "
-    f"product and the question does not say which one is meant, use {ASK_USER_TOOL_NAME} "
-    "to ask which one, describing each option by its user-facing purpose only, "
-    "never by file, class, or code identifier."
+    "source citations, or code snippets. Do not guess beyond repository evidence. "
+    + _PRODUCT_ASK_RULE
 )
 
 PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
@@ -191,11 +207,8 @@ PRODUCT_FLOW_SUMMARY_SYSTEM_PROMPT = (
     "steps, relevant alternate or failure outcomes, and final result. Do not include "
     "technical terms, internal flow identifiers, file names, source locations, line "
     "numbers, class names, function or method names, code identifiers, APIs, endpoint "
-    "paths, source citations, or code snippets. Do not invent unsupported behavior. If "
-    "a tool result flags `possible_ambiguity` between clearly different parts of the "
-    f"product and the question does not say which one is meant, use {ASK_USER_TOOL_NAME} "
-    "to ask which one, describing each option by its user-facing purpose only, "
-    "never by file, class, or code identifier."
+    "paths, source citations, or code snippets. Do not invent unsupported behavior. "
+    + _PRODUCT_ASK_RULE
 )
 
 COMPARISON_SYSTEM_PROMPT = (
@@ -226,11 +239,8 @@ PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT = (
     "behavior, outcomes, conditions, and caveats in simple everyday English. Do "
     "not include technical terms, file names, file paths, line numbers, class "
     "names, function or method names, code identifiers, APIs, endpoint paths, "
-    "source citations, or code snippets. If a tool result flags "
-    "`possible_ambiguity` within a branch between clearly different parts of the "
-    f"product and the question does not say which one is meant, use {ASK_USER_TOOL_NAME} "
-    "to ask which one, describing each option by its user-facing purpose only, "
-    "never by file, class, or code identifier."
+    "source citations, or code snippets. "
+    + _PRODUCT_ASK_RULE
 )
 
 SOURCE_REFERENCE_RE = re.compile(
