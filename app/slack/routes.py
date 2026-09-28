@@ -478,10 +478,71 @@ def _repo_options() -> list[dict]:
     ]
 
 
+def _repo_reference_match(candidate: str, text: str) -> bool:
+    """True if `text` MENTIONS `candidate` (a repo's slug or display name)
+    somewhere in it: exactly; as a whole-word fragment of it (e.g.
+    "riderapp" naming "Sfx-Riderapp", so a short reply doesn't need the
+    repo's full name); or with the full candidate appearing as a whole
+    word inside a longer `text` (e.g. a full sentence mentioning the repo
+    by name). For routing a question to the repo it's about -- NOT for
+    deciding whether `text` is *just* a repo reference and nothing else,
+    which needs the stricter `_is_bare_repo_reference` below: a full,
+    freestanding new question that happens to name a repo would otherwise
+    satisfy this too (it contains the name as a whole word), and must not
+    be mistaken for a bare "just the repo name" reply.
+
+    (?<!\\w)/(?!\\w) rather than \\b: \\b requires a word/non-word transition
+    at the edge itself, so it never matches a candidate that starts or ends
+    with punctuation (e.g. a repo named "Payments API (EU)") even when that
+    candidate appears verbatim in the text.
+    """
+    candidate = candidate.strip().lower()
+    text = text.strip().lower()
+    if not candidate or not text:
+        return False
+    if candidate == text:
+        return True
+    if re.search(rf"(?<!\w){re.escape(text)}(?!\w)", candidate):
+        return True
+    if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", text):
+        return True
+    return False
+
+
+# Slack markdown wrapper punctuation (code, bold, italic, strikethrough) and
+# smart quotes -- what a reply built by copy-pasting a suggested repo name
+# (itself sent wrapped in backticks) typically carries around the name.
+_REPO_NAME_WRAP_RE = re.compile(
+    r"^[`*_~'\"“”‘’\s]+|[`*_~'\"“”‘’\s]+$"
+)
+
+
+def _is_bare_repo_reference(candidate: str, text: str) -> bool:
+    """True if `text` IS `candidate` (a repo's slug or display name) and
+    nothing else -- the full name/slug, a short fragment of it (e.g.
+    "riderapp" for "Sfx-Riderapp"), optionally wrapped in Slack formatting
+    a copy-paste carries along -- rather than a full sentence that merely
+    mentions the repo somewhere in it. Deliberately narrower than
+    `_repo_reference_match`: it only checks `text` found within
+    `candidate`, never the reverse, so a real new question that happens to
+    name a repo is never mistaken for a bare "just the repo name" reply.
+    """
+    candidate = candidate.strip().lower()
+    text = _REPO_NAME_WRAP_RE.sub("", text).strip().lower()
+    if not candidate or not text:
+        return False
+    if candidate == text:
+        return True
+    if re.search(rf"(?<!\w){re.escape(text)}(?!\w)", candidate):
+        return True
+    return False
+
+
 def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
-    """Deterministic repo match: an explicit name/slug mention, or the only
-    published repo. Ambiguous or unmatched text returns None so the caller
-    asks the user instead of guessing (semantic classification is Phase B).
+    """Deterministic repo match: an explicit name/slug mention (full or a
+    short fragment of it), or the only published repo. Ambiguous or
+    unmatched text returns None so the caller asks the user instead of
+    guessing (semantic classification is Phase B).
 
     Takes `repos` rather than fetching it, so a caller that already has the
     published-repo list (e.g. to build a "which repository?" prompt on a
@@ -489,16 +550,10 @@ def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
     """
     if not repos:
         return None
-    lowered = text.lower()
     matches = []
     for repo in repos:
         for candidate in {repo["slug"].strip().lower(), repo["name"].strip().lower()}:
-            # (?<!\w)/(?!\w) rather than \b: \b requires a word/non-word
-            # transition at the edge itself, so it never matches a
-            # candidate that starts or ends with punctuation (e.g. a repo
-            # named "Payments API (EU)") even when that candidate appears
-            # verbatim in the text.
-            if candidate and re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", lowered):
+            if candidate and _repo_reference_match(candidate, text):
                 matches.append(repo)
                 break
     if len(matches) == 1:
@@ -1359,10 +1414,17 @@ def _run_mention_job(payload: dict, event: dict) -> None:
                 }],
             )
             return
-        # A bare repo-name reply (e.g. just "sortbuddy") to our own "which
-        # repository?" prompt, in the same thread, answers that prompt
-        # rather than being treated as a new one-word question.
-        if question.strip().lower() in {repo["slug"].lower(), repo["name"].lower()}:
+        # A bare repo-name reply (e.g. just "sortbuddy", a short fragment
+        # like "riderapp" naming "Sfx-Riderapp", or a copy-pasted
+        # "`Sfx-Riderapp`" carrying the backticks the suggestion list itself
+        # used) to our own "which repository?" prompt, in the same thread,
+        # answers that prompt rather than being treated as a new one-word
+        # question. Uses the stricter bare-reference check, not the general
+        # mention-matcher above: a genuine new question that just happens
+        # to name the repo (e.g. "does gandalf support push notifications?")
+        # must be answered as asked, not have its text silently replaced by
+        # the old pending question.
+        if _is_bare_repo_reference(repo["slug"], question) or _is_bare_repo_reference(repo["name"], question):
             pending_question = _take_pending_question(channel_id, thread_ts, slack_user)
             if pending_question:
                 question = pending_question

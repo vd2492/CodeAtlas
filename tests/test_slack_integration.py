@@ -945,6 +945,56 @@ class SlackMentionRoutingTests(unittest.TestCase):
         self.assertEqual(slack_routes._strip_mention("<@U1><@U2> hi"), "hi")
         self.assertEqual(slack_routes._strip_mention("no mention here"), "no mention here")
 
+    def test_repo_reference_match_exact_and_formatting_wrapped(self):
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "Sfx-Riderapp"))
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "`Sfx-Riderapp`"))
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "**sfx-riderapp**"))
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "  Sfx-Riderapp  "))
+        self.assertFalse(slack_routes._repo_reference_match("", "sfx-riderapp"))
+        self.assertFalse(slack_routes._repo_reference_match("sfx-riderapp", ""))
+
+    def test_repo_reference_match_short_fragment_of_a_longer_name(self):
+        """A short reply naming part of the repo's name (e.g. "riderapp"
+        for "Sfx-Riderapp") should still match, not just the full name."""
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "riderapp"))
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "Riderapp"))
+        self.assertTrue(slack_routes._repo_reference_match("sfx-riderapp", "sfx"))
+        # "rider" alone is not a whole word within "sfx-riderapp" (it's a
+        # partial fragment of the word "riderapp"), so it must not match.
+        self.assertFalse(slack_routes._repo_reference_match("sfx-riderapp", "rider"))
+
+    def test_repo_reference_match_candidate_within_a_full_sentence(self):
+        self.assertTrue(
+            slack_routes._repo_reference_match("gandalf", "how do I go online in gandalf")
+        )
+        self.assertFalse(
+            slack_routes._repo_reference_match("gandalf", "how does login work?")
+        )
+
+    def test_is_bare_repo_reference_matches_exact_fragment_and_formatting(self):
+        self.assertTrue(slack_routes._is_bare_repo_reference("sfx-riderapp", "Sfx-Riderapp"))
+        self.assertTrue(slack_routes._is_bare_repo_reference("sfx-riderapp", "`Sfx-Riderapp`"))
+        self.assertTrue(slack_routes._is_bare_repo_reference("sfx-riderapp", "riderapp"))
+        self.assertTrue(slack_routes._is_bare_repo_reference("sfx-riderapp", "Riderapp"))
+        self.assertFalse(slack_routes._is_bare_repo_reference("sfx-riderapp", ""))
+        self.assertFalse(slack_routes._is_bare_repo_reference("", "sfx-riderapp"))
+
+    def test_is_bare_repo_reference_rejects_a_full_sentence_mentioning_the_repo(self):
+        """The key difference from _repo_reference_match: a real, freestanding
+        question that happens to name the repo is NOT a bare reference, even
+        though the repo name appears as a whole word inside it -- otherwise
+        a genuine follow-up question would be mistaken for "just the repo
+        name" and have its text silently replaced by a stale pending
+        question (see _run_mention_job's resume-shortcut)."""
+        self.assertTrue(
+            slack_routes._repo_reference_match("gandalf", "does gandalf support push notifications?")
+        )
+        self.assertFalse(
+            slack_routes._is_bare_repo_reference(
+                "gandalf", "does gandalf support push notifications?"
+            )
+        )
+
     def test_infer_repo_matches_explicit_name_or_slug(self):
         repos = [
             {"slug": "gandalf", "name": "Gandalf Android"},
@@ -958,6 +1008,15 @@ class SlackMentionRoutingTests(unittest.TestCase):
             slack_routes._infer_repo_from_text("frodo supply flow question", repos)["slug"],
             "frodo",
         )
+
+    def test_infer_repo_matches_a_short_fragment_of_a_longer_name(self):
+        repos = [
+            {"slug": "gandalf", "name": "Sfx-Riderapp"},
+            {"slug": "frodo", "name": "Frodo Backend"},
+            {"slug": "sortbuddy", "name": "SortBuddy"},
+        ]
+        self.assertEqual(slack_routes._infer_repo_from_text("riderapp", repos)["slug"], "gandalf")
+        self.assertEqual(slack_routes._infer_repo_from_text("Riderapp", repos)["slug"], "gandalf")
 
     def test_infer_repo_returns_none_when_ambiguous_or_unmatched(self):
         repos = [
@@ -1076,6 +1135,82 @@ class SlackMentionJobTests(unittest.TestCase):
         values = run_job.call_args.args[0]
         self.assertEqual(values["repo_slug"], "gandalf")
         self.assertEqual(values["question"], "how do I go online?")
+
+    def _assert_reply_resumes_logout_question(self, reply_text):
+        """Shared drive for the resume-shortcut tests below. Keeps the same
+        multi-repo list on BOTH calls (unlike a single-repo list, which
+        would resolve via the sole-published-repo fallback regardless of
+        whether the reply text actually matched anything) so this actually
+        exercises the matching logic, not the fallback."""
+        repos = [
+            {"id": 1, "slug": "gandalf", "name": "Sfx-Riderapp", "status": "published"},
+            {"id": 2, "slug": "frodo", "name": "Frodo Backend", "status": "published"},
+            {"id": 3, "slug": "sortbuddy", "name": "SortBuddy", "status": "published"},
+        ]
+        ambiguous_event = self._event(text="how does logout work?", ts="100.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_send_user_message"):
+            slack_routes._run_mention_job(self._payload(ambiguous_event), ambiguous_event)
+
+        reply_event = self._event(text=reply_text, ts="100.002", thread_ts="100.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_default_branch_name", return_value="release/v26.10"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch"), \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(reply_event), reply_event)
+
+        run_job.assert_called_once()
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["repo_slug"], "gandalf")
+        self.assertEqual(values["question"], "how does logout work?")
+
+    def test_backtick_wrapped_repo_name_reply_still_resumes(self):
+        """The suggestion list wraps each repo name in backticks
+        (`` `Sfx-Riderapp` ``); copy-pasting one back carries those
+        backticks along, and that must still resume the pending question
+        instead of being answered as a literal new one."""
+        self._assert_reply_resumes_logout_question("`Sfx-Riderapp`")
+
+    def test_partial_repo_name_reply_still_resumes(self):
+        """A short fragment of the repo's name ("riderapp" for
+        "Sfx-Riderapp"), with no other published repo it could be confused
+        with, should resume the pending question too -- not just the full
+        name."""
+        self._assert_reply_resumes_logout_question("riderapp")
+        self._assert_reply_resumes_logout_question("Riderapp")
+
+    def test_new_question_naming_a_repo_is_not_mistaken_for_a_bare_reply(self):
+        """A genuine new question that happens to name a repo (e.g. after
+        the ambiguity prompt, the user just asks their real, specific
+        question instead of replying with a bare repo name) must be
+        answered as asked -- not have its text silently replaced by the
+        stale pending question just because the repo name appears in it."""
+        repos = [
+            {"id": 1, "slug": "gandalf", "name": "Sfx-Riderapp", "status": "published"},
+            {"id": 2, "slug": "frodo", "name": "Frodo Backend", "status": "published"},
+            {"id": 3, "slug": "sortbuddy", "name": "SortBuddy", "status": "published"},
+        ]
+        ambiguous_event = self._event(text="how do I go online?", ts="100.001")
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_send_user_message"):
+            slack_routes._run_mention_job(self._payload(ambiguous_event), ambiguous_event)
+
+        reply_event = self._event(
+            text="actually, does gandalf support push notifications?",
+            ts="100.002", thread_ts="100.001",
+        )
+        with patch.object(slack_routes.ask_service, "published_repos", return_value=repos), \
+                patch.object(slack_routes, "_default_branch_name", return_value="release/v26.10"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes.ask_service, "prepare_repo_branch"), \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(self._payload(reply_event), reply_event)
+
+        run_job.assert_called_once()
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["repo_slug"], "gandalf")
+        self.assertEqual(values["question"], "actually, does gandalf support push notifications?")
 
     def test_bare_repo_name_reply_in_different_thread_is_not_resumed(self):
         """Two concurrent ambiguous questions in the same channel/DM must
