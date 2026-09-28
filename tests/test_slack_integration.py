@@ -678,6 +678,7 @@ class SlackEventsTests(unittest.TestCase):
         self.env.start()
         slack_routes._SEEN_EVENT_IDS.clear()
         slack_routes._SEEN_MESSAGE_KEYS.clear()
+        slack_routes._MENTIONED_THREADS.clear()
 
     def tearDown(self):
         self.env.stop()
@@ -807,6 +808,95 @@ class SlackEventsTests(unittest.TestCase):
         with patch.object(slack_routes, "_start_mention_job") as start:
             self._post_events(payload)
         start.assert_not_called()
+
+    def test_reply_in_a_mentioned_thread_is_answered_without_a_mention(self):
+        mention_payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev6a",
+            "event": {
+                "type": "app_mention",
+                "channel": "C1",
+                "user": "U1",
+                "ts": "200.001",
+                "text": "<@B1> how do I go online?",
+            },
+        }
+        reply_payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev6b",
+            "event": {
+                "type": "message",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "ts": "200.002",
+                "thread_ts": "200.001",
+                "text": "and what about the payments flow?",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(mention_payload)
+            response = self._post_events(reply_payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(start.call_count, 2)
+        _, second_event = start.call_args_list[1].args
+        self.assertEqual(second_event["ts"], "200.002")
+
+    def test_reply_in_an_unmentioned_thread_is_still_ignored(self):
+        """A thread_ts alone isn't enough -- CodeAtlas must have actually
+        answered in that specific thread first."""
+        payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev6c",
+            "event": {
+                "type": "message",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "ts": "300.002",
+                "thread_ts": "300.001",
+                "text": "replying to someone else's thread",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(payload)
+        start.assert_not_called()
+
+    def test_reply_in_a_mentioned_thread_with_subtype_is_ignored(self):
+        mention_payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev6d",
+            "event": {
+                "type": "app_mention",
+                "channel": "C1",
+                "user": "U1",
+                "ts": "400.001",
+                "text": "<@B1> how do I go online?",
+            },
+        }
+        edit_payload = {
+            "type": "event_callback",
+            "team_id": "T123",
+            "event_id": "Ev6e",
+            "event": {
+                "type": "message",
+                "channel": "C1",
+                "channel_type": "channel",
+                "user": "U1",
+                "ts": "400.002",
+                "thread_ts": "400.001",
+                "text": "edited text",
+                "subtype": "message_changed",
+            },
+        }
+        with patch.object(slack_routes, "_start_mention_job") as start:
+            self._post_events(mention_payload)
+            self._post_events(edit_payload)
+        start.assert_called_once()
 
     def test_same_message_is_not_answered_twice_across_event_types(self):
         """A DM @mention can fire both app_mention and message.im for the

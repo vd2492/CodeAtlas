@@ -86,6 +86,17 @@ class _TTLCache:
             self._store[key] = (None, now)
             return False
 
+    def has(self, key: Optional[str]) -> bool:
+        """Check whether `key` is present and unexpired, without touching it
+        (unlike `seen`, which inserts on a miss; unlike `pop`, which removes
+        on a hit) so repeated lookups keep matching until the TTL elapses."""
+        if not key:
+            return False
+        now = time.time()
+        with self._lock:
+            self._evict_locked(now)
+            return key in self._store
+
     def set(self, key: Optional[str], value: object) -> None:
         if not key:
             return
@@ -155,6 +166,28 @@ def _take_pending_question(
     if not channel or not thread_ts or not user:
         return None
     return _PENDING_REPO_QUESTIONS.pop(f"{channel}:{thread_ts}:{user}")
+
+
+_THREAD_MEMORY_TTL_SECONDS = 24 * 60 * 60
+
+# Once CodeAtlas answers an @mention inside a channel thread, later replies
+# in that same thread are direct questions too, the same way every message
+# in a DM already is -- no repeated @mention required. Scoped to the thread
+# (not the channel) so unrelated chatter elsewhere in the channel, or in a
+# different thread, is still ignored.
+_MENTIONED_THREADS = _TTLCache(_THREAD_MEMORY_TTL_SECONDS)
+
+
+def _remember_mentioned_thread(channel: Optional[str], thread_ts: Optional[str]) -> None:
+    if not channel or not thread_ts:
+        return
+    _MENTIONED_THREADS.set(f"{channel}:{thread_ts}", True)
+
+
+def _is_mentioned_thread(channel: Optional[str], thread_ts: Optional[str]) -> bool:
+    if not channel or not thread_ts:
+        return False
+    return _MENTIONED_THREADS.has(f"{channel}:{thread_ts}")
 
 
 def _env_bool(name: str, default: str = "false") -> bool:
@@ -1553,7 +1586,25 @@ async def slack_events(request: Request):
         and not event.get("subtype")
         and not event.get("bot_id")
     )
-    if is_channel_mention or is_dm_message:
+    # A reply inside a channel thread CodeAtlas already answered in doesn't
+    # need another @mention either, same idea as a DM. Requires Slack to
+    # actually deliver plain channel/group messages (message.channels /
+    # message.groups event subscriptions, with the matching
+    # channels:history / groups:history bot scopes) -- app_mention and
+    # message.im alone, the pre-existing subscriptions, never fire for a
+    # mention-less reply.
+    is_known_thread_reply = (
+        event_type == "message"
+        and event.get("channel_type") != "im"
+        and not event.get("subtype")
+        and not event.get("bot_id")
+        and _is_mentioned_thread(event.get("channel"), event.get("thread_ts"))
+    )
+    if is_channel_mention:
+        _remember_mentioned_thread(
+            event.get("channel"), event.get("thread_ts") or event.get("ts")
+        )
+    if is_channel_mention or is_dm_message or is_known_thread_reply:
         # A DM mention can trigger both app_mention and message.im for the
         # same message; only answer it once.
         if _already_answered_message(event.get("channel"), event.get("ts")):
