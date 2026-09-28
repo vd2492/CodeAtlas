@@ -4224,13 +4224,15 @@
       return 'mimo';
     }
 
-    // "mimo" is the pre-existing value for "the shared tier" and may still be
-    // in a returning user's localStorage, so it resolves like the server does.
+    // "mimo"/"shared" are pre-registry values for "the shared tier" (from
+    // before multiple named shared LLMs existed) and may still be in a
+    // returning user's localStorage. They're not a deliberate choice of the
+    // Mimo model specifically, so they resolve to today's configured default
+    // shared LLM, same as a first-time visit with no saved mode at all.
     function resolveSharedLlmMode(mode) {
       if (!mode) return defaultSharedLlmMode();
       if (mode === 'mimo' || mode === 'shared') {
-        const named = SHARED_LLMS.find(item => item.id === 'mimo');
-        return named ? sharedLlmMode(named.id) : defaultSharedLlmMode();
+        return defaultSharedLlmMode();
       }
       if (String(mode || '').startsWith('shared:')) {
         const id = String(mode).slice('shared:'.length);
