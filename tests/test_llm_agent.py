@@ -814,6 +814,53 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
         sleep.assert_called_once()
 
+    def test_rate_limit_retry_waits_for_the_time_the_provider_names(self):
+        limited = FakeResponse(
+            {"error": "rate"},
+            status_code=429,
+            text="Rate limit reached ... Please try again in 8.442s. Visit x",
+        )
+        success = FakeResponse({"ok": True})
+        with patch.object(client, "PROVIDER_RETRIES", 2), patch(
+            "app.llm.client.requests.post",
+            side_effect=[limited, success],
+        ), patch("app.llm.client.time.sleep") as sleep:
+            response = client._post_with_retries("https://example.test")
+
+        self.assertIs(response, success)
+        waited = sleep.call_args.args[0]
+        self.assertGreaterEqual(waited, 8.442)
+        self.assertLess(waited, 9.2)
+
+    def test_rate_limit_hint_in_milliseconds_and_retry_after_header(self):
+        ms = FakeResponse({}, status_code=429, text="try again in 250ms")
+        self.assertAlmostEqual(client._rate_limit_hint_seconds(ms), 0.25)
+        header = FakeResponse(
+            {}, status_code=429, text="", headers={"Retry-After": "12"}
+        )
+        self.assertGreaterEqual(client._provider_retry_delay(0, header), 12)
+
+    def test_rate_limit_delay_is_capped(self):
+        huge = FakeResponse({}, status_code=429, text="try again in 900s")
+        with patch.object(client, "RATE_LIMIT_MAX_DELAY_SECONDS", 20.0):
+            self.assertLessEqual(client._provider_retry_delay(0, huge), 20.0)
+
+    def test_server_error_delay_keeps_short_cap(self):
+        busy = FakeResponse(
+            {}, status_code=503, text="try again in 30s", headers={"Retry-After": "30"}
+        )
+        self.assertLessEqual(
+            client._provider_retry_delay(0, busy),
+            client.PROVIDER_RETRY_MAX_DELAY_SECONDS,
+        )
+
+    def test_exhausted_rate_limit_shows_friendly_error(self):
+        raw = "Rate limit reached for gpt in project proj_SECRET organization org-SECRET"
+        error = client._provider_http_error(429, raw)
+        self.assertIn("rate limited", str(error))
+        self.assertNotIn("proj_SECRET", str(error))
+        self.assertEqual(str(client._provider_http_error(401, "bad")), "[401] bad")
+
     def test_provider_post_does_not_retry_authentication_failure(self):
         unauthorized = FakeResponse(
             {"error": "invalid key"},

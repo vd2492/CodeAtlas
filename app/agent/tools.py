@@ -27,11 +27,11 @@ from ..retrieval.relation_utils import (
 
 
 MAX_READ_LINES = int(os.environ.get("CODEATLAS_AGENT_READ_LINES", "240"))
-MAX_READ_CHARS = int(os.environ.get("CODEATLAS_AGENT_READ_CHARS", "30000"))
+MAX_READ_CHARS = int(os.environ.get("CODEATLAS_AGENT_READ_CHARS", "16000"))
 MAX_READ_FILE_BYTES = int(os.environ.get("CODEATLAS_AGENT_READ_FILE_BYTES", "2000000"))
 MAX_SEARCH_FILES = int(os.environ.get("CODEATLAS_AGENT_SEARCH_FILES", "3000"))
 MAX_SEARCH_FILE_BYTES = int(os.environ.get("CODEATLAS_AGENT_SEARCH_FILE_BYTES", "300000"))
-MAX_SEARCH_RESULT_CHARS = int(os.environ.get("CODEATLAS_AGENT_TOOL_RESULT_CHARS", "45000"))
+MAX_SEARCH_RESULT_CHARS = int(os.environ.get("CODEATLAS_AGENT_TOOL_RESULT_CHARS", "16000"))
 
 # A tool call the model can use to pause and ask the user a clarifying
 # question instead of guessing, e.g. when two unrelated features expose a
