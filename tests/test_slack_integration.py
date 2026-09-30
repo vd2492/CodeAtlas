@@ -535,7 +535,7 @@ class SlackIntegrationTests(unittest.TestCase):
 
         self.assertEqual(
             blocks[1]["text"]["text"],
-            "*Question asked:*\nHow does login work?",
+            "*Q.* How does login work?",
         )
         self.assertEqual(blocks[2]["text"]["text"], "Login creates a session.")
         action_ids = [item["action_id"] for item in blocks[-1]["elements"]]
@@ -863,7 +863,7 @@ class SlackEventsTests(unittest.TestCase):
             self._post_events(payload)
         start.assert_not_called()
 
-    def test_reply_in_a_mentioned_thread_is_answered_without_a_mention(self):
+    def test_reply_in_a_mentioned_thread_is_ignored_without_a_mention(self):
         mention_payload = {
             "type": "event_callback",
             "team_id": "T123",
@@ -896,9 +896,7 @@ class SlackEventsTests(unittest.TestCase):
             response = self._post_events(reply_payload)
         self.assertEqual(response.status_code, 200)
         start_mention.assert_called_once()
-        start_follow_up.assert_called_once()
-        _, second_event = start_follow_up.call_args.args
-        self.assertEqual(second_event["ts"], "200.002")
+        start_follow_up.assert_not_called()
 
     def test_reply_in_an_unmentioned_thread_is_still_ignored(self):
         """A thread_ts alone isn't enough -- CodeAtlas must have actually

@@ -976,7 +976,7 @@ def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
     if question:
         blocks.append({
             "type": "section",
-            "text": _mrkdwn(f"*Question asked:*\n{question}"),
+            "text": _mrkdwn(f"*Q.* {question}"),
         })
     chunks = _mrkdwn_chunks(markdown_to_mrkdwn(answer))
     for chunk in chunks[:8]:
@@ -1734,20 +1734,9 @@ async def slack_events(request: Request):
         and not event.get("subtype")
         and not event.get("bot_id")
     )
-    # A reply inside a channel thread CodeAtlas already answered in doesn't
-    # need another @mention either, same idea as a DM. Requires Slack to
-    # actually deliver plain channel/group messages (message.channels /
-    # message.groups event subscriptions, with the matching
-    # channels:history / groups:history bot scopes) -- app_mention and
-    # message.im alone, the pre-existing subscriptions, never fire for a
-    # mention-less reply.
-    is_known_thread_reply = (
-        event_type == "message"
-        and event.get("channel_type") != "im"
-        and not event.get("subtype")
-        and not event.get("bot_id")
-        and _is_mentioned_thread(event.get("channel"), event.get("thread_ts"))
-    )
+    # In channels (including threads) CodeAtlas only responds when @mentioned;
+    # mention-less thread replies are ignored.
+    is_known_thread_reply = False
     if is_channel_mention:
         _remember_mentioned_thread(
             event.get("channel"), event.get("thread_ts") or event.get("ts")
