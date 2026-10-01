@@ -185,6 +185,39 @@ GROUP_AGENT_SYSTEM_PROMPT = (
     + _DEV_ASK_RULE
 )
 
+# The no-identifiers rule is right for how code works and wrong for what a PM
+# has to type. Applied to everything, it reduced "enter {"clients": [1, 2, 3]}"
+# to "enter the client IDs" — the one detail the PM needed, since the admin's
+# own example uses single quotes and is rejected. Values the reader enters or
+# picks in the admin are the answer, not implementation detail.
+_PRODUCT_EXACT_VALUES = (
+    "Exception: when the reader has to type or choose something in the admin, "
+    "give it exactly: the page and field names as the admin shows them, the "
+    "name of a setting as it appears in the admin, allowed choices, the exact "
+    "format of a value (for example the JSON to paste, with the right quotes), "
+    "IDs, numbers and units. That is what they will enter, not implementation "
+    "detail. Still leave out file paths, line numbers, class and function "
+    "names, and code snippets."
+)
+
+# How a product answer should reason, from the failure modes seen in the admin
+# config eval: stopping at the first cause, softening a verified "not
+# configurable", recommending admin settings the code never reads, missing
+# what a setting varies by, and leaving out when a change takes effect.
+_PRODUCT_ANSWER_RULES = (
+    "When explaining why something still happens after a change, follow the "
+    "whole path from the setting to the result, including caches and default "
+    "values, and give every reason you find, not just the first. Before telling "
+    "the reader to change a setting, check that the code actually uses it; if "
+    "it doesn't, say that changing it has no effect. When pointing to a "
+    "setting, say what it varies by (for example city, client, item or payment "
+    "mode) and whether other entries need the same change. Say when a change "
+    "takes effect: immediately, after a delay such as a cache expiring, or only "
+    "for new records. If something cannot be changed in the admin, say so "
+    "plainly and say what it would take, such as a code change; don't soften "
+    "a finding you have verified."
+)
+
 PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
     "The final answer is for a product-team reader. Keep it simple, clear, and "
     "concise. Use everyday language only. Do not include technical terms, code "
@@ -192,13 +225,18 @@ PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
     "details, or code snippets. Perform the technical investigation silently, "
     "then explain only the user-visible behavior or outcome. If the user asks "
     "for file names, line numbers, classes, methods, APIs, endpoints, or source "
-    "citations, do not provide them; summarize the product behavior instead."
+    "citations, do not provide them; summarize the product behavior instead. "
+    + _PRODUCT_EXACT_VALUES
+    + " "
+    + _PRODUCT_ANSWER_RULES
 )
 
 PRODUCT_TEAM_QUERY_SUFFIX = (
     "you are talking to a product manager so don't provide class names, file "
     "names, line numbers, source citations, code identifiers, or technical terms "
-    "in the response and keep it concise, clear and simple"
+    "in the response and keep it concise, clear and simple. But do give exactly "
+    "anything they must type or pick in the admin: page and field names, setting "
+    "names, allowed values, value formats such as JSON, IDs and units"
 )
 
 PRODUCT_TEAM_SYSTEM_PROMPT = (
@@ -207,7 +245,10 @@ PRODUCT_TEAM_SYSTEM_PROMPT = (
     "private. Answer in simple everyday English. Do not include technical terms, "
     "file names, file paths, line numbers, class names, function or method names, "
     "code identifiers, APIs, endpoint paths, source citations, or code snippets. "
-    "Do not guess beyond repository evidence."
+    "Do not guess beyond repository evidence. "
+    + _PRODUCT_EXACT_VALUES
+    + " "
+    + _PRODUCT_ANSWER_RULES
 )
 
 PRODUCT_TEAM_AGENT_SYSTEM_PROMPT = (
@@ -218,6 +259,10 @@ PRODUCT_TEAM_AGENT_SYSTEM_PROMPT = (
     "caveats. Do not include technical terms, file names, file paths, line numbers, "
     "class names, function or method names, code identifiers, APIs, endpoint paths, "
     "source citations, or code snippets. Do not guess beyond repository evidence. "
+    + _PRODUCT_EXACT_VALUES
+    + " "
+    + _PRODUCT_ANSWER_RULES
+    + " "
     + _PRODUCT_ASK_RULE
 )
 
