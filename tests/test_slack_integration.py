@@ -1585,3 +1585,130 @@ class SlackGroupMentionTests(unittest.TestCase):
             "user_type": slack_routes.USER_PRODUCT,
         })
         self.assertIn("Payments stack", label)
+
+
+class SlackGroupModalTests(unittest.TestCase):
+    GROUP = {
+        "id": 1, "slug": "payments-stack", "name": "Payments stack",
+        "members": [
+            {"repo_slug": "figwit", "repo_name": "Figwit", "repo_status": "published"},
+            {"repo_slug": "erebor", "repo_name": "Erebor", "repo_status": "published"},
+        ],
+    }
+    REPO = {"id": 1, "name": "Payments", "slug": "payments", "status": "published"}
+
+    def _view(self, metadata, groups):
+        with patch.object(slack_routes.db, "list_repo_groups", return_value=groups), \
+                patch.object(slack_routes, "_repo_by_slug", return_value=self.REPO), \
+                patch.object(slack_routes.ask_service, "published_repos", return_value=[self.REPO]), \
+                patch.object(slack_routes.ask_service, "approved_branch_options", return_value=[]):
+            return slack_routes.build_ask_view(metadata)
+
+    @staticmethod
+    def _block(view, block_id):
+        return next((b for b in view["blocks"] if b.get("block_id") == block_id), None)
+
+    @staticmethod
+    def _ask_types(view):
+        block = SlackGroupModalTests._block(view, slack_routes.BLOCK_ASK_TYPE)
+        return [option["value"] for option in block["element"]["options"]]
+
+    def test_without_groups_the_modal_is_unchanged(self):
+        view = self._view({"repo_slug": "payments"}, [])
+        self.assertEqual(self._ask_types(view),
+                         [slack_routes.ASK_SINGLE, slack_routes.ASK_COMPARE])
+        self.assertIsNotNone(self._block(view, slack_routes.BLOCK_REPO))
+        self.assertIsNone(self._block(view, slack_routes.BLOCK_GROUP))
+
+    def test_groups_add_an_ask_type_but_keep_the_repo_form(self):
+        view = self._view({"repo_slug": "payments"}, [self.GROUP])
+        self.assertEqual(self._ask_types(view), [
+            slack_routes.ASK_SINGLE, slack_routes.ASK_COMPARE, slack_routes.ASK_GROUP,
+        ])
+        self.assertIsNotNone(self._block(view, slack_routes.BLOCK_BRANCH))
+
+    def test_group_mode_swaps_repo_and_branch_for_a_group_picker(self):
+        view = self._view({
+            "ask_type": slack_routes.ASK_GROUP, "group_slug": "payments-stack",
+            "user_type": slack_routes.USER_PRODUCT,
+        }, [self.GROUP])
+        for block_id in (slack_routes.BLOCK_REPO, slack_routes.BLOCK_BRANCH,
+                         slack_routes.BLOCK_BASE_BRANCH, slack_routes.BLOCK_COMPARE_BRANCH):
+            self.assertIsNone(self._block(view, block_id))
+        group_block = self._block(view, slack_routes.BLOCK_GROUP)
+        self.assertEqual(group_block["element"]["initial_option"]["value"], "payments-stack")
+        self.assertIn("Figwit, Erebor", json.dumps(view))
+        for block_id in (slack_routes.BLOCK_USER_TYPE, slack_routes.BLOCK_QUESTION):
+            self.assertIsNotNone(self._block(view, block_id))
+
+    def test_group_mode_without_groups_falls_back_to_the_repo_form(self):
+        view = self._view({"ask_type": slack_routes.ASK_GROUP, "repo_slug": "payments"}, [])
+        self.assertIsNotNone(self._block(view, slack_routes.BLOCK_REPO))
+        self.assertEqual(json.loads(view["private_metadata"])["ask_type"], slack_routes.ASK_SINGLE)
+
+    def test_unpublished_member_hides_the_group(self):
+        broken = {**self.GROUP, "members": [
+            self.GROUP["members"][0],
+            {**self.GROUP["members"][1], "repo_status": "indexed"},
+        ]}
+        view = self._view({"repo_slug": "payments"}, [broken])
+        self.assertNotIn(slack_routes.ASK_GROUP, self._ask_types(view))
+
+    def _submission(self, group_slug="payments-stack", question="how do refunds work?"):
+        values = {}
+        if group_slug:
+            values[slack_routes.BLOCK_GROUP] = {
+                slack_routes.ACTION_GROUP: {"selected_option": {"value": group_slug}}}
+        values[slack_routes.BLOCK_ASK_TYPE] = {
+            slack_routes.ACTION_ASK_TYPE: {"selected_option": {"value": slack_routes.ASK_GROUP}}}
+        values[slack_routes.BLOCK_USER_TYPE] = {
+            slack_routes.ACTION_USER_TYPE: {"selected_option": {"value": slack_routes.USER_DEV}}}
+        values[slack_routes.BLOCK_QUESTION] = {
+            slack_routes.ACTION_QUESTION: {"value": question}}
+        return {
+            "type": "view_submission",
+            "team": {"id": "T123"},
+            "user": {"id": "U1"},
+            "view": {
+                "callback_id": slack_routes.CALLBACK_ASK,
+                "private_metadata": json.dumps({"team_id": "T123", "channel_id": "C1"}),
+                "state": {"values": values},
+            },
+        }
+
+    def test_group_submission_starts_a_group_answer(self):
+        with patch.object(slack_routes.db, "list_repo_groups", return_value=[self.GROUP]), \
+                patch.object(slack_routes.db, "get_repo_group_by_slug", return_value=self.GROUP), \
+                patch.object(slack_routes, "_start_answer_job") as start:
+            result = slack_routes._handle_view_submission(self._submission())
+        self.assertEqual(result, {})
+        values = start.call_args.args[0]
+        self.assertEqual(values["ask_type"], slack_routes.ASK_GROUP)
+        self.assertEqual(values["group_slug"], "payments-stack")
+        self.assertEqual(values["group_name"], "Payments stack")
+        self.assertEqual(values["slack_user_id"], "U1")
+
+    def test_group_submission_errors_point_at_group_blocks(self):
+        with patch.object(slack_routes.db, "list_repo_groups", return_value=[self.GROUP]), \
+                patch.object(slack_routes.db, "get_repo_group_by_slug", return_value=None), \
+                patch.object(slack_routes, "_start_answer_job") as start:
+            result = slack_routes._handle_view_submission(
+                self._submission(group_slug=None, question="")
+            )
+        start.assert_not_called()
+        self.assertEqual(set(result["errors"]),
+                         {slack_routes.BLOCK_GROUP, slack_routes.BLOCK_QUESTION})
+
+    def test_new_question_from_a_group_answer_reopens_the_group_form(self):
+        topic = {"ask_type": slack_routes.ASK_GROUP, "group_slug": "payments-stack",
+                 "group_name": "Payments stack", "question": "q"}
+        payload = {"trigger_id": "trig", "actions": [{
+            "action_id": slack_routes.ACTION_NEW,
+            "value": slack_routes._private_metadata(topic),
+        }]}
+        with patch.object(slack_routes.db, "list_repo_groups", return_value=[self.GROUP]), \
+                patch.object(slack_routes, "_slack_api") as api:
+            slack_routes._handle_block_actions(payload)
+        view = api.call_args.args[1]["view"]
+        self.assertIsNotNone(self._block(view, slack_routes.BLOCK_GROUP))
+        self.assertNotIn("initial_value", json.dumps(self._block(view, slack_routes.BLOCK_QUESTION)))

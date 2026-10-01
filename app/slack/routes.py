@@ -40,6 +40,8 @@ BLOCK_BASE_BRANCH = "base_branch"
 ACTION_BASE_BRANCH = "base_branch_select"
 BLOCK_COMPARE_BRANCH = "compare_branch"
 ACTION_COMPARE_BRANCH = "compare_branch_select"
+BLOCK_GROUP = "repo_group"
+ACTION_GROUP = "repo_group_select"
 BLOCK_USER_TYPE = "user_type"
 ACTION_USER_TYPE = "user_type_select"
 BLOCK_QUESTION = "question"
@@ -611,6 +613,27 @@ def _infer_group_from_text(
     return matches[0] if len(matches) == 1 else None
 
 
+def _usable_groups() -> list[dict]:
+    """Groups the modal can offer: at least two members, all published.
+    Anything else would only fail after the user had filled in the form."""
+    return [
+        group
+        for group in _safe_repo_groups()
+        if len(group.get("members") or []) >= 2
+        and all(member["repo_status"] == "published" for member in group["members"])
+    ][:100]
+
+
+def _group_by_slug(slug: Optional[str]) -> Optional[dict]:
+    if not slug:
+        return None
+    try:
+        return db.get_repo_group_by_slug(slug)
+    except Exception:
+        logger.exception("Could not read repo group %s.", slug)
+        return None
+
+
 def _matching_option(options: list[dict], value: Optional[str]) -> Optional[dict]:
     if not value:
         return None
@@ -635,6 +658,8 @@ def _selected_option(value: Optional[str], label: str = None) -> Optional[dict]:
 
 
 def _ask_type_option(value: str) -> dict:
+    if value == ASK_GROUP:
+        return _option("Repo group answer", ASK_GROUP)
     if value == ASK_COMPARE:
         return _option("Compare 2 branch answer", ASK_COMPARE)
     return _option("Single branch answer", ASK_SINGLE)
@@ -699,6 +724,19 @@ def build_ask_view(metadata: dict) -> dict:
     ask_type = metadata.get("ask_type") or ASK_SINGLE
     user_type = metadata.get("user_type") or USER_DEV
     repo_slug = metadata.get("repo_slug")
+    groups = _usable_groups()
+    ask_type_options = [
+        _ask_type_option(ASK_SINGLE),
+        _ask_type_option(ASK_COMPARE),
+    ]
+    if groups:
+        ask_type_options.append(_ask_type_option(ASK_GROUP))
+    elif ask_type == ASK_GROUP:
+        # No group left to choose (e.g. deleted since this form was opened).
+        ask_type = ASK_SINGLE
+        metadata = {**metadata, "ask_type": ASK_SINGLE}
+    if ask_type == ASK_GROUP:
+        return _build_group_ask_view(metadata, groups, ask_type_options, user_type)
     repo_options = _repo_options()
     repo_initial = _repo_option(repo_slug, repo_options)
     blocks = [
@@ -723,10 +761,7 @@ def build_ask_view(metadata: dict) -> dict:
             "element": {
                 "type": "static_select",
                 "action_id": ACTION_ASK_TYPE,
-                "options": [
-                    _ask_type_option(ASK_SINGLE),
-                    _ask_type_option(ASK_COMPARE),
-                ],
+                "options": ask_type_options,
                 "initial_option": _ask_type_option(ask_type),
             },
         },
@@ -780,6 +815,96 @@ def build_ask_view(metadata: dict) -> dict:
             "elements": [_mrkdwn(status_text)],
         })
 
+    blocks.extend([
+        {
+            "type": "input",
+            "block_id": BLOCK_USER_TYPE,
+            "label": _plain("User type"),
+            "element": {
+                "type": "static_select",
+                "action_id": ACTION_USER_TYPE,
+                "options": [
+                    _user_type_option(USER_DEV),
+                    _user_type_option(USER_PRODUCT),
+                ],
+                "initial_option": _user_type_option(user_type),
+            },
+        },
+        {
+            "type": "input",
+            "block_id": BLOCK_QUESTION,
+            "label": _plain("Question"),
+            "element": {
+                "type": "plain_text_input",
+                "action_id": ACTION_QUESTION,
+                "multiline": True,
+                **(
+                    {"initial_value": str(metadata.get("question"))[:3000]}
+                    if metadata.get("question")
+                    else {}
+                ),
+            },
+        },
+    ])
+    return {
+        "type": "modal",
+        "callback_id": CALLBACK_ASK,
+        "title": _plain("CodeAtlas"),
+        "submit": _plain("Submit"),
+        "close": _plain("Cancel"),
+        "private_metadata": _private_metadata(metadata),
+        "blocks": blocks,
+    }
+
+
+def _build_group_ask_view(
+    metadata: dict, groups: list[dict], ask_type_options: list[dict], user_type: str
+) -> dict:
+    """The ask modal in repo-group mode: a group picker takes the place of the
+    repository and branch pickers; everything else matches the repo form."""
+    group_options = [
+        _option(group["name"], group["slug"], group["slug"]) for group in groups
+    ]
+    group_initial = _matching_option(group_options, metadata.get("group_slug"))
+    blocks = [
+        {
+            "type": "input",
+            "block_id": BLOCK_GROUP,
+            "dispatch_action": True,
+            "label": _plain("Repo group"),
+            "element": {
+                "type": "static_select",
+                "action_id": ACTION_GROUP,
+                "placeholder": _plain("Select repo group"),
+                "options": group_options,
+                **({"initial_option": group_initial} if group_initial else {}),
+            },
+        },
+        {
+            "type": "input",
+            "block_id": BLOCK_ASK_TYPE,
+            "dispatch_action": True,
+            "label": _plain("Ask type"),
+            "element": {
+                "type": "static_select",
+                "action_id": ACTION_ASK_TYPE,
+                "options": ask_type_options,
+                "initial_option": _ask_type_option(ASK_GROUP),
+            },
+        },
+    ]
+    selected = next(
+        (group for group in groups if group["slug"] == metadata.get("group_slug")),
+        None,
+    )
+    if selected:
+        repos = ", ".join(member["repo_name"] for member in selected["members"])
+        blocks.append({
+            "type": "context",
+            "elements": [_mrkdwn(
+                _truncate(f"Searches these repositories together: {repos}.", 2900)
+            )],
+        })
     blocks.extend([
         {
             "type": "input",
@@ -883,6 +1008,11 @@ def _collect_view_values(payload: dict) -> dict:
         or USER_DEV,
         "question": (_state_value(state, BLOCK_QUESTION, ACTION_QUESTION) or "").strip(),
     }
+    group_slug = _state_value(state, BLOCK_GROUP, ACTION_GROUP) or metadata.get("group_slug")
+    if group_slug:
+        group = _group_by_slug(group_slug)
+        values["group_slug"] = group_slug
+        values["group_name"] = group["name"] if group else metadata.get("group_name")
     if slack_user_id:
         values["slack_user_id"] = slack_user_id
         values["user_id"] = values.get("user_id") or slack_user_id
@@ -890,6 +1020,8 @@ def _collect_view_values(payload: dict) -> dict:
 
 
 def _validate_ask_values(values: dict) -> dict:
+    if values.get("ask_type") == ASK_GROUP:
+        return _validate_group_ask_values(values)
     errors = {}
     if not values.get("repo_slug") or values.get("repo_slug") == "__none__":
         errors[BLOCK_REPO] = "Select a repository."
@@ -1679,6 +1811,17 @@ def _prepare_selected_branch(metadata: dict, action_id: str, branch_name: str) -
         metadata["branch_status"] = status
 
 
+def _validate_group_ask_values(values: dict) -> dict:
+    errors = {}
+    if not any(group["slug"] == values.get("group_slug") for group in _usable_groups()):
+        errors[BLOCK_GROUP] = "Select a repo group."
+    if values.get("user_type") not in {USER_DEV, USER_PRODUCT}:
+        errors[BLOCK_USER_TYPE] = "Select a valid user type."
+    if not values.get("question"):
+        errors[BLOCK_QUESTION] = "Enter a question."
+    return errors
+
+
 def _handle_block_actions(payload: dict) -> dict:
     actions = payload.get("actions") or []
     if not actions:
@@ -1688,11 +1831,6 @@ def _handle_block_actions(payload: dict) -> dict:
     if action_id == ACTION_NEW:
         metadata = _load_metadata(action.get("value") or "")
         metadata["question"] = ""
-        if metadata.get("ask_type") == ASK_GROUP:
-            # The ask modal is repo/branch based; start it fresh rather than
-            # carrying the group's keys into a single-branch form.
-            for key in ("ask_type", "group_slug", "group_name", "conversation_id"):
-                metadata.pop(key, None)
         _slack_api("views.open", {
             "trigger_id": payload["trigger_id"],
             "view": build_ask_view(metadata),

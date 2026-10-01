@@ -607,6 +607,9 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 3. Select ask type:
    - **Single branch answer** for one branch.
    - **Compare 2 branch answer** for branch-to-branch comparison.
+   - **Repo group answer** (shown only when an admin has created a group) to
+     ask across all repositories in a group; the repository and branch
+     pickers are replaced by a group picker.
 4. Select the required branch, or base and compare branches.
 5. Select user type.
 6. Enter the question and submit.
@@ -631,9 +634,7 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 5. To ask across several repositories, name a repo group in the question
    (e.g. `@codeatlas how does a refund flow through Payments stack?`). When
    groups exist, the "which repository?" prompt lists them too, and a short
-   reply with the group's name resumes the original question. Group answers
-   are available through mentions and DMs; the `/codeatlas` modal is still
-   single-repo and compare only.
+   reply with the group's name resumes the original question.
 
 ### Production and Staging Notes
 
