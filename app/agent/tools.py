@@ -27,11 +27,11 @@ from ..retrieval.relation_utils import (
 
 
 MAX_READ_LINES = int(os.environ.get("CODEATLAS_AGENT_READ_LINES", "240"))
-MAX_READ_CHARS = int(os.environ.get("CODEATLAS_AGENT_READ_CHARS", "30000"))
+MAX_READ_CHARS = int(os.environ.get("CODEATLAS_AGENT_READ_CHARS", "16000"))
 MAX_READ_FILE_BYTES = int(os.environ.get("CODEATLAS_AGENT_READ_FILE_BYTES", "2000000"))
 MAX_SEARCH_FILES = int(os.environ.get("CODEATLAS_AGENT_SEARCH_FILES", "3000"))
 MAX_SEARCH_FILE_BYTES = int(os.environ.get("CODEATLAS_AGENT_SEARCH_FILE_BYTES", "300000"))
-MAX_SEARCH_RESULT_CHARS = int(os.environ.get("CODEATLAS_AGENT_TOOL_RESULT_CHARS", "45000"))
+MAX_SEARCH_RESULT_CHARS = int(os.environ.get("CODEATLAS_AGENT_TOOL_RESULT_CHARS", "16000"))
 
 # A tool call the model can use to pause and ask the user a clarifying
 # question instead of guessing, e.g. when two unrelated features expose a
@@ -919,3 +919,70 @@ class ComparisonRepositoryToolbox:
             "result": RepositoryToolbox._trace_summary(result),
         })
         return encoded
+
+
+class GroupRepositoryToolbox(ComparisonRepositoryToolbox):
+    """Route read-only tool calls to any member of a repo group.
+
+    Same safety model as the A/B comparison toolbox: every call names one member
+    repo and is delegated to that repo's own workspace-scoped RepositoryToolbox,
+    so a call can never reach a repo outside the group.
+    """
+
+    comparison_mode = False
+    group_mode = True
+
+    def __init__(self, members: list[dict]):
+        self.repositories = {}
+        for member in members:
+            slug = member.get("slug") or ""
+            self.repositories[slug] = {
+                "label": member.get("name") or slug,
+                "name": member.get("name") or slug,
+                "slug": slug,
+                "workspace": member["workspace"],
+                "toolbox": RepositoryToolbox(member["workspace"]),
+            }
+        self.trace: list[dict] = []
+        self.tool_definitions = self._tool_definitions()
+        self.response_style_instruction = ""
+        self.config = None
+
+    def _tool_definitions(self) -> list[dict]:
+        definitions = json.loads(json.dumps(TOOL_DEFINITIONS))
+        slugs = list(self.repositories)
+        names = ", ".join(
+            f"{slug} ({repo['name']})" for slug, repo in self.repositories.items()
+        )
+        repo_description = f"Group repository to inspect. One of: {names}."
+        for definition in definitions:
+            if definition.get("name") == ASK_USER_TOOL_NAME:
+                continue
+            parameters = definition.setdefault("parameters", {})
+            properties = parameters.setdefault("properties", {})
+            properties["repo"] = {
+                "type": "string",
+                "enum": slugs,
+                "description": repo_description,
+            }
+            required = parameters.setdefault("required", [])
+            if "repo" not in required:
+                required.insert(0, "repo")
+            definition["description"] = (
+                f"{definition.get('description', '')} In group mode, always set "
+                "repo to one of the group's repositories."
+            )
+        return definitions
+
+    def _repo_key(self, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        for key, repo in self.repositories.items():
+            if normalized in {
+                key.lower(),
+                str(repo.get("name") or "").lower(),
+                str(repo.get("workspace") or "").lower(),
+            }:
+                return key
+        raise ValueError(
+            "repo is required and must be one of: " + ", ".join(self.repositories)
+        )

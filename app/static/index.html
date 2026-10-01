@@ -651,6 +651,22 @@
       max-height: 160px;
     }
     #compareQuestion::placeholder { color: var(--faint); }
+    #groupQuestion {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 2px;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      line-height: 1.45;
+      resize: none;
+      overflow-y: auto;
+      min-height: 39px;
+      max-height: 160px;
+    }
+    #groupQuestion::placeholder { color: var(--faint); }
     .compare-hint {
       margin: 8px 2px 0;
       color: var(--faint);
@@ -2312,6 +2328,12 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"></path><path d="m9 8-4 4 4 4m6-8 4 4-4 4"></path></svg>
         Compare 2 branches
       </button>
+      <button id="groupAskModeBtn" type="button" class="ask-mode-tab"
+        role="tab" aria-selected="false" aria-controls="groupAskFlow"
+        onclick="setAskMode('group')" hidden>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17.5 14v7M14 17.5h7"></path></svg>
+        Ask a repo group
+      </button>
       <button id="adminReturnBtn" type="button" class="ask-mode-tab admin-return-btn"
         onclick="goBackToAdminConsole()" hidden>Go back to admin console</button>
     </div>
@@ -2446,6 +2468,47 @@
       </div>
       <p id="compareHint" class="compare-hint"></p>
     </section>
+
+    <section id="groupAskFlow" class="card compare-card group-flow span-2" hidden>
+      <div class="card-head">
+        <span class="card-dot"></span>
+        <h2 class="card-title">Ask a repo group</h2>
+        <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
+          <button type="button" class="answer-style-option" data-answer-style="dev_team"
+            role="radio" aria-checked="true" onclick="selectAnswerStyle('dev_team')">
+            <span class="answer-style-check" aria-hidden="true"></span>
+            Dev team
+          </button>
+          <button type="button" class="answer-style-option" data-answer-style="product_team"
+            role="radio" aria-checked="false" onclick="selectAnswerStyle('product_team')">
+            <span class="answer-style-check" aria-hidden="true"></span>
+            Product team
+          </button>
+        </div>
+      </div>
+      <p class="compare-copy">Ask one question across a group of related repositories your admin has connected.</p>
+      <div class="compare-controls">
+        <label for="groupPicker">
+          Repo group
+          <select id="groupPicker" aria-label="Repo group to ask about"
+            onchange="onGroupChange()"></select>
+        </label>
+      </div>
+      <div class="compare-box">
+        <textarea id="groupQuestion" rows="1"
+          placeholder="Ask how a flow, feature, or API works across these repositories…"
+          autocomplete="off"></textarea>
+        <button id="groupAskBtn" type="button" class="btn-primary chat-submit-button"
+          onclick="askGroup()" aria-label="Send group question" title="Send group question">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"></path>
+            <path d="m5 12 7-7 7 7"></path>
+          </svg>
+          <span class="sr-only">Send group question</span>
+        </button>
+      </div>
+      <p id="groupHint" class="compare-hint"></p>
+    </section>
         </div>
       </div>
 
@@ -2539,6 +2602,8 @@
     let PRODUCT_ANSWER_OVERRIDE = false;
     let LAST_FOLLOW_UP_QUESTION = '';
     let ASK_MODE = 'single';
+    let GROUP_SLUG = null;
+    let USER_GROUPS = [];
     let ACTIVE_REQUEST_CONTROLLER = null;
     let ACTIVE_ACTIVITY_POLL = null;
     let AUTH_CONFIG = {};
@@ -2560,6 +2625,9 @@
     const ADMIN_TEST_MODE = new URLSearchParams(window.location.search).get('from') === 'admin';
 
     function resultEmptyState(mode = ASK_MODE) {
+      if (mode === 'group') {
+        return '<div class="empty-state"><div class="eyebrow">Ready</div><p>Choose a repo group, ask a question, and the answer grounded in all of its repositories will appear here.</p></div>';
+      }
       if (mode === 'compare') {
         return '<div class="empty-state"><div class="eyebrow">Ready</div><p>Select two indexed branches, ask a comparison question, and the side-by-side answer will appear here.</p></div>';
       }
@@ -2692,11 +2760,12 @@
         createdAt: chat.createdAt || chat.serverCreatedAt || new Date().toISOString(),
         updatedAt: chat.updatedAt || chat.serverUpdatedAt || chat.createdAt || new Date().toISOString(),
         conversationId: chat.conversationId ? String(chat.conversationId) : null,
-        askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+        askMode: ['compare', 'group'].includes(chat.askMode) ? chat.askMode : 'single',
         workspace: chat.workspace || null,
         branchId: Number(chat.branchId) || null,
         compareBranchA: Number(chat.compareBranchA) || null,
         compareBranchB: Number(chat.compareBranchB) || null,
+        groupSlug: chat.groupSlug || null,
         llmMode: chat.llmMode || null,
         answerUserType: chat.answerUserType || null,
       };
@@ -2711,11 +2780,12 @@
         createdAt: chat.createdAt || null,
         updatedAt: chat.updatedAt || null,
         conversationId: chat.conversationId || null,
-        askMode: chat.askMode === 'compare' ? 'compare' : 'single',
+        askMode: ['compare', 'group'].includes(chat.askMode) ? chat.askMode : 'single',
         workspace: chat.workspace || null,
         branchId: Number(chat.branchId) || null,
         compareBranchA: Number(chat.compareBranchA) || null,
         compareBranchB: Number(chat.compareBranchB) || null,
+        groupSlug: chat.groupSlug || null,
         llmMode: chat.llmMode || null,
         answerUserType: chat.answerUserType || null,
         turns: QUESTION_HISTORY
@@ -2896,6 +2966,7 @@
         branchId: BRANCH_ID,
         compareBranchA: Number(document.getElementById('compareBranchA')?.value) || null,
         compareBranchB: Number(document.getElementById('compareBranchB')?.value) || null,
+        groupSlug: GROUP_SLUG,
         llmMode: LLM_MODE,
         answerUserType: effectiveAnswerUserType(),
       };
@@ -2943,6 +3014,7 @@
         branchId: BRANCH_ID,
         compareBranchA: Number(document.getElementById('compareBranchA')?.value) || null,
         compareBranchB: Number(document.getElementById('compareBranchB')?.value) || null,
+        groupSlug: GROUP_SLUG,
         llmMode: LLM_MODE,
         answerUserType: effectiveAnswerUserType(),
         updatedAt: new Date().toISOString(),
@@ -2992,7 +3064,12 @@
       const chat = item
         ? CHAT_SESSIONS.find(entry => entry.id === item.chatId)
         : null;
-      const workspace = chat?.workspace || WORKSPACE || '';
+      const groupScope = chat
+        ? (chat.askMode === 'group' ? chat.groupSlug : '')
+        : (ASK_MODE === 'group' ? GROUP_SLUG : '');
+      const workspace = groupScope
+        ? `group:${groupScope}`
+        : (chat?.workspace || WORKSPACE || '');
       const savedQuestion = item?.question || String(question || '');
       return `
         <div class="answer-feedback"
@@ -3183,6 +3260,7 @@
       if (!chat) return false;
       if (chat.askMode && chat.askMode !== ASK_MODE) return false;
       if (chat.workspace && chat.workspace !== WORKSPACE) return false;
+      if (ASK_MODE === 'group' && chat.groupSlug !== GROUP_SLUG) return false;
       if (chat.branchId && Number(chat.branchId) !== Number(BRANCH_ID)) return false;
       if (ASK_MODE === 'compare') {
         const left = Number(document.getElementById('compareBranchA')?.value) || null;
@@ -3201,6 +3279,9 @@
       if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
       hideChatPreview();
       ACTIVE_CHAT_ID = chat.id;
+      if (chat.askMode === 'group' && chat.groupSlug && groupAvailable(chat.groupSlug)) {
+        selectGroup(chat.groupSlug);
+      }
       setAskMode(chat.askMode || 'single', { resetResult: false, focus: false });
       if (ASK_MODE === 'compare') {
         const left = document.getElementById('compareBranchA');
@@ -3225,7 +3306,9 @@
       if (options.focus !== false) {
         const input = ASK_MODE === 'compare'
           ? document.getElementById('compareQuestion')
-          : document.getElementById('question');
+          : ASK_MODE === 'group'
+            ? document.getElementById('groupQuestion')
+            : document.getElementById('question');
         input?.focus();
       }
     }
@@ -3311,6 +3394,11 @@
       clearQueryImages();
       const question = document.getElementById('question');
       const compareQuestion = document.getElementById('compareQuestion');
+      const groupQuestion = document.getElementById('groupQuestion');
+      if (groupQuestion) {
+        groupQuestion.value = '';
+        autoResizeTextarea(groupQuestion);
+      }
       if (question) {
         question.value = '';
         autoResizeTextarea(question);
@@ -3321,7 +3409,9 @@
       }
       const result = document.getElementById('result');
       if (result) result.innerHTML = resultEmptyState(ASK_MODE);
-      const focusTarget = ASK_MODE === 'compare' ? compareQuestion : question;
+      const focusTarget = ASK_MODE === 'compare'
+        ? compareQuestion
+        : ASK_MODE === 'group' ? groupQuestion : question;
       focusTarget?.focus();
       showToast('New chat started.');
     }
@@ -3491,24 +3581,35 @@
     }
 
     function setAskMode(mode, options = {}) {
-      ASK_MODE = mode === 'compare' ? 'compare' : 'single';
+      ASK_MODE = mode === 'compare'
+        ? 'compare'
+        : (mode === 'group' && USER_GROUPS.length ? 'group' : 'single');
       const isCompare = ASK_MODE === 'compare';
+      const isGroup = ASK_MODE === 'group';
       document.querySelectorAll('.single-repo-flow').forEach(item => {
-        item.hidden = isCompare;
+        item.hidden = isCompare || isGroup;
       });
       document.querySelectorAll('.compare-flow').forEach(item => {
         item.hidden = !isCompare;
       });
+      document.querySelectorAll('.group-flow').forEach(item => {
+        item.hidden = !isGroup;
+      });
 
       const singleBtn = document.getElementById('singleAskModeBtn');
       const compareBtn = document.getElementById('compareAskModeBtn');
+      const groupBtn = document.getElementById('groupAskModeBtn');
       if (singleBtn) {
-        singleBtn.classList.toggle('active', !isCompare);
-        singleBtn.setAttribute('aria-selected', String(!isCompare));
+        singleBtn.classList.toggle('active', !isCompare && !isGroup);
+        singleBtn.setAttribute('aria-selected', String(!isCompare && !isGroup));
       }
       if (compareBtn) {
         compareBtn.classList.toggle('active', isCompare);
         compareBtn.setAttribute('aria-selected', String(isCompare));
+      }
+      if (groupBtn) {
+        groupBtn.classList.toggle('active', isGroup);
+        groupBtn.setAttribute('aria-selected', String(isGroup));
       }
 
       CONVERSATION_ID = null;
@@ -3521,10 +3622,82 @@
       }
       const focusTarget = isCompare
         ? document.getElementById('compareQuestion')
-        : document.getElementById('question');
+        : isGroup
+          ? document.getElementById('groupQuestion')
+          : document.getElementById('question');
       if (focusTarget && options.focus !== false) {
         focusTarget.focus();
       }
+    }
+
+    // ---------- Repo groups ----------
+    function groupAvailable(slug) {
+      return USER_GROUPS.some(group => group.slug === slug);
+    }
+
+    function selectGroup(slug) {
+      const picker = document.getElementById('groupPicker');
+      if (picker) picker.value = slug;
+      GROUP_SLUG = slug || null;
+      renderGroupHint();
+    }
+
+    function renderGroupHint() {
+      const hint = document.getElementById('groupHint');
+      if (!hint) return;
+      const group = USER_GROUPS.find(item => item.slug === GROUP_SLUG);
+      if (!group) {
+        hint.textContent = '';
+        return;
+      }
+      const repos = group.repos.map(repo => repo.name).join(', ');
+      hint.textContent = `Searches ${group.repos.length} repositories together: ${repos}.`
+        + (group.description ? ` ${group.description}` : '');
+    }
+
+    function onGroupChange() {
+      const picker = document.getElementById('groupPicker');
+      GROUP_SLUG = picker && picker.value ? picker.value : null;
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      renderGroupHint();
+    }
+
+    async function loadUserGroups() {
+      USER_GROUPS = [];
+      try {
+        const res = await fetch('/repo/groups', { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          USER_GROUPS = Array.isArray(data.groups) ? data.groups : [];
+        }
+      } catch (e) {}
+      const picker = document.getElementById('groupPicker');
+      const button = document.getElementById('groupAskModeBtn');
+      if (picker) {
+        picker.innerHTML = USER_GROUPS
+          .map(group => `<option value="${escapeHtml(group.slug)}">${escapeHtml(group.name)}</option>`)
+          .join('');
+      }
+      if (button) button.hidden = USER_GROUPS.length === 0;
+      if (!groupAvailable(GROUP_SLUG)) GROUP_SLUG = null;
+      if (USER_GROUPS.length) selectGroup(GROUP_SLUG || USER_GROUPS[0].slug);
+      else if (ASK_MODE === 'group') setAskMode('single', { focus: false });
+    }
+
+    async function askGroup() {
+      const input = document.getElementById('groupQuestion');
+      const question = input ? input.value.trim() : '';
+      if (!question) return;
+      if (!GROUP_SLUG) {
+        document.getElementById('result').innerHTML =
+          '<div class="error-box"><h2>Select a repo group</h2><p>Choose a repo group before asking a question.</p></div>';
+        return;
+      }
+      const followUp = Boolean(CONVERSATION_ID);
+      input.value = '';
+      autoResizeTextarea(input);
+      await submitQuestion(question, { followUp, groupSlug: GROUP_SLUG });
     }
 
     function formatLocalTimestamp(value, fallback) {
@@ -3775,7 +3948,7 @@
 
     function updateBranchStatus() {
       const bar = document.getElementById('branchStatusBar');
-      if (ASK_MODE === 'compare') {
+      if (ASK_MODE !== 'single') {
         bar.classList.add('hidden');
         return;
       }
@@ -4173,6 +4346,7 @@
       await loadBranches();
       await loadFlowButtons();
       await loadLlmStatus();
+      await loadUserGroups();
       await loadSavedChats(data.user.id);
       const activeChat = CHAT_SESSIONS.find(chat => chat.id === ACTIVE_CHAT_ID);
       if (activeChat) {
@@ -5411,6 +5585,10 @@
       const input = document.getElementById('followUpQuestion');
       const question = input ? input.value.trim() : '';
       if (!question) return;
+      if (ASK_MODE === 'group') {
+        await submitQuestion(question, { followUp: true, groupSlug: GROUP_SLUG });
+        return;
+      }
       if (!requireWorkspace()) return;
       if (ASK_MODE === 'compare') {
         await submitCompareQuestion(question, { followUp: true });
@@ -5421,7 +5599,7 @@
 
     async function investigateDeeply() {
       if (!LAST_FOLLOW_UP_QUESTION) return;
-      if (!requireWorkspace()) return;
+      if (ASK_MODE !== 'group' && !requireWorkspace()) return;
       const sourceTurn = [...QUESTION_HISTORY].reverse().find(item => (
         item.chatId === ACTIVE_CHAT_ID
         && item.question === LAST_FOLLOW_UP_QUESTION
@@ -5430,6 +5608,15 @@
         await submitCompareQuestion(LAST_FOLLOW_UP_QUESTION, {
           followUp: true,
           deepInvestigation: true,
+          feedbackHistoryId: sourceTurn?.id || null,
+        });
+        return;
+      }
+      if (ASK_MODE === 'group') {
+        await submitQuestion(LAST_FOLLOW_UP_QUESTION, {
+          followUp: true,
+          deepInvestigation: true,
+          groupSlug: GROUP_SLUG,
           feedbackHistoryId: sourceTurn?.id || null,
         });
         return;
@@ -5449,7 +5636,8 @@
       const followUpWithContext = Boolean(options.followUp && CONVERSATION_ID);
       const deepInvestigation = Boolean(options.deepInvestigation);
       const imageAttachments = (
-        !options.flowSummary && !options.followUp && QUERY_IMAGE_ATTACHMENTS.length
+        !options.flowSummary && !options.followUp && !options.groupSlug
+        && QUERY_IMAGE_ATTACHMENTS.length
       ) ? queryImagePayload() : [];
       let historyId = null;
       if (
@@ -5519,7 +5707,11 @@
       startAnswerActivityPolling(activityRequestId);
 
       try {
-        const res = await fetch(wsUrl(options.endpoint || '/repo/ask-llm'), {
+        const res = await fetch(
+          options.groupSlug
+            ? `/repo/group/ask?group=${encodeURIComponent(options.groupSlug)}`
+            : wsUrl(options.endpoint || '/repo/ask-llm'),
+          {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
@@ -5541,7 +5733,8 @@
                   ...(imageAttachments.length ? { image_attachments: imageAttachments } : {}),
                 }
           )
-        });
+          }
+        );
 
         if (handle401(res)) return;
         const data = await readResponseData(res);
@@ -5651,9 +5844,16 @@
           ? ` · <span title="${escapeHtml(tokenBreakdown.join(' · '))}">${totalTokens.toLocaleString()} tokens</span>`
           : ' · tokens unavailable';
         const version = data.repository_version || null;
-        const versionLabel = version
-          ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
+        const groupVersions = Array.isArray(data.group_repositories) ? data.group_repositories : [];
+        const groupVersionLabel = groupVersions.length
+          ? `${(data.group && data.group.name) || 'Repo group'} · ${groupVersions.map(item => {
+              const v = item.repository_version || {};
+              return `${item.name} (${v.branch || 'branch'} @ ${(v.commit_sha || 'unknown').slice(0, 12)})`;
+            }).join(' · ')}`
           : '';
+        const versionLabel = groupVersionLabel || (version
+          ? `${version.repository || version.repository_slug || 'repository'} · ${version.branch || 'branch'} · ${(version.commit_sha || 'unknown').slice(0, 12)} · indexed ${formatLocalTimestamp(version.indexed_at, 'unknown')} · ${freshnessLabel({ ...version, index_status: 'ready' })}${version.last_checked_at ? ` as of ${formatLocalTimestamp(version.last_checked_at, 'unknown')}` : ''}`
+          : '');
         const answerMetadata = productFlowSummary
           ? `<p class="src" style="margin-top:0">Product team flow summary${tokenLabel}</p>`
           : `
@@ -5821,6 +6021,7 @@
 
       const compareInput = document.getElementById('compareQuestion');
       bindQuestionTextarea(compareInput, compareBranches);
+      bindQuestionTextarea(document.getElementById('groupQuestion'), askGroup);
 
       const searchInput = document.getElementById('search');
       if (searchInput) {

@@ -39,6 +39,15 @@ PROVIDER_RETRIES = max(
 )
 PROVIDER_RETRY_STATUSES = {429, 502, 503, 504}
 PROVIDER_RETRY_MAX_DELAY_SECONDS = 5.0
+# A 429 for tokens-per-minute usually clears within seconds, but the provider
+# names the exact wait (often longer than the 5s cap used for 5xx blips).
+RATE_LIMIT_MAX_DELAY_SECONDS = max(
+    PROVIDER_RETRY_MAX_DELAY_SECONDS,
+    float(os.environ.get("CODEATLAS_RATE_LIMIT_MAX_DELAY_SECONDS", "20")),
+)
+_RATE_LIMIT_HINT = re.compile(
+    r"try again in\s+(\d+(?:\.\d+)?)\s*(ms|s)\b", re.IGNORECASE
+)
 FOLLOW_UP_MAX_TOKENS = max(
     200, int(os.environ.get("CODEATLAS_FOLLOW_UP_MAX_TOKENS", "800"))
 )
@@ -160,6 +169,19 @@ COMPARISON_AGENT_SYSTEM_PROMPT = (
     "claims from one branch to the other. Cite concrete claims with the "
     "branch label plus file path and line numbers. If either branch lacks "
     "evidence for the requested behavior, say that explicitly. "
+    + _DEV_ASK_RULE
+)
+
+GROUP_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories with read-only tools. Every tool call must set `repo` to one "
+    "of the group's repository slugs. First work out which repositories the "
+    "question touches, investigate each one separately, and follow calls, "
+    "APIs, events, or shared data across repository boundaries when the "
+    "question needs it. Do not transfer evidence or claims from one repository "
+    "to another. Cite concrete claims with the repository name plus file path "
+    "and line numbers. If a repository lacks evidence for part of the question, "
+    "say so explicitly. "
     + _DEV_ASK_RULE
 )
 
@@ -288,6 +310,40 @@ PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT = (
     + _PRODUCT_ASK_RULE
 )
 
+PRODUCT_TEAM_GROUP_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories with read-only tools. Every tool call must set `repo` to one "
+    "of the group's repository slugs. Investigate the relevant repositories "
+    "separately and follow behavior across them, without transferring claims "
+    "from one repository to another. The final answer is for a product-team "
+    "reader, so keep implementation details private and explain only "
+    "user-visible behavior, outcomes, conditions, and caveats in simple "
+    "everyday English. Do not include technical terms, file names, file paths, "
+    "line numbers, class names, function or method names, code identifiers, "
+    "APIs, endpoint paths, source citations, or code snippets. "
+    + _PRODUCT_ASK_RULE
+)
+
+GROUP_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories. Use only the provided evidence. Keep each repository's "
+    "evidence separate, do not transfer claims from one repository to another, "
+    "and state when evidence is missing. For developer-focused answers, cite "
+    "concrete claims with repository name plus file path and line numbers."
+)
+
+PRODUCT_TEAM_GROUP_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories for a product-team reader. Use only the provided evidence "
+    "internally. Keep each repository's evidence separate, do not transfer "
+    "claims from one repository to another, and state when evidence is "
+    "missing. The final answer must use simple everyday English and describe "
+    "only user-visible behavior, outcomes, conditions, and caveats. Do not "
+    "include technical terms, file names, file paths, line numbers, class "
+    "names, function or method names, code identifiers, APIs, endpoint paths, "
+    "source citations, or code snippets."
+)
+
 SOURCE_REFERENCE_RE = re.compile(
     r"""
     (?:
@@ -379,7 +435,13 @@ def _agent_system_prompt(toolbox) -> str:
     response_instruction = str(
         getattr(toolbox, "response_style_instruction", "") or ""
     ).strip()
-    if getattr(toolbox, "comparison_mode", False):
+    if getattr(toolbox, "group_mode", False):
+        prompt = (
+            PRODUCT_TEAM_GROUP_AGENT_SYSTEM_PROMPT
+            if response_instruction
+            else GROUP_AGENT_SYSTEM_PROMPT
+        )
+    elif getattr(toolbox, "comparison_mode", False):
         prompt = (
             PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT
             if response_instruction
@@ -536,21 +598,35 @@ def _record_response_token_usage(response) -> None:
     aggregate["available"] = True
 
 
+def _rate_limit_hint_seconds(response) -> float:
+    """Seconds a provider's 429 body says to wait ("Please try again in 8.4s")."""
+    match = _RATE_LIMIT_HINT.search(str(getattr(response, "text", "") or ""))
+    if not match:
+        return 0.0
+    value = float(match.group(1))
+    return value / 1000.0 if match.group(2).lower() == "ms" else value
+
+
 def _retry_after_seconds(response) -> float:
     """Return a bounded Retry-After delay from seconds or an HTTP date."""
+    cap = (
+        RATE_LIMIT_MAX_DELAY_SECONDS
+        if getattr(response, "status_code", None) == 429
+        else PROVIDER_RETRY_MAX_DELAY_SECONDS
+    )
     headers = getattr(response, "headers", None) or {}
     value = str(headers.get("Retry-After", "")).strip()
     if not value:
         return 0.0
     try:
-        return min(PROVIDER_RETRY_MAX_DELAY_SECONDS, max(0.0, float(value)))
+        return min(cap, max(0.0, float(value)))
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(value)
             if retry_at.tzinfo is None:
                 retry_at = retry_at.replace(tzinfo=timezone.utc)
             delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
-            return min(PROVIDER_RETRY_MAX_DELAY_SECONDS, max(0.0, delay))
+            return min(cap, max(0.0, delay))
         except (TypeError, ValueError, OverflowError):
             return 0.0
 
@@ -561,11 +637,29 @@ def _provider_retry_delay(attempt: int, response=None) -> float:
         0.25 * (2 ** max(0, attempt)),
     )
     requested = _retry_after_seconds(response) if response is not None else 0.0
+    cap = PROVIDER_RETRY_MAX_DELAY_SECONDS
+    if getattr(response, "status_code", None) == 429:
+        cap = RATE_LIMIT_MAX_DELAY_SECONDS
+        # Pad slightly: retrying at exactly the stated time can still be early.
+        requested = max(
+            requested, min(cap, _rate_limit_hint_seconds(response) + 0.5)
+        )
     base = max(exponential, requested)
-    return min(
-        PROVIDER_RETRY_MAX_DELAY_SECONDS,
-        base + random.uniform(0.0, 0.1),
-    )
+    return min(cap, base + random.uniform(0.0, 0.1))
+
+
+def _provider_http_error(status_code, detail: str) -> RuntimeError:
+    """RuntimeError for a failed provider call.
+
+    A 429 that outlived the retries becomes a plain message instead of the raw
+    provider text, which carries org/project ids and reads like an outage."""
+    if status_code == 429:
+        return RuntimeError(
+            "[429] The AI provider is rate limited right now (too many tokens "
+            "requested in a short time). Please retry in about a minute, or "
+            "ask a narrower question."
+        )
+    return RuntimeError(f"[{status_code}] {detail}")
 
 
 def _post_with_retries(*args, **kwargs):
@@ -590,6 +684,129 @@ def _post_with_retries(*args, **kwargs):
         time.sleep(_provider_retry_delay(attempt, response))
 
     raise RuntimeError("Provider retry loop exited unexpectedly")
+
+
+# --- Tool-result compaction --------------------------------------------------
+# Every agent round resends the whole transcript, tool output included, so the
+# request grows with each round. Only the freshest tool results are sent in
+# full; older ones shrink to a stub that keeps their head (path, range, first
+# hits) so the model can re-run the tool if it needs the rest.
+AGENT_KEEP_RECENT_TOOL_ROUNDS = max(
+    1, int(os.environ.get("CODEATLAS_AGENT_KEEP_RECENT_TOOL_ROUNDS", "3"))
+)
+AGENT_STUB_CHARS = max(
+    100, int(os.environ.get("CODEATLAS_AGENT_STUB_CHARS", "1500"))
+)
+AGENT_CONTEXT_CHARS = max(
+    4000, int(os.environ.get("CODEATLAS_AGENT_CONTEXT_CHARS", "90000"))
+)
+_TRIMMED_NOTE = (
+    "\n[older tool result trimmed to save tokens; call the tool again if you "
+    "need the rest]"
+)
+
+
+def _stub_tool_text(text) -> str:
+    text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+    if len(text) <= AGENT_STUB_CHARS + len(_TRIMMED_NOTE):
+        return text
+    return text[:AGENT_STUB_CHARS] + _TRIMMED_NOTE
+
+
+def _tool_text_length(value) -> int:
+    return len(value) if isinstance(value, str) else len(json.dumps(value, ensure_ascii=False))
+
+
+def _compact_tool_history(items: list, is_carrier, texts_of, rewrite) -> list:
+    """Return a copy of ``items`` with older tool results stubbed.
+
+    A "round" is a run of consecutive tool-result carriers.  ``texts_of(item)``
+    yields the carrier's result payloads, ``rewrite(item, fn)`` returns a copy
+    with every payload mapped through ``fn``.  The input is never mutated and
+    the latest round is never touched."""
+    rounds: list[list[int]] = []
+    previous_was_carrier = False
+    for index, item in enumerate(items):
+        carrier = is_carrier(item)
+        if carrier:
+            if previous_was_carrier:
+                rounds[-1].append(index)
+            else:
+                rounds.append([index])
+        previous_was_carrier = carrier
+    if len(rounds) <= 1:
+        return items
+
+    compacted = list(items)
+    stubbed: set[int] = set()
+    older = rounds[:-1]
+    # 1. Anything outside the most recent rounds is always stubbed.
+    for run in older[: max(0, len(rounds) - AGENT_KEEP_RECENT_TOOL_ROUNDS)]:
+        for index in run:
+            compacted[index] = rewrite(compacted[index], _stub_tool_text)
+            stubbed.add(index)
+
+    def total() -> int:
+        return sum(
+            _tool_text_length(text)
+            for run in rounds
+            for index in run
+            for text in texts_of(compacted[index])
+        )
+
+    # 2. Still over budget: stub the oldest remaining results, never the latest.
+    for run in older:
+        for index in run:
+            if total() <= AGENT_CONTEXT_CHARS:
+                return compacted
+            if index not in stubbed:
+                compacted[index] = rewrite(compacted[index], _stub_tool_text)
+                stubbed.add(index)
+    return compacted
+
+
+def _compact_openai_messages(messages: list) -> list:
+    return _compact_tool_history(
+        messages,
+        lambda m: m.get("role") == "tool",
+        lambda m: [m.get("content")],
+        lambda m, fn: {**m, "content": fn(m.get("content"))},
+    )
+
+
+def _compact_responses_items(items: list) -> list:
+    return _compact_tool_history(
+        items,
+        lambda i: i.get("type") == "function_call_output",
+        lambda i: [i.get("output")],
+        lambda i, fn: {**i, "output": fn(i.get("output"))},
+    )
+
+
+def _is_anthropic_tool_results(message: dict) -> bool:
+    content = message.get("content")
+    return (
+        message.get("role") == "user"
+        and isinstance(content, list)
+        and bool(content)
+        and all(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        )
+    )
+
+
+def _compact_anthropic_messages(messages: list) -> list:
+    return _compact_tool_history(
+        messages,
+        _is_anthropic_tool_results,
+        lambda m: [block.get("content") for block in m["content"]],
+        lambda m, fn: {
+            **m,
+            "content": [{**block, "content": fn(block.get("content"))} for block in m["content"]],
+        },
+    )
+
 
 
 def _openai_model_uses_completion_tokens(model: str) -> bool:
@@ -697,6 +914,34 @@ def _post_openai_with_compatibility(url: str, model: str, payload: dict, **kwarg
 
 def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
+    if context.get("group_mode"):
+        answer_requirements = (
+            """- Lead with a concise answer to the user's question.
+- Explain how the repositories take part, in simple product language.
+- Explain only user-visible behavior, outcomes, conditions, and caveats.
+- Do not include technical terms, internal identifiers, file names, citations, line numbers, classes, functions, methods, code identifiers, APIs, endpoints, URLs, code, or implementation details.
+- If a repository lacks evidence for the requested behavior, say that clearly without exposing source details."""
+            if _product_answer_context(context)
+            else
+            """- Lead with a direct answer to the user's exact question.
+- Organize the answer by repository, then explain how they connect end to end.
+- For every concrete implementation claim, identify which repository it belongs to.
+- Cite source files and line numbers for developer-facing claims when present in the evidence.
+- If a repository lacks evidence for the requested behavior, say that explicitly instead of guessing."""
+        )
+        return f"""
+Question:
+{preview.get("question", "")}
+
+Group evidence:
+{json.dumps(preview, indent=2)}
+
+Answer requirements:
+{answer_requirements}
+
+Audience-specific final-answer requirements:
+{context.get("response_style_instruction", "") or "Use the existing developer-focused answer style."}
+"""
     if context.get("comparison_mode"):
         answer_requirements = (
             """- Lead with a concise answer to the user's comparison question.
@@ -781,6 +1026,12 @@ def _require_follow_up_answer(answer: str, provider: str) -> str:
 
 
 def _system_prompt(context: dict) -> str:
+    if context.get("group_mode"):
+        return (
+            PRODUCT_TEAM_GROUP_SYSTEM_PROMPT
+            if _product_answer_context(context)
+            else GROUP_SYSTEM_PROMPT
+        )
     if context.get("comparison_mode"):
         return (
             PRODUCT_TEAM_COMPARISON_SYSTEM_PROMPT
@@ -938,7 +1189,7 @@ def _raise_provider_error(response, provider: str, image_attachments: list[dict]
         return
     if _image_attachments(image_attachments) and _is_image_request_rejection(response):
         raise ImageInputUnsupported(IMAGE_INPUT_UNSUPPORTED_MESSAGE)
-    raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+    raise _provider_http_error(response.status_code, response.text[:300])
 
 
 def _tool_arguments(raw) -> dict:
@@ -974,7 +1225,7 @@ def _tool_request_error(response, provider: str, image_attachments: list[dict] =
         for token in ("tool", "function", "unknown field", "unexpected field", "not supported")
     ):
         raise AgenticUnsupported(f"{provider} rejected tool calling: {detail}")
-    raise RuntimeError(f"[{response.status_code}] {detail}")
+    raise _provider_http_error(response.status_code, detail)
 
 
 def _final_openai_answer(
@@ -993,7 +1244,7 @@ def _final_openai_answer(
         model,
         {
             "model": model,
-            "messages": messages,
+            "messages": _compact_openai_messages(messages),
             "temperature": 0.2,
             "max_tokens": 1800,
         },
@@ -1004,7 +1255,7 @@ def _final_openai_answer(
     if 300 <= response.status_code < 400:
         raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if response.status_code >= 400:
-        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+        raise _provider_http_error(response.status_code, response.text[:300])
     return _require_answer(
         response.json()["choices"][0]["message"].get("content", ""),
         model,
@@ -1165,7 +1416,7 @@ def _responses_request_error(response, model: str, image_attachments: list[dict]
         for token in ("tool", "function", "unknown field", "unexpected field", "not supported")
     ):
         raise AgenticUnsupported(f"{model} rejected tool calling: {detail}")
-    raise RuntimeError(f"[{response.status_code}] {detail}")
+    raise _provider_http_error(response.status_code, detail)
 
 
 def _final_responses_answer(
@@ -1188,7 +1439,7 @@ def _final_responses_answer(
         json={
             "model": model,
             "instructions": instructions,
-            "input": items,
+            "input": _compact_responses_items(items),
             "max_output_tokens": AGENT_REASONING_OUTPUT_TOKENS,
             "reasoning": {"effort": AGENT_REASONING_EFFORT},
             "store": False,
@@ -1231,7 +1482,7 @@ def _openai_responses_agent(
             payload = {
                 "model": model,
                 "instructions": system_prompt,
-                "input": input_items,
+                "input": _compact_responses_items(input_items),
                 "tools": tools,
                 "max_output_tokens": budget,
                 "reasoning": {"effort": AGENT_REASONING_EFFORT},
@@ -1355,7 +1606,7 @@ def _openai_agent(
         for attempt in range(AGENT_TRUNCATION_RETRIES + 1):
             request_payload = {
                 "model": model,
-                "messages": messages,
+                "messages": _compact_openai_messages(messages),
                 "tools": tools,
                 "temperature": 0.2,
                 "max_tokens": budget,
@@ -1495,7 +1746,7 @@ def _anthropic_agent(
                     "max_tokens": budget,
                     "temperature": 0.2,
                     "system": system_prompt,
-                    "messages": messages,
+                    "messages": _compact_anthropic_messages(messages),
                     "tools": tools,
                     **_anthropic_cache_settings(base_url),
                 },
@@ -1569,7 +1820,7 @@ def _anthropic_agent(
             "max_tokens": 1800,
             "temperature": 0.2,
             "system": system_prompt,
-            "messages": messages,
+            "messages": _compact_anthropic_messages(messages),
             **_anthropic_cache_settings(base_url),
         },
         timeout=REQUEST_TIMEOUT,
@@ -1578,7 +1829,7 @@ def _anthropic_agent(
     if 300 <= response.status_code < 400:
         raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if response.status_code >= 400:
-        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+        raise _provider_http_error(response.status_code, response.text[:300])
     answer = "".join(
         block.get("text", "")
         for block in response.json().get("content", [])
@@ -1690,7 +1941,7 @@ def _ollama_agent(
         timeout=REQUEST_TIMEOUT,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+        raise _provider_http_error(response.status_code, response.text[:300])
     return {
         "answer": _require_answer(
             response.json().get("message", {}).get("content", ""),
@@ -1814,7 +2065,7 @@ def _ollama_chat(
         timeout=REQUEST_TIMEOUT,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(f"[{resp.status_code}] {resp.text[:300]}")
+        raise _provider_http_error(resp.status_code, resp.text[:300])
     answer = resp.json().get("message", {}).get("content", "")
     return _final_answer(answer, model, context)
 
@@ -1892,7 +2143,7 @@ def _openai_fast_follow_up(
     if 300 <= response.status_code < 400:
         raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if response.status_code >= 400:
-        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+        raise _provider_http_error(response.status_code, response.text[:300])
     answer = response.json()["choices"][0]["message"].get("content", "")
     return _require_follow_up_answer(answer, model)
 
@@ -1929,7 +2180,7 @@ def _anthropic_fast_follow_up(
     if 300 <= response.status_code < 400:
         raise RuntimeError(f"{model} returned a redirect, which is not allowed")
     if response.status_code >= 400:
-        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+        raise _provider_http_error(response.status_code, response.text[:300])
     answer = "".join(
         block.get("text", "")
         for block in response.json().get("content", [])
@@ -1962,7 +2213,7 @@ def _ollama_fast_follow_up(
         timeout=REQUEST_TIMEOUT,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"[{response.status_code}] {response.text[:300]}")
+        raise _provider_http_error(response.status_code, response.text[:300])
     answer = response.json().get("message", {}).get("content", "")
     return _require_follow_up_answer(answer, model)
 

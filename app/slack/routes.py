@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 import requests
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from .. import ask_service, db
+from .. import ask_service, db, group_ask
 from ..config import default_shared_llm_id, shared_llm_mode
 
 router = APIRouter(prefix="/slack", tags=["slack"])
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 ASK_SINGLE = "single_branch"
 ASK_COMPARE = "compare_branches"
+ASK_GROUP = "repo_group"
 USER_DEV = "dev_team"
 USER_PRODUCT = "product_team"
 
@@ -96,6 +97,18 @@ class _TTLCache:
         with self._lock:
             self._evict_locked(now)
             return key in self._store
+
+    def get(self, key: Optional[str]) -> Optional[object]:
+        """Non-destructive read: the stored value if present and unexpired,
+        else None. Unlike `pop`, a hit is left in place so later lookups for
+        the same key keep matching."""
+        if not key:
+            return None
+        now = time.time()
+        with self._lock:
+            self._evict_locked(now)
+            entry = self._store.get(key)
+        return entry[0] if entry else None
 
     def set(self, key: Optional[str], value: object) -> None:
         if not key:
@@ -188,6 +201,29 @@ def _is_mentioned_thread(channel: Optional[str], thread_ts: Optional[str]) -> bo
     if not channel or not thread_ts:
         return False
     return _MENTIONED_THREADS.has(f"{channel}:{thread_ts}")
+
+
+# The latest resolved repo/branch/conversation for a mentioned thread, so a
+# later mention-less reply there can continue that exact conversation
+# (follow_up=True, same repo/branch) instead of re-inferring the repo from
+# just that one reply alone and losing everything already established --
+# e.g. answering a clarifying question CodeAtlas itself just asked would
+# otherwise re-trigger "I couldn't tell which repository you mean."
+_THREAD_CONTEXT = _TTLCache(_THREAD_MEMORY_TTL_SECONDS)
+
+
+def _remember_thread_context(topic: dict) -> None:
+    channel = topic.get("channel_id")
+    thread_ts = topic.get("thread_ts")
+    if not channel or not thread_ts:
+        return
+    _THREAD_CONTEXT.set(f"{channel}:{thread_ts}", topic)
+
+
+def _thread_context(channel: Optional[str], thread_ts: Optional[str]) -> Optional[dict]:
+    if not channel or not thread_ts:
+        return None
+    return _THREAD_CONTEXT.get(f"{channel}:{thread_ts}")
 
 
 def _env_bool(name: str, default: str = "false") -> bool:
@@ -391,6 +427,19 @@ def _post_channel_message(channel_id: str, thread_ts: str, text: str, blocks: li
     _slack_api("chat.postMessage", payload)
 
 
+def _react_eyes(channel_id: Optional[str], ts: Optional[str]) -> None:
+    """Best-effort :eyes: reaction on a question CodeAtlas is about to
+    answer -- instant acknowledgment while the real answer is generated.
+    Never lets a reaction failure (already reacted, a transient API
+    hiccup) block answering the question."""
+    if not channel_id or not ts:
+        return
+    try:
+        _slack_api("reactions.add", {"channel": channel_id, "timestamp": ts, "name": "eyes"})
+    except Exception:
+        pass
+
+
 def _post_response_url(response_url: str, text: str, blocks: list[dict] = None) -> None:
     if not response_url:
         raise RuntimeError("Slack response_url is not available.")
@@ -443,10 +492,71 @@ def _repo_options() -> list[dict]:
     ]
 
 
+def _repo_reference_match(candidate: str, text: str) -> bool:
+    """True if `text` MENTIONS `candidate` (a repo's slug or display name)
+    somewhere in it: exactly; as a whole-word fragment of it (e.g.
+    "riderapp" naming "Sfx-Riderapp", so a short reply doesn't need the
+    repo's full name); or with the full candidate appearing as a whole
+    word inside a longer `text` (e.g. a full sentence mentioning the repo
+    by name). For routing a question to the repo it's about -- NOT for
+    deciding whether `text` is *just* a repo reference and nothing else,
+    which needs the stricter `_is_bare_repo_reference` below: a full,
+    freestanding new question that happens to name a repo would otherwise
+    satisfy this too (it contains the name as a whole word), and must not
+    be mistaken for a bare "just the repo name" reply.
+
+    (?<!\\w)/(?!\\w) rather than \\b: \\b requires a word/non-word transition
+    at the edge itself, so it never matches a candidate that starts or ends
+    with punctuation (e.g. a repo named "Payments API (EU)") even when that
+    candidate appears verbatim in the text.
+    """
+    candidate = candidate.strip().lower()
+    text = text.strip().lower()
+    if not candidate or not text:
+        return False
+    if candidate == text:
+        return True
+    if re.search(rf"(?<!\w){re.escape(text)}(?!\w)", candidate):
+        return True
+    if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", text):
+        return True
+    return False
+
+
+# Slack markdown wrapper punctuation (code, bold, italic, strikethrough) and
+# smart quotes -- what a reply built by copy-pasting a suggested repo name
+# (itself sent wrapped in backticks) typically carries around the name.
+_REPO_NAME_WRAP_RE = re.compile(
+    r"^[`*_~'\"“”‘’\s]+|[`*_~'\"“”‘’\s]+$"
+)
+
+
+def _is_bare_repo_reference(candidate: str, text: str) -> bool:
+    """True if `text` IS `candidate` (a repo's slug or display name) and
+    nothing else -- the full name/slug, a short fragment of it (e.g.
+    "riderapp" for "Sfx-Riderapp"), optionally wrapped in Slack formatting
+    a copy-paste carries along -- rather than a full sentence that merely
+    mentions the repo somewhere in it. Deliberately narrower than
+    `_repo_reference_match`: it only checks `text` found within
+    `candidate`, never the reverse, so a real new question that happens to
+    name a repo is never mistaken for a bare "just the repo name" reply.
+    """
+    candidate = candidate.strip().lower()
+    text = _REPO_NAME_WRAP_RE.sub("", text).strip().lower()
+    if not candidate or not text:
+        return False
+    if candidate == text:
+        return True
+    if re.search(rf"(?<!\w){re.escape(text)}(?!\w)", candidate):
+        return True
+    return False
+
+
 def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
-    """Deterministic repo match: an explicit name/slug mention, or the only
-    published repo. Ambiguous or unmatched text returns None so the caller
-    asks the user instead of guessing (semantic classification is Phase B).
+    """Deterministic repo match: an explicit name/slug mention (full or a
+    short fragment of it), or the only published repo. Ambiguous or
+    unmatched text returns None so the caller asks the user instead of
+    guessing (semantic classification is Phase B).
 
     Takes `repos` rather than fetching it, so a caller that already has the
     published-repo list (e.g. to build a "which repository?" prompt on a
@@ -454,16 +564,10 @@ def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
     """
     if not repos:
         return None
-    lowered = text.lower()
     matches = []
     for repo in repos:
         for candidate in {repo["slug"].strip().lower(), repo["name"].strip().lower()}:
-            # (?<!\w)/(?!\w) rather than \b: \b requires a word/non-word
-            # transition at the edge itself, so it never matches a
-            # candidate that starts or ends with punctuation (e.g. a repo
-            # named "Payments API (EU)") even when that candidate appears
-            # verbatim in the text.
-            if candidate and re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", lowered):
+            if candidate and _repo_reference_match(candidate, text):
                 matches.append(repo)
                 break
     if len(matches) == 1:
@@ -471,6 +575,40 @@ def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
     if not matches and len(repos) == 1:
         return repos[0]
     return None
+
+
+def _safe_repo_groups() -> list[dict]:
+    """Groups are an optional layer: a failure reading them must never stop a
+    normal single-repo question from being answered."""
+    try:
+        return db.list_repo_groups()
+    except Exception:
+        logger.exception("Could not read repo groups; continuing without them.")
+        return []
+
+
+def _infer_group_from_text(
+    text: str, groups: list[dict], *, pending: bool = False
+) -> Optional[dict]:
+    """Deterministic repo-group match, kept narrower than repo matching so a
+    group only takes over a question that clearly names it: the group's slug
+    or full name appears in the text as a whole word/phrase. When the user is
+    answering our own "which repository?" prompt (`pending`), a bare reply
+    that is just the group's name or a short fragment of it counts too.
+    Ambiguous or unmatched text returns None and the normal repo flow runs."""
+    matches = []
+    for group in groups:
+        candidates = {group["slug"].strip().lower(), group["name"].strip().lower()}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            lowered = text.strip().lower()
+            if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", lowered) or (
+                pending and _is_bare_repo_reference(candidate, text)
+            ):
+                matches.append(group)
+                break
+    return matches[0] if len(matches) == 1 else None
 
 
 def _matching_option(options: list[dict], value: Optional[str]) -> Optional[dict]:
@@ -778,6 +916,9 @@ def _validate_ask_values(values: dict) -> dict:
 
 
 def _topic_label(values: dict) -> str:
+    if values.get("ask_type") == ASK_GROUP:
+        group = values.get("group_name") or values.get("group_slug") or "group"
+        return f"*{group}* · repo group · {values.get('user_type')}"
     repo = values.get("repo_name") or values.get("repo_slug") or "repository"
     if values.get("ask_type") == ASK_COMPARE:
         return (
@@ -873,7 +1014,7 @@ def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
     if question:
         blocks.append({
             "type": "section",
-            "text": _mrkdwn(f"*Question asked:*\n{question}"),
+            "text": _mrkdwn(f"*Q.* {question}"),
         })
     chunks = _mrkdwn_chunks(markdown_to_mrkdwn(answer))
     for chunk in chunks[:8]:
@@ -953,6 +1094,7 @@ def _answer_topic_payload(values: dict, response: dict, branch_context: dict) ->
         "question": response.get("question") or values.get("question"),
     }
     topic["topic_label"] = _topic_label(topic)
+    _remember_thread_context(topic)
     return topic
 
 
@@ -1233,9 +1375,51 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
     )
 
 
+def _run_group_answer(values: dict, *, follow_up: bool = False, deep: bool = False) -> None:
+    from .. import main
+
+    group = db.get_repo_group_by_slug(values.get("group_slug") or "")
+    if not group:
+        raise HTTPException(status_code=404, detail="Repository group not found.")
+    actor = ask_service.slack_actor_user(
+        values["team_id"], values["slack_user_id"], values.get("user_type")
+    )
+    request = main.GroupAskRequest(
+        question=values["question"],
+        feedback_id=f"feedback-{uuid.uuid4()}",
+        llm_mode=_llm_mode(),
+        conversation_id=values.get("conversation_id") if follow_up else None,
+        follow_up=follow_up,
+        deep_investigation=deep,
+        answer_user_type=values.get("user_type") or USER_DEV,
+    )
+    _send_user_message(
+        values,
+        "Generating answer",
+        [{
+            "type": "section",
+            "text": _mrkdwn("Searching the repositories in this group and generating the answer..."),
+        }],
+    )
+    response = group_ask.answer_group_request(
+        request,
+        group,
+        actor,
+        analytics_context=_slack_analytics_context(values, group["slug"]),
+    )
+    topic = _answer_topic_payload(values, response, {})
+    _send_user_message(
+        topic,
+        "CodeAtlas answer",
+        _answer_text_blocks(response, topic),
+    )
+
+
 def _run_answer_job(values: dict, *, follow_up: bool = False, deep: bool = False) -> None:
     try:
-        if values.get("ask_type") == ASK_COMPARE:
+        if values.get("ask_type") == ASK_GROUP:
+            _run_group_answer(values, follow_up=follow_up, deep=deep)
+        elif values.get("ask_type") == ASK_COMPARE:
             _run_compare_answer(values, follow_up=follow_up, deep=deep)
         else:
             _run_single_answer(values, follow_up=follow_up, deep=deep)
@@ -1279,6 +1463,7 @@ def _run_mention_job(payload: dict, event: dict) -> None:
     if not channel_id or not slack_user:
         logger.warning("Ignoring Slack event missing channel or user.")
         return
+    _react_eyes(channel_id, event.get("ts"))
     # Everything below (repo inference, branch prep) previously had no
     # safety net: an exception here would vanish in the executor thread
     # with no log and no reply, and since the event is already marked
@@ -1297,6 +1482,28 @@ def _run_mention_job(payload: dict, event: dict) -> None:
                 }],
             )
             return
+        groups = _safe_repo_groups()
+        if groups:
+            has_pending = _PENDING_REPO_QUESTIONS.has(
+                f"{channel_id}:{thread_ts}:{slack_user}"
+            )
+            group = _infer_group_from_text(question, groups, pending=has_pending)
+            if group:
+                if has_pending and any(
+                    _is_bare_repo_reference(candidate, question)
+                    for candidate in (group["slug"], group["name"])
+                ):
+                    pending_question = _take_pending_question(
+                        channel_id, thread_ts, slack_user
+                    )
+                    if pending_question:
+                        question = pending_question
+                        values["question"] = question
+                values["ask_type"] = ASK_GROUP
+                values["group_slug"] = group["slug"]
+                values["group_name"] = group["name"]
+                _run_answer_job(values, follow_up=False, deep=False)
+                return
         repos = ask_service.published_repos()
         repo = _infer_repo_from_text(question, repos)
         if not repo:
@@ -1312,21 +1519,35 @@ def _run_mention_job(payload: dict, event: dict) -> None:
                 return
             _remember_pending_question(channel_id, thread_ts, slack_user, question)
             names = ", ".join(f"`{item['name']}`" for item in repos[:10])
+            group_hint = (
+                " To ask across several repositories at once, name a group, e.g. "
+                + ", ".join(f"`{item['name']}`" for item in groups[:10])
+                + "."
+                if groups
+                else ""
+            )
             _send_user_message(
                 values,
                 "Which repository?",
                 [{
                     "type": "section",
                     "text": _mrkdwn(
-                        f"I couldn't tell which repository you mean. Mention it by name, e.g. {names}."
+                        f"I couldn't tell which repository you mean. Mention it by name, e.g. {names}.{group_hint}"
                     ),
                 }],
             )
             return
-        # A bare repo-name reply (e.g. just "sortbuddy") to our own "which
-        # repository?" prompt, in the same thread, answers that prompt
-        # rather than being treated as a new one-word question.
-        if question.strip().lower() in {repo["slug"].lower(), repo["name"].lower()}:
+        # A bare repo-name reply (e.g. just "sortbuddy", a short fragment
+        # like "riderapp" naming "Sfx-Riderapp", or a copy-pasted
+        # "`Sfx-Riderapp`" carrying the backticks the suggestion list itself
+        # used) to our own "which repository?" prompt, in the same thread,
+        # answers that prompt rather than being treated as a new one-word
+        # question. Uses the stricter bare-reference check, not the general
+        # mention-matcher above: a genuine new question that just happens
+        # to name the repo (e.g. "does gandalf support push notifications?")
+        # must be answered as asked, not have its text silently replaced by
+        # the old pending question.
+        if _is_bare_repo_reference(repo["slug"], question) or _is_bare_repo_reference(repo["name"], question):
             pending_question = _take_pending_question(channel_id, thread_ts, slack_user)
             if pending_question:
                 question = pending_question
@@ -1373,6 +1594,42 @@ def _run_mention_job(payload: dict, event: dict) -> None:
 
 def _start_mention_job(payload: dict, event: dict) -> None:
     _executor.submit(_run_mention_job, payload, event)
+
+
+def _run_thread_follow_up_job(payload: dict, event: dict) -> None:
+    """A mention-less reply inside a thread CodeAtlas already answered in:
+    continue that exact conversation (same repo/branch, follow_up=True)
+    instead of re-inferring the repo from just this one reply, which would
+    lose the context and could re-trigger "which repository?" for a message
+    that never names one -- e.g. answering CodeAtlas's own clarifying
+    question."""
+    channel_id = event.get("channel")
+    thread_ts = event.get("thread_ts")
+    slack_user = event.get("user")
+    question = _strip_mention(event.get("text") or "")
+    if not channel_id or not slack_user or not question:
+        return
+    context = _thread_context(channel_id, thread_ts)
+    if not context:
+        # No resolved answer yet for this thread (e.g. it's still waiting on
+        # a "which repository?" reply, or the first answer is still in
+        # flight) -- fall back to fresh inference, which also covers a bare
+        # repo-name reply resuming the pending question. _run_mention_job
+        # reacts on this event itself, so don't also react here.
+        _run_mention_job(payload, event)
+        return
+    _react_eyes(channel_id, event.get("ts"))
+    values = {
+        **context,
+        "user_id": slack_user,
+        "slack_user_id": slack_user,
+        "question": question,
+    }
+    _run_answer_job(values, follow_up=True)
+
+
+def _start_thread_follow_up_job(payload: dict, event: dict) -> None:
+    _executor.submit(_run_thread_follow_up_job, payload, event)
 
 
 def _open_ask_modal(metadata: dict, trigger_id: str) -> None:
@@ -1431,6 +1688,11 @@ def _handle_block_actions(payload: dict) -> dict:
     if action_id == ACTION_NEW:
         metadata = _load_metadata(action.get("value") or "")
         metadata["question"] = ""
+        if metadata.get("ask_type") == ASK_GROUP:
+            # The ask modal is repo/branch based; start it fresh rather than
+            # carrying the group's keys into a single-branch form.
+            for key in ("ask_type", "group_slug", "group_name", "conversation_id"):
+                metadata.pop(key, None)
         _slack_api("views.open", {
             "trigger_id": payload["trigger_id"],
             "view": build_ask_view(metadata),
@@ -1586,20 +1848,9 @@ async def slack_events(request: Request):
         and not event.get("subtype")
         and not event.get("bot_id")
     )
-    # A reply inside a channel thread CodeAtlas already answered in doesn't
-    # need another @mention either, same idea as a DM. Requires Slack to
-    # actually deliver plain channel/group messages (message.channels /
-    # message.groups event subscriptions, with the matching
-    # channels:history / groups:history bot scopes) -- app_mention and
-    # message.im alone, the pre-existing subscriptions, never fire for a
-    # mention-less reply.
-    is_known_thread_reply = (
-        event_type == "message"
-        and event.get("channel_type") != "im"
-        and not event.get("subtype")
-        and not event.get("bot_id")
-        and _is_mentioned_thread(event.get("channel"), event.get("thread_ts"))
-    )
+    # In channels (including threads) CodeAtlas only responds when @mentioned;
+    # mention-less thread replies are ignored.
+    is_known_thread_reply = False
     if is_channel_mention:
         _remember_mentioned_thread(
             event.get("channel"), event.get("thread_ts") or event.get("ts")
@@ -1613,7 +1864,10 @@ async def slack_events(request: Request):
             "Accepted Slack %s for team=%s channel=%s user=%s",
             event_type, payload.get("team_id"), event.get("channel"), event.get("user"),
         )
-        _start_mention_job(payload, event)
+        if is_known_thread_reply:
+            _start_thread_follow_up_job(payload, event)
+        else:
+            _start_mention_job(payload, event)
     return Response(status_code=200)
 
 

@@ -71,7 +71,18 @@ Everything runs on your own box. Private code never has to leave it.
   transient request context only; they are not indexed or stored.
 - **Slack ask surface.** A Slack workspace can use `/codeatlas` to ask the same
   grounded text questions from Slack against published repositories and approved
-  branches.
+  branches. `@codeatlas` mentions and DMs work too, without the slash command;
+  once a thread has an answer, further replies in it don't need a repeat
+  mention. CodeAtlas reacts with :eyes: on a question it's about to answer.
+- **Ask across several repos at once.** Admins can connect published
+  repositories into a **repo group** (e.g. a frontend, its gateway, and the
+  service behind it). Users ask one question and CodeAtlas investigates every
+  member repo, following calls across the boundaries, and cites each claim with
+  its repository. A group never widens access: a user can use it only if they
+  already have access to every repo in it.
+- **Choice of shared LLM.** Admins can configure more than one shared model
+  (e.g. two different providers); users pick which one to use, with a
+  configurable default.
 
 ### Authentication and Access Model
 
@@ -354,7 +365,10 @@ and fill in what you need. The `.env` file is gitignored.
 Main configuration groups:
 
 - **Shared LLM tier:** OpenAI-compatible or Anthropic-compatible endpoint used
-  as fallback for answering questions.
+  as fallback for answering questions. Optionally configure a registry of
+  several named shared LLMs (`CODEATLAS_SHARED_LLMS`) instead of just one, so
+  users can pick which shared model to use, with a configurable default
+  (`CODEATLAS_DEFAULT_SHARED_LLM`).
 - **Reserved Ollama integration:** retained behind a disabled feature flag for a
   future release; it is not exposed to users.
 - **Private Git credentials:** optional read-only GitHub or Bitbucket secrets
@@ -414,30 +428,63 @@ After changing Google auth settings, restart the CodeAtlas service.
 
 ### Slack Integration Setup
 
-CodeAtlas can expose the same answer engine used by the browser UI through a
-Slack slash command.
+CodeAtlas can expose the same answer engine used by the browser UI through
+Slack, two ways:
 
-In Slack, `/codeatlas` opens a modal with:
+- **`/codeatlas` slash command**, which opens a modal with:
+  - Repository
+  - Ask type: single branch answer, or compare 2 branch answer
+  - Branch, or base branch and compare branch
+  - User type
+  - Question
+- **`@codeatlas` mentions and DMs**, no slash command needed. Mention the bot
+  in a channel (or just message it directly in a DM) naming the repository and
+  the question, e.g. `@codeatlas how does login work in SortBuddy?`. If the
+  repo can't be inferred, CodeAtlas asks which one; reply with the repo name
+  (or a recognizable fragment of it, e.g. `riderapp` for `Sfx-Riderapp`) to
+  resume the original question. Once a thread has an answer, further replies
+  in that same thread are treated as follow-up questions too, without needing
+  to mention the bot again. CodeAtlas reacts with :eyes: on a question it's
+  about to answer.
 
-- Repository
-- Ask type: single branch answer, or compare 2 branch answer
-- Branch, or base branch and compare branch
-- User type
-- Question
+Either way, only published repositories are considered. For the slash command,
+branch dropdowns list approved branches; for mentions/DMs, CodeAtlas uses the
+repo's default branch (admins can pin which branch that is from the branch
+list in `/admin.html`, instead of it always following the remote's default
+branch). When a branch needs to sync/index, CodeAtlas starts that in the
+background and the answer waits for it to become ready, with the same
+retrieval, cache, follow-up, and **Investigate deeply** behavior as the web
+Ask UI.
 
-Only published repositories are listed. Branch dropdowns list approved branches.
-When a user selects a branch, CodeAtlas starts sync/index in the background. The
-submitted answer waits for the selected branch to become ready before answering
-with the same retrieval, cache, follow-up, and **Investigate deeply** behavior
-as the web Ask UI.
-
-Create a Slack app for the target workspace, add the `/codeatlas` slash command,
-enable interactivity, and install the app with these bot scopes:
+Create a Slack app for the target workspace, add the `/codeatlas` slash
+command, enable interactivity and Event Subscriptions, and install the app
+with these bot scopes:
 
 ```text
 commands
 chat:write
+reactions:write
+app_mentions:read
+im:history
+channels:history
+groups:history
 ```
+
+`reactions:write` is only needed for the :eyes: acknowledgment; the four
+`*:history`/`app_mentions:read` scopes are only needed for the mention/DM/
+thread-reply flow (a slash-command-only deployment can omit them). Subscribe
+to these bot events under Event Subscriptions:
+
+```text
+app_mention
+message.im
+message.channels
+message.groups
+```
+
+The bot must also be a member of a channel (invited, or added via the channel
+settings) to receive its `message.channels`/`message.groups` events at all --
+this is a general Slack requirement, not specific to CodeAtlas.
 
 For local testing through ngrok, start CodeAtlas locally and expose port `8000`:
 
@@ -450,6 +497,7 @@ Use the ngrok HTTPS host with these paths in the Slack app:
 ```text
 Slash command Request URL: https://<ngrok-host>/slack/commands
 Interactivity Request URL: https://<ngrok-host>/slack/interactions
+Event Subscriptions Request URL: https://<ngrok-host>/slack/events
 ```
 
 For staging, configure Slack with:
@@ -457,7 +505,14 @@ For staging, configure Slack with:
 ```text
 Slash command Request URL: https://codeatlas.example.com/slack/commands
 Interactivity Request URL: https://codeatlas.example.com/slack/interactions
+Event Subscriptions Request URL: https://codeatlas.example.com/slack/events
 ```
+
+When Slack traffic is routed through a relay (see below) that rewrites paths,
+double-check each of the three Request URLs actually resolves through the
+relay to the matching `/slack/*` path on the VM -- a URL that isn't relayed
+correctly returns a plain 404 for that one feature (e.g. slash command works,
+but mention/interaction buttons don't) with no other symptom.
 
 Set these on the VM/container environment:
 
@@ -500,7 +555,11 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 1. Log in to `/admin.html`.
 2. On first run, create the first admin account with the enabled auth mode.
 3. Clone the required repository.
-4. Approve the remote branches that should be available.
+4. Approve the remote branches that should be available. One branch is the
+   default; it follows the remote's default branch automatically unless an
+   admin pins a different one with **Make default branch**, which then sticks
+   until another branch is pinned. Questions that don't name a branch (e.g.
+   the Slack mention/DM flow) use this default.
 5. Run **Sync & index now** for the required branches.
 6. Test answer quality from the admin tools.
 7. Tune retrieval configuration when needed.
@@ -512,7 +571,11 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
      mode.
    - Use **Edit user** to update username, associated Gmail ID, and user type;
      password updates are available only outside Google-only mode.
-10. Review repo access and audit logs as needed.
+10. Optionally connect repositories into a **repo group** in the **Repo groups**
+    section (2 to 6 published repos, an optional note on how they relate, and
+    an optional pinned branch per repo; unpinned repos use their usual default
+    branch). **Grant** on a group gives a user access to every repo in it.
+11. Review repo access and audit logs as needed.
 
 ![CodeAtlas admin analytics dashboard with generic sample usage data.](docs/screenshots/codeatlas-admin-analytics.png)
 
@@ -529,8 +592,15 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 7. Use **Investigate deeply** when the cached or fast follow-up answer needs a
    full repository investigation.
 8. Optionally save a personal LLM key if BYOK is enabled for their workflow.
+9. If an admin has connected repositories into a group you can access, an
+   **Ask a repo group** mode appears next to the single-branch and compare
+   modes. Pick the group and ask one question across all its repos; follow-ups
+   stay in the same topic. Groups are hidden from users who lack access to any
+   member repo, so nothing changes for accounts without one.
 
 ### Slack User Workflow
+
+**Via the slash command** (branch picker, ephemeral answer):
 
 1. Type `/codeatlas` in Slack.
 2. Select a published repository.
@@ -543,6 +613,27 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 7. Receive an ephemeral Slack answer.
 8. Use **Ask follow-up**, **Investigate deeply**, or **New question** from the
    Slack answer actions.
+
+**Via `@codeatlas` mention or DM** (no modal, answers visibly in-thread):
+
+1. Mention `@codeatlas` in a channel with a question naming the repository
+   (e.g. `@codeatlas how does login work in SortBuddy?`), or just message the
+   bot directly in a DM -- no mention needed there.
+2. CodeAtlas reacts :eyes: and answers in the thread using the repo's default
+   branch, with the same retrieval, follow-up, and **Investigate deeply**
+   behavior as the web Ask UI.
+3. If the repository can't be inferred from the question, CodeAtlas asks which
+   one; reply with the repo's name (a short recognizable fragment works too)
+   to resume the original question against it.
+4. Keep replying in that same thread to continue the conversation -- no need
+   to mention the bot again for follow-ups. A reply in a different or
+   unrelated thread still needs its own mention.
+5. To ask across several repositories, name a repo group in the question
+   (e.g. `@codeatlas how does a refund flow through Payments stack?`). When
+   groups exist, the "which repository?" prompt lists them too, and a short
+   reply with the group's name resumes the original question. Group answers
+   are available through mentions and DMs; the `/codeatlas` modal is still
+   single-repo and compare only.
 
 ### Production and Staging Notes
 
@@ -576,8 +667,21 @@ secret-management path.
 - **Slack relay returns 401:** confirm the relay forwards
   `X-CodeAtlas-Relay-Secret` and it exactly matches
   `CODEATLAS_SLACK_RELAY_SECRET` on the VM.
-- **Slack modal action times out:** confirm the interactivity URL points to
-  `/slack/interactions` and the public HTTPS URL reaches the VM.
+- **Slack modal action times out, or a button returns "This app responded with
+  Status Code 404":** confirm the Interactivity Request URL points to
+  `/slack/interactions` and the public HTTPS URL reaches the VM. If traffic
+  goes through a relay, check that URL is actually relayed to that path --
+  Slack shows a plain 404 for a URL that never reaches the app at all, which
+  looks the same as the app itself returning one.
+- **`@codeatlas` mention or DM is never answered:** confirm the Event
+  Subscriptions Request URL points to `/slack/events`, is subscribed to
+  `app_mention` and `message.im`, and the app has the matching
+  `app_mentions:read`/`im:history` scopes installed.
+- **Thread replies need `@codeatlas` again on every message:** confirm the
+  Event Subscriptions Request URL is also subscribed to `message.channels`
+  (and `message.groups` for private channels) with the matching
+  `channels:history`/`groups:history` scopes, and that the bot has been
+  invited to the channel.
 - **Slack branch list is empty:** publish the repository and approve/index the
   required branches from the admin console first.
 - **Sync returns 429:** the branch sync cooldown is active. Wait for the
