@@ -1515,3 +1515,73 @@ class SlackAnswerFormattingTests(unittest.TestCase):
 
     def test_oversized_single_line_is_still_split(self):
         self.assertEqual(len(slack_routes._mrkdwn_chunks("x" * 700, limit=300)), 3)
+
+
+class SlackGroupMentionTests(unittest.TestCase):
+    GROUP = {"id": 1, "slug": "payments-stack", "name": "Payments stack", "members": []}
+    REPOS = [
+        {"id": 1, "slug": "figwit", "name": "Figwit", "status": "published"},
+        {"id": 2, "slug": "erebor", "name": "Erebor", "status": "published"},
+    ]
+
+    def setUp(self):
+        slack_routes._PENDING_REPO_QUESTIONS.clear()
+
+    def _event(self, text, **overrides):
+        event = {"type": "app_mention", "channel": "C1", "user": "U1",
+                 "ts": "111.222", "text": f"<@B1> {text}"}
+        event.update(overrides)
+        return event
+
+    def _run(self, event, groups=None):
+        payload = {"type": "event_callback", "team_id": "T123", "event_id": "Ev1", "event": event}
+        with patch.object(slack_routes.db, "list_repo_groups",
+                          return_value=[self.GROUP] if groups is None else groups), \
+                patch.object(slack_routes.ask_service, "published_repos", return_value=self.REPOS), \
+                patch.object(slack_routes, "_default_branch_name", return_value="main"), \
+                patch.object(slack_routes.db, "get_repo_branch_by_name", return_value={"id": 5}), \
+                patch.object(slack_routes, "_send_user_message") as send, \
+                patch.object(slack_routes, "_run_answer_job") as run_job:
+            slack_routes._run_mention_job(payload, event)
+        return run_job, send
+
+    def test_naming_a_group_routes_to_a_group_answer(self):
+        run_job, _ = self._run(self._event("how does Payments stack settle a refund?"))
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["ask_type"], slack_routes.ASK_GROUP)
+        self.assertEqual(values["group_slug"], "payments-stack")
+        self.assertNotIn("repo_slug", values)
+
+    def test_without_a_group_name_the_single_repo_flow_is_unchanged(self):
+        run_job, _ = self._run(self._event("how does figwit log in?"))
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["ask_type"], slack_routes.ASK_SINGLE)
+        self.assertEqual(values["repo_slug"], "figwit")
+
+    def test_bare_group_reply_resumes_the_pending_question(self):
+        ambiguous = self._event("how does a refund work?", ts="100.001")
+        self._run(ambiguous)
+        reply = self._event("payments", ts="100.002", thread_ts="100.001")
+        run_job, _ = self._run(reply)
+        values = run_job.call_args.args[0]
+        self.assertEqual(values["ask_type"], slack_routes.ASK_GROUP)
+        self.assertEqual(values["question"], "how does a refund work?")
+
+    def test_which_repository_prompt_lists_groups_only_when_they_exist(self):
+        _, send = self._run(self._event("how does a refund work?"))
+        self.assertIn("Payments stack", str(send.call_args))
+        _, send = self._run(self._event("how does a refund work?"), groups=[])
+        self.assertNotIn("group", str(send.call_args))
+
+    def test_group_job_dispatches_and_follow_up_keeps_the_group(self):
+        values = {"ask_type": slack_routes.ASK_GROUP, "group_slug": "payments-stack"}
+        with patch.object(slack_routes, "_run_group_answer") as run_group:
+            slack_routes._run_answer_job(values, follow_up=True)
+        run_group.assert_called_once_with(values, follow_up=True, deep=False)
+
+    def test_group_answer_label(self):
+        label = slack_routes._topic_label({
+            "ask_type": slack_routes.ASK_GROUP, "group_name": "Payments stack",
+            "user_type": slack_routes.USER_PRODUCT,
+        })
+        self.assertIn("Payments stack", label)

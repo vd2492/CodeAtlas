@@ -74,6 +74,12 @@ Everything runs on your own box. Private code never has to leave it.
   branches. `@codeatlas` mentions and DMs work too, without the slash command;
   once a thread has an answer, further replies in it don't need a repeat
   mention. CodeAtlas reacts with :eyes: on a question it's about to answer.
+- **Ask across several repos at once.** Admins can connect published
+  repositories into a **repo group** (e.g. a frontend, its gateway, and the
+  service behind it). Users ask one question and CodeAtlas investigates every
+  member repo, following calls across the boundaries, and cites each claim with
+  its repository. A group never widens access: a user can use it only if they
+  already have access to every repo in it.
 - **Choice of shared LLM.** Admins can configure more than one shared model
   (e.g. two different providers); users pick which one to use, with a
   configurable default.
@@ -565,7 +571,11 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
      mode.
    - Use **Edit user** to update username, associated Gmail ID, and user type;
      password updates are available only outside Google-only mode.
-10. Review repo access and audit logs as needed.
+10. Optionally connect repositories into a **repo group** in the **Repo groups**
+    section (2 to 6 published repos, an optional note on how they relate, and
+    an optional pinned branch per repo; unpinned repos use their usual default
+    branch). **Grant** on a group gives a user access to every repo in it.
+11. Review repo access and audit logs as needed.
 
 ![CodeAtlas admin analytics dashboard with generic sample usage data.](docs/screenshots/codeatlas-admin-analytics.png)
 
@@ -582,6 +592,11 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 7. Use **Investigate deeply** when the cached or fast follow-up answer needs a
    full repository investigation.
 8. Optionally save a personal LLM key if BYOK is enabled for their workflow.
+9. If an admin has connected repositories into a group you can access, an
+   **Ask a repo group** mode appears next to the single-branch and compare
+   modes. Pick the group and ask one question across all its repos; follow-ups
+   stay in the same topic. Groups are hidden from users who lack access to any
+   member repo, so nothing changes for accounts without one.
 
 ### Slack User Workflow
 
@@ -613,6 +628,12 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 4. Keep replying in that same thread to continue the conversation -- no need
    to mention the bot again for follow-ups. A reply in a different or
    unrelated thread still needs its own mention.
+5. To ask across several repositories, name a repo group in the question
+   (e.g. `@codeatlas how does a refund flow through Payments stack?`). When
+   groups exist, the "which repository?" prompt lists them too, and a short
+   reply with the group's name resumes the original question. Group answers
+   are available through mentions and DMs; the `/codeatlas` modal is still
+   single-repo and compare only.
 
 ### Production and Staging Notes
 

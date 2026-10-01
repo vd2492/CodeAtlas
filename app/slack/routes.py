@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 import requests
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from .. import ask_service, db
+from .. import ask_service, db, group_ask
 from ..config import default_shared_llm_id, shared_llm_mode
 
 router = APIRouter(prefix="/slack", tags=["slack"])
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 ASK_SINGLE = "single_branch"
 ASK_COMPARE = "compare_branches"
+ASK_GROUP = "repo_group"
 USER_DEV = "dev_team"
 USER_PRODUCT = "product_team"
 
@@ -576,6 +577,40 @@ def _infer_repo_from_text(text: str, repos: list[dict]) -> Optional[dict]:
     return None
 
 
+def _safe_repo_groups() -> list[dict]:
+    """Groups are an optional layer: a failure reading them must never stop a
+    normal single-repo question from being answered."""
+    try:
+        return db.list_repo_groups()
+    except Exception:
+        logger.exception("Could not read repo groups; continuing without them.")
+        return []
+
+
+def _infer_group_from_text(
+    text: str, groups: list[dict], *, pending: bool = False
+) -> Optional[dict]:
+    """Deterministic repo-group match, kept narrower than repo matching so a
+    group only takes over a question that clearly names it: the group's slug
+    or full name appears in the text as a whole word/phrase. When the user is
+    answering our own "which repository?" prompt (`pending`), a bare reply
+    that is just the group's name or a short fragment of it counts too.
+    Ambiguous or unmatched text returns None and the normal repo flow runs."""
+    matches = []
+    for group in groups:
+        candidates = {group["slug"].strip().lower(), group["name"].strip().lower()}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            lowered = text.strip().lower()
+            if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", lowered) or (
+                pending and _is_bare_repo_reference(candidate, text)
+            ):
+                matches.append(group)
+                break
+    return matches[0] if len(matches) == 1 else None
+
+
 def _matching_option(options: list[dict], value: Optional[str]) -> Optional[dict]:
     if not value:
         return None
@@ -881,6 +916,9 @@ def _validate_ask_values(values: dict) -> dict:
 
 
 def _topic_label(values: dict) -> str:
+    if values.get("ask_type") == ASK_GROUP:
+        group = values.get("group_name") or values.get("group_slug") or "group"
+        return f"*{group}* · repo group · {values.get('user_type')}"
     repo = values.get("repo_name") or values.get("repo_slug") or "repository"
     if values.get("ask_type") == ASK_COMPARE:
         return (
@@ -1337,9 +1375,51 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
     )
 
 
+def _run_group_answer(values: dict, *, follow_up: bool = False, deep: bool = False) -> None:
+    from .. import main
+
+    group = db.get_repo_group_by_slug(values.get("group_slug") or "")
+    if not group:
+        raise HTTPException(status_code=404, detail="Repository group not found.")
+    actor = ask_service.slack_actor_user(
+        values["team_id"], values["slack_user_id"], values.get("user_type")
+    )
+    request = main.GroupAskRequest(
+        question=values["question"],
+        feedback_id=f"feedback-{uuid.uuid4()}",
+        llm_mode=_llm_mode(),
+        conversation_id=values.get("conversation_id") if follow_up else None,
+        follow_up=follow_up,
+        deep_investigation=deep,
+        answer_user_type=values.get("user_type") or USER_DEV,
+    )
+    _send_user_message(
+        values,
+        "Generating answer",
+        [{
+            "type": "section",
+            "text": _mrkdwn("Searching the repositories in this group and generating the answer..."),
+        }],
+    )
+    response = group_ask.answer_group_request(
+        request,
+        group,
+        actor,
+        analytics_context=_slack_analytics_context(values, group["slug"]),
+    )
+    topic = _answer_topic_payload(values, response, {})
+    _send_user_message(
+        topic,
+        "CodeAtlas answer",
+        _answer_text_blocks(response, topic),
+    )
+
+
 def _run_answer_job(values: dict, *, follow_up: bool = False, deep: bool = False) -> None:
     try:
-        if values.get("ask_type") == ASK_COMPARE:
+        if values.get("ask_type") == ASK_GROUP:
+            _run_group_answer(values, follow_up=follow_up, deep=deep)
+        elif values.get("ask_type") == ASK_COMPARE:
             _run_compare_answer(values, follow_up=follow_up, deep=deep)
         else:
             _run_single_answer(values, follow_up=follow_up, deep=deep)
@@ -1402,6 +1482,28 @@ def _run_mention_job(payload: dict, event: dict) -> None:
                 }],
             )
             return
+        groups = _safe_repo_groups()
+        if groups:
+            has_pending = _PENDING_REPO_QUESTIONS.has(
+                f"{channel_id}:{thread_ts}:{slack_user}"
+            )
+            group = _infer_group_from_text(question, groups, pending=has_pending)
+            if group:
+                if has_pending and any(
+                    _is_bare_repo_reference(candidate, question)
+                    for candidate in (group["slug"], group["name"])
+                ):
+                    pending_question = _take_pending_question(
+                        channel_id, thread_ts, slack_user
+                    )
+                    if pending_question:
+                        question = pending_question
+                        values["question"] = question
+                values["ask_type"] = ASK_GROUP
+                values["group_slug"] = group["slug"]
+                values["group_name"] = group["name"]
+                _run_answer_job(values, follow_up=False, deep=False)
+                return
         repos = ask_service.published_repos()
         repo = _infer_repo_from_text(question, repos)
         if not repo:
@@ -1417,13 +1519,20 @@ def _run_mention_job(payload: dict, event: dict) -> None:
                 return
             _remember_pending_question(channel_id, thread_ts, slack_user, question)
             names = ", ".join(f"`{item['name']}`" for item in repos[:10])
+            group_hint = (
+                " To ask across several repositories at once, name a group, e.g. "
+                + ", ".join(f"`{item['name']}`" for item in groups[:10])
+                + "."
+                if groups
+                else ""
+            )
             _send_user_message(
                 values,
                 "Which repository?",
                 [{
                     "type": "section",
                     "text": _mrkdwn(
-                        f"I couldn't tell which repository you mean. Mention it by name, e.g. {names}."
+                        f"I couldn't tell which repository you mean. Mention it by name, e.g. {names}.{group_hint}"
                     ),
                 }],
             )
@@ -1579,6 +1688,11 @@ def _handle_block_actions(payload: dict) -> dict:
     if action_id == ACTION_NEW:
         metadata = _load_metadata(action.get("value") or "")
         metadata["question"] = ""
+        if metadata.get("ask_type") == ASK_GROUP:
+            # The ask modal is repo/branch based; start it fresh rather than
+            # carrying the group's keys into a single-branch form.
+            for key in ("ask_type", "group_slug", "group_name", "conversation_id"):
+                metadata.pop(key, None)
         _slack_api("views.open", {
             "trigger_id": payload["trigger_id"],
             "view": build_ask_view(metadata),

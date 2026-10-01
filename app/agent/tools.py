@@ -919,3 +919,70 @@ class ComparisonRepositoryToolbox:
             "result": RepositoryToolbox._trace_summary(result),
         })
         return encoded
+
+
+class GroupRepositoryToolbox(ComparisonRepositoryToolbox):
+    """Route read-only tool calls to any member of a repo group.
+
+    Same safety model as the A/B comparison toolbox: every call names one member
+    repo and is delegated to that repo's own workspace-scoped RepositoryToolbox,
+    so a call can never reach a repo outside the group.
+    """
+
+    comparison_mode = False
+    group_mode = True
+
+    def __init__(self, members: list[dict]):
+        self.repositories = {}
+        for member in members:
+            slug = member.get("slug") or ""
+            self.repositories[slug] = {
+                "label": member.get("name") or slug,
+                "name": member.get("name") or slug,
+                "slug": slug,
+                "workspace": member["workspace"],
+                "toolbox": RepositoryToolbox(member["workspace"]),
+            }
+        self.trace: list[dict] = []
+        self.tool_definitions = self._tool_definitions()
+        self.response_style_instruction = ""
+        self.config = None
+
+    def _tool_definitions(self) -> list[dict]:
+        definitions = json.loads(json.dumps(TOOL_DEFINITIONS))
+        slugs = list(self.repositories)
+        names = ", ".join(
+            f"{slug} ({repo['name']})" for slug, repo in self.repositories.items()
+        )
+        repo_description = f"Group repository to inspect. One of: {names}."
+        for definition in definitions:
+            if definition.get("name") == ASK_USER_TOOL_NAME:
+                continue
+            parameters = definition.setdefault("parameters", {})
+            properties = parameters.setdefault("properties", {})
+            properties["repo"] = {
+                "type": "string",
+                "enum": slugs,
+                "description": repo_description,
+            }
+            required = parameters.setdefault("required", [])
+            if "repo" not in required:
+                required.insert(0, "repo")
+            definition["description"] = (
+                f"{definition.get('description', '')} In group mode, always set "
+                "repo to one of the group's repositories."
+            )
+        return definitions
+
+    def _repo_key(self, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        for key, repo in self.repositories.items():
+            if normalized in {
+                key.lower(),
+                str(repo.get("name") or "").lower(),
+                str(repo.get("workspace") or "").lower(),
+            }:
+                return key
+        raise ValueError(
+            "repo is required and must be one of: " + ", ".join(self.repositories)
+        )

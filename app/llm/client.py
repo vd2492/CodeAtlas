@@ -172,6 +172,19 @@ COMPARISON_AGENT_SYSTEM_PROMPT = (
     + _DEV_ASK_RULE
 )
 
+GROUP_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories with read-only tools. Every tool call must set `repo` to one "
+    "of the group's repository slugs. First work out which repositories the "
+    "question touches, investigate each one separately, and follow calls, "
+    "APIs, events, or shared data across repository boundaries when the "
+    "question needs it. Do not transfer evidence or claims from one repository "
+    "to another. Cite concrete claims with the repository name plus file path "
+    "and line numbers. If a repository lacks evidence for part of the question, "
+    "say so explicitly. "
+    + _DEV_ASK_RULE
+)
+
 PRODUCT_TEAM_RESPONSE_INSTRUCTION = (
     "The final answer is for a product-team reader. Keep it simple, clear, and "
     "concise. Use everyday language only. Do not include technical terms, code "
@@ -250,6 +263,40 @@ PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT = (
     "names, function or method names, code identifiers, APIs, endpoint paths, "
     "source citations, or code snippets. "
     + _PRODUCT_ASK_RULE
+)
+
+PRODUCT_TEAM_GROUP_AGENT_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories with read-only tools. Every tool call must set `repo` to one "
+    "of the group's repository slugs. Investigate the relevant repositories "
+    "separately and follow behavior across them, without transferring claims "
+    "from one repository to another. The final answer is for a product-team "
+    "reader, so keep implementation details private and explain only "
+    "user-visible behavior, outcomes, conditions, and caveats in simple "
+    "everyday English. Do not include technical terms, file names, file paths, "
+    "line numbers, class names, function or method names, code identifiers, "
+    "APIs, endpoint paths, source citations, or code snippets. "
+    + _PRODUCT_ASK_RULE
+)
+
+GROUP_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories. Use only the provided evidence. Keep each repository's "
+    "evidence separate, do not transfer claims from one repository to another, "
+    "and state when evidence is missing. For developer-focused answers, cite "
+    "concrete claims with repository name plus file path and line numbers."
+)
+
+PRODUCT_TEAM_GROUP_SYSTEM_PROMPT = (
+    "You are CodeAtlas answering a question about a group of related "
+    "repositories for a product-team reader. Use only the provided evidence "
+    "internally. Keep each repository's evidence separate, do not transfer "
+    "claims from one repository to another, and state when evidence is "
+    "missing. The final answer must use simple everyday English and describe "
+    "only user-visible behavior, outcomes, conditions, and caveats. Do not "
+    "include technical terms, file names, file paths, line numbers, class "
+    "names, function or method names, code identifiers, APIs, endpoint paths, "
+    "source citations, or code snippets."
 )
 
 SOURCE_REFERENCE_RE = re.compile(
@@ -343,7 +390,13 @@ def _agent_system_prompt(toolbox) -> str:
     response_instruction = str(
         getattr(toolbox, "response_style_instruction", "") or ""
     ).strip()
-    if getattr(toolbox, "comparison_mode", False):
+    if getattr(toolbox, "group_mode", False):
+        prompt = (
+            PRODUCT_TEAM_GROUP_AGENT_SYSTEM_PROMPT
+            if response_instruction
+            else GROUP_AGENT_SYSTEM_PROMPT
+        )
+    elif getattr(toolbox, "comparison_mode", False):
         prompt = (
             PRODUCT_TEAM_COMPARISON_AGENT_SYSTEM_PROMPT
             if response_instruction
@@ -816,6 +869,34 @@ def _post_openai_with_compatibility(url: str, model: str, payload: dict, **kwarg
 
 def build_prompt(context: dict) -> str:
     preview = context.get("llm_context_preview", {})
+    if context.get("group_mode"):
+        answer_requirements = (
+            """- Lead with a concise answer to the user's question.
+- Explain how the repositories take part, in simple product language.
+- Explain only user-visible behavior, outcomes, conditions, and caveats.
+- Do not include technical terms, internal identifiers, file names, citations, line numbers, classes, functions, methods, code identifiers, APIs, endpoints, URLs, code, or implementation details.
+- If a repository lacks evidence for the requested behavior, say that clearly without exposing source details."""
+            if _product_answer_context(context)
+            else
+            """- Lead with a direct answer to the user's exact question.
+- Organize the answer by repository, then explain how they connect end to end.
+- For every concrete implementation claim, identify which repository it belongs to.
+- Cite source files and line numbers for developer-facing claims when present in the evidence.
+- If a repository lacks evidence for the requested behavior, say that explicitly instead of guessing."""
+        )
+        return f"""
+Question:
+{preview.get("question", "")}
+
+Group evidence:
+{json.dumps(preview, indent=2)}
+
+Answer requirements:
+{answer_requirements}
+
+Audience-specific final-answer requirements:
+{context.get("response_style_instruction", "") or "Use the existing developer-focused answer style."}
+"""
     if context.get("comparison_mode"):
         answer_requirements = (
             """- Lead with a concise answer to the user's comparison question.
@@ -900,6 +981,12 @@ def _require_follow_up_answer(answer: str, provider: str) -> str:
 
 
 def _system_prompt(context: dict) -> str:
+    if context.get("group_mode"):
+        return (
+            PRODUCT_TEAM_GROUP_SYSTEM_PROMPT
+            if _product_answer_context(context)
+            else GROUP_SYSTEM_PROMPT
+        )
     if context.get("comparison_mode"):
         return (
             PRODUCT_TEAM_COMPARISON_SYSTEM_PROMPT

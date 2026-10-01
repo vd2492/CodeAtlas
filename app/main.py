@@ -75,6 +75,9 @@ from .repos.branches import (
     start_branch_services,
     stop_branch_services,
 )
+from . import group_ask
+from .repos import groups as group_service
+from .repos.group_routes import admin_router as group_admin_router, user_router as group_user_router
 from .repos.routes import router as repos_router
 from .slack.routes import router as slack_router
 
@@ -88,6 +91,8 @@ VISITOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 app.include_router(auth_router)
 app.include_router(repos_router)
 app.include_router(branch_router)
+app.include_router(group_admin_router)
+app.include_router(group_user_router)
 app.include_router(slack_router)
 
 
@@ -1235,6 +1240,18 @@ def normalize_image_attachments(raw_attachments) -> list[dict]:
             "size": len(decoded),
         })
     return normalized
+
+
+class GroupAskRequest(BaseModel):
+    question: str
+    feedback_id: Optional[str] = None
+    llm_mode: Optional[str] = None
+    conversation_id: Optional[str] = None
+    follow_up: bool = False
+    deep_investigation: bool = False
+    answer_user_type: Optional[str] = None
+    activity_request_id: Optional[str] = None
+    user_llm: Optional[dict] = None
 
 
 class FlowSummaryRequest(BaseModel):
@@ -3586,6 +3603,16 @@ def compare_repos_endpoint(
     user: dict = Depends(require_user),
 ):
     return ask_service.answer_compare_request(request, workspace, user)
+
+
+@app.post("/repo/group/ask")
+def group_ask_endpoint(
+    request: GroupAskRequest,
+    group: str = Query(...),
+    user: dict = Depends(require_user),
+):
+    resolved = group_service.require_group_for_user(group, user)
+    return group_ask.answer_group_request(request, resolved, user)
 
 
 @app.post("/repo/flows/{topic}/summary")

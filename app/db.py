@@ -96,6 +96,22 @@ CREATE TABLE IF NOT EXISTS repo_access (
     PRIMARY KEY (user_id, repo_id)
 );
 
+CREATE TABLE IF NOT EXISTS repo_groups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug        TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS repo_group_members (
+    group_id   INTEGER NOT NULL REFERENCES repo_groups(id) ON DELETE CASCADE,
+    repo_id    INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    branch_id  INTEGER REFERENCES repo_branches(id) ON DELETE SET NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_id, repo_id)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1195,6 +1211,120 @@ def list_repo_members(repo_id: int) -> List[dict]:
             (repo_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# --- Repo groups -------------------------------------------------------------
+
+def _group_members(conn, group_id: int) -> List[dict]:
+    rows = conn.execute(
+        "SELECT m.repo_id, m.branch_id, m.position, r.slug AS repo_slug, "
+        "r.name AS repo_name, r.workspace AS repo_workspace, "
+        "r.status AS repo_status, r.allow_shared_fallback, "
+        "b.name AS branch_name "
+        "FROM repo_group_members m JOIN repos r ON r.id = m.repo_id "
+        "LEFT JOIN repo_branches b ON b.id = m.branch_id "
+        "WHERE m.group_id = ? ORDER BY m.position, m.repo_id",
+        (group_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _group_with_members(conn, row) -> Optional[dict]:
+    if not row:
+        return None
+    group = dict(row)
+    group["members"] = _group_members(conn, group["id"])
+    return group
+
+
+def list_repo_groups() -> List[dict]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM repo_groups ORDER BY id").fetchall()
+        return [_group_with_members(conn, row) for row in rows]
+
+
+def get_repo_group_by_slug(slug: str) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM repo_groups WHERE slug = ?", (slug,)
+        ).fetchone()
+        return _group_with_members(conn, row)
+
+
+def _replace_group_members(conn, group_id: int, members: List[dict]) -> None:
+    conn.execute("DELETE FROM repo_group_members WHERE group_id = ?", (group_id,))
+    for position, member in enumerate(members):
+        conn.execute(
+            "INSERT INTO repo_group_members (group_id, repo_id, branch_id, position) "
+            "VALUES (?, ?, ?, ?)",
+            (group_id, member["repo_id"], member.get("branch_id"), position),
+        )
+
+
+def create_repo_group(
+    slug: str, name: str, description: str, members: List[dict]
+) -> dict:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO repo_groups (slug, name, description) VALUES (?, ?, ?)",
+            (slug, name, description),
+        )
+        _replace_group_members(conn, cur.lastrowid, members)
+        row = conn.execute(
+            "SELECT * FROM repo_groups WHERE id = ?", (cur.lastrowid,)
+        ).fetchone()
+        return _group_with_members(conn, row)
+
+
+def update_repo_group(
+    slug: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    members: Optional[List[dict]] = None,
+) -> Optional[dict]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM repo_groups WHERE slug = ?", (slug,)
+        ).fetchone()
+        if not row:
+            return None
+        if name is not None:
+            conn.execute("UPDATE repo_groups SET name = ? WHERE id = ?", (name, row["id"]))
+        if description is not None:
+            conn.execute(
+                "UPDATE repo_groups SET description = ? WHERE id = ?",
+                (description, row["id"]),
+            )
+        if members is not None:
+            _replace_group_members(conn, row["id"], members)
+        row = conn.execute(
+            "SELECT * FROM repo_groups WHERE id = ?", (row["id"],)
+        ).fetchone()
+        return _group_with_members(conn, row)
+
+
+def delete_repo_group(slug: str) -> None:
+    """FK cascade clears the group's member rows; repos themselves are untouched."""
+    with connect() as conn:
+        conn.execute("DELETE FROM repo_groups WHERE slug = ?", (slug,))
+
+
+def user_can_access_repo_group(user: dict, group: dict) -> bool:
+    """A group is usable only by someone who can already reach every member
+    repo, so a group can never widen what a user is allowed to read."""
+    if user.get("role") == "admin":
+        return True
+    members = group.get("members") or []
+    if not members:
+        return False
+    with connect() as conn:
+        granted = {
+            row["repo_id"]
+            for row in conn.execute(
+                "SELECT repo_id FROM repo_access WHERE user_id = ?", (user["id"],)
+            ).fetchall()
+        }
+    return all(member["repo_id"] in granted for member in members)
 
 
 # --- Audit log ---------------------------------------------------------------

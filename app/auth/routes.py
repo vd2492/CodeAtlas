@@ -263,6 +263,9 @@ class ChatTurnPayload(BaseModel):
     feedbackReason: Optional[str] = None
 
 
+GROUP_FEEDBACK_PREFIX = "group:"
+
+
 class UserChatRequest(BaseModel):
     title: str
     preview: str = ""
@@ -274,6 +277,7 @@ class UserChatRequest(BaseModel):
     branchId: Optional[int] = None
     compareBranchA: Optional[int] = None
     compareBranchB: Optional[int] = None
+    groupSlug: Optional[str] = None
     llmMode: Optional[str] = None
     answerUserType: Optional[str] = None
     turns: List[ChatTurnPayload] = Field(default_factory=list)
@@ -297,7 +301,7 @@ def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
             status_code=400,
             detail="Chat title must be between 1 and 160 characters.",
         )
-    if request.askMode not in {"single", "compare"}:
+    if request.askMode not in {"single", "compare", "group"}:
         raise HTTPException(status_code=400, detail="Invalid chat mode.")
     if len(request.preview) > 20_000:
         raise HTTPException(status_code=400, detail="Chat preview is too long.")
@@ -307,6 +311,7 @@ def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
     bounded_fields = {
         "conversationId": (request.conversationId, 256),
         "workspace": (request.workspace, 512),
+        "groupSlug": (request.groupSlug, 64),
         "llmMode": (request.llmMode, 64),
         "answerUserType": (request.answerUserType, 64),
         "createdAt": (request.createdAt, 64),
@@ -572,6 +577,30 @@ def save_answer_feedback(
             status_code=400,
             detail="Choose a reason for the negative feedback.",
         )
+
+    if workspace.startswith(GROUP_FEEDBACK_PREFIX):
+        # Answers from a repo group are rated against the group itself.
+        group = db.get_repo_group_by_slug(workspace[len(GROUP_FEEDBACK_PREFIX):])
+        if not group:
+            raise HTTPException(status_code=404, detail="Repository group not found.")
+        if not db.user_can_access_repo_group(user, group):
+            raise HTTPException(
+                status_code=403,
+                detail="You do not have access to every repository in this group.",
+            )
+        db.upsert_answer_feedback(
+            request.feedback_id,
+            workspace,
+            group["name"],
+            question,
+            request.satisfaction,
+            reason,
+        )
+        return {
+            "saved": True,
+            "satisfaction": request.satisfaction,
+            "reason": reason,
+        }
 
     repo = db.get_repo_by_workspace(workspace)
     if not repo:

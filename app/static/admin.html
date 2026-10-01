@@ -760,6 +760,33 @@
       <div id="branchEmpty" class="muted" style="font-size:12px;"></div>
     </div>
 
+    <!-- Repo groups: connect repositories so one question can span them -->
+    <h2>Repo groups</h2>
+    <div class="panel" id="groupsPanel">
+      <p class="muted" style="font-size:12px;margin:0 0 12px;">
+        Connect published repositories so users can ask one question across all of them.
+        A user can use a group only when they have access to every repository in it.
+      </p>
+      <table id="groupTable"><thead>
+        <tr><th>Group</th><th>Slug</th><th>Repositories</th><th>Actions</th></tr>
+      </thead><tbody></tbody></table>
+      <div id="groupEmpty" class="muted" style="font-size:12px;"></div>
+      <h3 id="groupFormTitle" style="margin:18px 0 0;font-size:14px;">Create group</h3>
+      <div class="row">
+        <div><label for="groupName">Name</label><input id="groupName" placeholder="Payments stack"/></div>
+        <div><label for="groupSlug">Slug</label><input id="groupSlug" placeholder="payments-stack"/></div>
+      </div>
+      <label for="groupDescription">How the repositories relate (optional, shown to the model)</label>
+      <input id="groupDescription" placeholder="figwit calls erebor, which calls smaug"/>
+      <label>Repositories (pick at least two)</label>
+      <div id="groupRepoChecklist" class="repo-checklist" style="border-top:1px solid var(--line);border-radius:8px;"></div>
+      <div id="groupFormError" style="display:none;color:#ff8f8f;font-size:12px;margin-top:8px;"></div>
+      <div style="margin-top:12px;display:flex;gap:8px;">
+        <button id="groupSaveBtn" type="button">Create group</button>
+        <button id="groupCancelBtn" class="ghost hidden" type="button">Cancel edit</button>
+      </div>
+    </div>
+
     <div class="grid2">
       <div class="panel">
         <h2 style="margin-top:0">Add repository</h2>
@@ -1844,6 +1871,182 @@ async function showConsole(me) {
   await refreshAudit();
 }
 
+// ---- repo groups ----
+let GROUPS = [];
+let editingGroupSlug = null;
+const groupBranchCache = {};
+
+async function refreshGroups() {
+  try { ({ groups: GROUPS } = await api("/admin/groups")); }
+  catch (e) { GROUPS = []; }
+  const tbody = $("groupTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  $("groupEmpty").textContent = GROUPS.length ? "" : "No groups yet.";
+  for (const g of GROUPS) {
+    const tr = document.createElement("tr");
+    const repos = g.members.map(m => esc(m.repo_name) + (m.branch_name ? ` <span class="muted">(${esc(m.branch_name)})</span>` : "")).join(", ");
+    tr.innerHTML = `
+      <td>${esc(g.name)}${g.description ? `<div class="muted">${esc(g.description)}</div>` : ""}</td>
+      <td class="muted">${esc(g.slug)}</td>
+      <td>${repos}</td>
+      <td class="actions"></td>`;
+    const act = tr.querySelector(".actions");
+    act.appendChild(btn("Edit", () => startEditGroup(g), true));
+    act.appendChild(btn("Grant", () => doGrantGroup(g), true));
+    act.appendChild(btn("Delete", () => doDeleteGroup(g), "danger"));
+    tbody.appendChild(tr);
+  }
+}
+
+function selectedGroupMembers() {
+  return Array.from($("groupRepoChecklist").querySelectorAll(".group-repo-row"))
+    .filter(row => row.querySelector("input[type=checkbox]").checked)
+    .map(row => {
+      const branch = row.querySelector("select").value;
+      return { repo_slug: row.dataset.slug, branch_id: branch ? Number(branch) : null };
+    });
+}
+
+async function loadGroupBranchOptions(slug, select, selectedId) {
+  if (!groupBranchCache[slug]) {
+    try { groupBranchCache[slug] = (await api(`/admin/repos/${slug}/branches`)).branches; }
+    catch (e) { groupBranchCache[slug] = []; }
+  }
+  select.innerHTML = '<option value="">Default branch</option>';
+  for (const b of groupBranchCache[slug].filter(b => b.available)) {
+    const o = document.createElement("option");
+    o.value = b.id; o.textContent = b.name;
+    select.appendChild(o);
+  }
+  select.value = selectedId ? String(selectedId) : "";
+}
+
+function renderGroupRepoChecklist(selected = {}) {
+  const checklist = $("groupRepoChecklist");
+  const previous = Object.keys(selected).length ? selected : Object.fromEntries(
+    selectedGroupMembers().map(m => [m.repo_slug, m.branch_id])
+  );
+  checklist.innerHTML = "";
+  // Keep current members visible even if they were unpublished since, so
+  // saving an edit never silently drops one.
+  const repos = REPOS.filter(repo => repo.status === "published" || repo.slug in previous);
+  if (!repos.length) {
+    checklist.innerHTML = '<div class="muted" style="padding:8px;font-size:12px;">Publish at least two repositories to create a group.</div>';
+    return;
+  }
+  for (const repo of repos) {
+    const row = document.createElement("div");
+    row.className = "group-repo-row";
+    row.dataset.slug = repo.slug;
+    row.style.cssText = "display:flex;align-items:center;gap:8px;";
+    const label = document.createElement("label");
+    label.className = "repo-check";
+    label.style.flex = "1";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = repo.slug in previous;
+    const text = document.createElement("span");
+    text.textContent = repo.status === "published" ? repo.name : `${repo.name} (${repo.status}, not usable)`;
+    label.append(input, text);
+    const select = document.createElement("select");
+    select.style.cssText = "width:auto;min-width:150px;max-width:220px;padding:6px 10px;";
+    select.title = "Branch to use for this repository";
+    select.innerHTML = '<option value="">Default branch</option>';
+    // Nothing to choose until the repo is ticked, so keep the picker out of sight.
+    select.hidden = !input.checked;
+    input.onchange = () => {
+      select.hidden = !input.checked;
+      if (input.checked) loadGroupBranchOptions(repo.slug, select, null);
+    };
+    row.append(label, select);
+    checklist.appendChild(row);
+    if (input.checked) loadGroupBranchOptions(repo.slug, select, previous[repo.slug]);
+  }
+}
+
+function resetGroupForm() {
+  editingGroupSlug = null;
+  $("groupFormTitle").textContent = "Create group";
+  $("groupSaveBtn").textContent = "Create group";
+  $("groupCancelBtn").classList.add("hidden");
+  $("groupName").value = "";
+  $("groupSlug").value = "";
+  $("groupSlug").disabled = false;
+  $("groupDescription").value = "";
+  $("groupFormError").style.display = "none";
+  renderGroupRepoChecklist({ __none__: null });
+}
+
+function startEditGroup(g) {
+  editingGroupSlug = g.slug;
+  $("groupFormTitle").textContent = `Edit group: ${g.name}`;
+  $("groupSaveBtn").textContent = "Save changes";
+  $("groupCancelBtn").classList.remove("hidden");
+  $("groupName").value = g.name;
+  $("groupSlug").value = g.slug;
+  $("groupSlug").disabled = true;
+  $("groupDescription").value = g.description || "";
+  $("groupFormError").style.display = "none";
+  renderGroupRepoChecklist(Object.fromEntries(g.members.map(m => [m.repo_slug, m.branch_id])));
+  $("groupName").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+$("groupCancelBtn").onclick = resetGroupForm;
+$("groupSaveBtn").onclick = async () => {
+  const name = $("groupName").value.trim();
+  const slug = $("groupSlug").value.trim();
+  const members = selectedGroupMembers();
+  const err = $("groupFormError");
+  err.style.display = "none";
+  if (!name || (!editingGroupSlug && !slug)) {
+    err.textContent = "Enter a name and slug."; err.style.display = ""; return;
+  }
+  if (members.length < 2) {
+    err.textContent = "Pick at least two repositories."; err.style.display = ""; return;
+  }
+  $("groupSaveBtn").disabled = true;
+  try {
+    if (editingGroupSlug) {
+      await api(`/admin/groups/${editingGroupSlug}`, { method: "PUT", body: JSON.stringify({
+        name, description: $("groupDescription").value, members }) });
+      flash(`Updated group ${editingGroupSlug}`, true);
+    } else {
+      await api("/admin/groups", { method: "POST", body: JSON.stringify({
+        slug, name, description: $("groupDescription").value, members }) });
+      flash(`Created group ${slug}`, true);
+    }
+    resetGroupForm();
+    await refreshGroups();
+    refreshAudit();
+  } catch (e) { err.textContent = e.message; err.style.display = ""; }
+  finally { $("groupSaveBtn").disabled = false; }
+};
+
+async function doGrantGroup(g) {
+  const username = await modalPrompt(
+    "Grant group access",
+    `Username or Google email to grant every repository in "${g.name}"`,
+    "",
+  );
+  if (username === null || !username.trim()) return;
+  try {
+    await api(`/admin/groups/${g.slug}/grant`, { method: "POST", body: JSON.stringify({ username: username.trim() }) });
+    flash(`Granted ${username.trim()} access to ${g.name}`, true);
+    refreshAudit();
+  } catch (e) { flash(e.message); }
+}
+
+async function doDeleteGroup(g) {
+  if (!(await modalConfirm("Delete group", `Delete the group "${g.name}"? The repositories themselves are not affected.`))) return;
+  try {
+    await api(`/admin/groups/${g.slug}`, { method: "DELETE" });
+    flash(`Deleted group ${g.slug}`, true);
+    if (editingGroupSlug === g.slug) resetGroupForm();
+    await refreshGroups();
+    refreshAudit();
+  } catch (e) { flash(e.message); }
+}
+
 function updateRepoToolActions() {
   $("testScreenBtn").disabled = !$("testRepo").value;
   const configSelected = Boolean($("cfgRepo").value);
@@ -1892,6 +2095,8 @@ async function refreshRepos() {
     tbody.appendChild(tr);
   }
   renderGoogleRepoChecklist();
+  renderGroupRepoChecklist();
+  refreshGroups();
   for (const sel of [$("testRepo"), $("cfgRepo")]) {
     const previous = sel.value;
     sel.innerHTML = "";
