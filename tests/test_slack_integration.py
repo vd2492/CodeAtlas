@@ -1712,3 +1712,10 @@ class SlackGroupModalTests(unittest.TestCase):
         view = api.call_args.args[1]["view"]
         self.assertIsNotNone(self._block(view, slack_routes.BLOCK_GROUP))
         self.assertNotIn("initial_value", json.dumps(self._block(view, slack_routes.BLOCK_QUESTION)))
+
+    def test_long_group_name_fits_slack_option_limit(self):
+        long_group = {**self.GROUP, "name": "N" * 120}
+        view = self._view({"ask_type": slack_routes.ASK_GROUP}, [long_group])
+        option = self._block(view, slack_routes.BLOCK_GROUP)["element"]["options"][0]
+        self.assertLessEqual(len(option["text"]["text"]), 75)
+        self.assertEqual(option["value"], "payments-stack")

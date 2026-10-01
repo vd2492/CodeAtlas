@@ -863,7 +863,9 @@ def _build_group_ask_view(
     """The ask modal in repo-group mode: a group picker takes the place of the
     repository and branch pickers; everything else matches the repo form."""
     group_options = [
-        _option(group["name"], group["slug"], group["slug"]) for group in groups
+        # Slack rejects option text over 75 characters; group names are unbounded.
+        _option(_truncate(group["name"], 75), group["slug"], group["slug"])
+        for group in groups
     ]
     group_initial = _matching_option(group_options, metadata.get("group_slug"))
     blocks = [
