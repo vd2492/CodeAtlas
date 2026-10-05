@@ -7,7 +7,9 @@ the same cache, follow-up, and deep-investigation behavior as the browser UI.
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -114,6 +116,125 @@ def schedule_answer_token_usage(
         return False
 
 
+def classify_answer_failure(status_code: Optional[int], message: str) -> str:
+    """Bucket a failure so admins can filter timeouts from provider errors."""
+    text = str(message or "").lower()
+    if "timed out" in text or "timeout" in text or status_code in {408, 504}:
+        return "timeout"
+    if status_code == 429 or "rate limit" in text:
+        return "rate_limited"
+    if status_code == 503:
+        return "capacity"
+    if "no llm provider succeeded" in text:
+        return "no_provider"
+    if status_code in {409, 404}:
+        return "not_ready"
+    if status_code in {500, 502} or "llm request failed" in text:
+        return "provider_error"
+    return "other"
+
+
+def _store_answer_failure(payload: dict) -> None:
+    try:
+        repo = None
+        workspace = payload.get("workspace")
+        if workspace and not str(workspace).startswith("group:"):
+            repo = db.get_repo_by_workspace(workspace)
+        db.record_answer_failure(
+            repo_slug=payload.get("repo_slug") or (repo["slug"] if repo else None),
+            **{key: value for key, value in payload.items() if key != "repo_slug"},
+        )
+    except Exception:
+        logger.exception("Failed to record answer failure.")
+
+
+def schedule_answer_failure(
+    user: dict,
+    *,
+    workspace: Optional[str],
+    endpoint: str,
+    question: str,
+    status_code: Optional[int],
+    message: str,
+    duration_ms: Optional[int],
+    llm_mode: Optional[str] = None,
+    repo_slug: Optional[str] = None,
+    source: str = "web",
+    error_kind: Optional[str] = None,
+) -> None:
+    """Record a failed ask off the request path; never raises."""
+    try:
+        payload = {
+            "user_id": (user or {}).get("id"),
+            "username": (user or {}).get("username"),
+            "repo_slug": repo_slug,
+            "workspace": workspace,
+            "endpoint": endpoint,
+            "source": source,
+            "question": question,
+            "status_code": status_code,
+            "error_kind": error_kind or classify_answer_failure(status_code, message),
+            "error": message,
+            "duration_ms": duration_ms,
+            "llm_mode": llm_mode,
+        }
+        _ANALYTICS_EXECUTOR.submit(_store_answer_failure, payload)
+    except Exception:
+        logger.exception("Failed to schedule answer failure record.")
+
+
+def records_failures(endpoint: str):
+    """Wrap an ask flow so any failure is saved with the user who hit it.
+
+    The exception is re-raised unchanged, so what the caller sees is the same
+    as before. Arguments are read by name: ``request``, ``user`` and either
+    ``workspace`` or ``group``.
+    """
+    def decorate(flow):
+        signature = inspect.signature(flow)
+
+        @functools.wraps(flow)
+        def wrapper(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return flow(*args, **kwargs)
+            except Exception as error:
+                try:
+                    bound = signature.bind(*args, **kwargs).arguments
+                    request = bound.get("request")
+                    group = bound.get("group")
+                    context = bound.get("analytics_context") or {}
+                    status = error.status_code if isinstance(error, HTTPException) else 500
+                    message = error.detail if isinstance(error, HTTPException) else str(error)
+                    if isinstance(group, dict):
+                        workspace = f"group:{group.get('slug')}"
+                        repo_slug = ",".join(
+                            m.get("repo_slug") or "" for m in group.get("members") or []
+                        )
+                    else:
+                        workspace = bound.get("workspace")
+                        repo_slug = None
+                    schedule_answer_failure(
+                        bound.get("user"),
+                        workspace=workspace,
+                        endpoint=endpoint,
+                        question=getattr(request, "question", ""),
+                        status_code=status,
+                        message=str(message),
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        llm_mode=getattr(request, "llm_mode", None),
+                        repo_slug=repo_slug,
+                        source=context.get("source") or "web",
+                    )
+                except Exception:
+                    logger.exception("Failed to capture answer failure.")
+                raise
+
+        return wrapper
+
+    return decorate
+
+
 def slack_actor_user(team_id: str, user_id: str, user_type: str = "dev_team") -> dict:
     """Stable synthetic user identity for Slack conversation scoping.
 
@@ -132,6 +253,7 @@ def slack_actor_user(team_id: str, user_id: str, user_type: str = "dev_team") ->
     }
 
 
+@records_failures("repo.ask")
 def answer_single_request(
     request,
     workspace: str,
@@ -457,6 +579,7 @@ def answer_single_request(
         raise HTTPException(status_code=500, detail=f"LLM request failed: {str(error)}")
 
 
+@records_failures("repo.compare")
 def answer_compare_request(
     request,
     workspace: str,

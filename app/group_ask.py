@@ -19,8 +19,8 @@ from . import ask_service
 from .agent.tools import GroupRepositoryToolbox, tool_definitions_without_ask_user
 from .llm.admission import LLMCapacityError
 from .llm.client import (
-    PRODUCT_TEAM_QUERY_SUFFIX,
-    PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+    product_query_suffix,
+    product_response_instruction,
     collect_token_usage,
     generate,
     token_usage_payload,
@@ -90,12 +90,12 @@ def build_group_context(
     product = user_type == "product_team"
     llm_question = f"{_group_header(group, targets)}\n\nQuestion: {question.rstrip()}"
     if product:
-        llm_question = f"{llm_question}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        llm_question = f"{llm_question}\n\n{product_query_suffix(question)}"
     return {
         "question": question,
         "group_mode": True,
         "group": {"slug": group["slug"], "name": group["name"]},
-        "response_style_instruction": PRODUCT_TEAM_RESPONSE_INSTRUCTION if product else "",
+        "response_style_instruction": product_response_instruction(question) if product else "",
         "group_repositories": payloads,
         "retrieval_ms": round((time.perf_counter() - started_at) * 1000, 1),
         "llm_context_preview": {
@@ -204,6 +204,7 @@ def answer_group(
     return response
 
 
+@ask_service.records_failures("repo.group")
 def answer_group_request(
     request,
     group: dict,

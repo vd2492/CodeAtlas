@@ -5792,6 +5792,7 @@
       const left = document.getElementById('compareBranchA');
       const right = document.getElementById('compareBranchB');
       const resultContainer = document.getElementById('result');
+      const askStartedAt = Date.now();
       if (!requestQuestion) return;
       if (!requireWorkspace()) return;
       if (!left.value || !right.value || left.value === right.value) {
@@ -5877,6 +5878,13 @@
         if (handle401(res)) return;
         const data = await readResponseData(res);
         if (!res.ok) {
+          if (data.non_json_response) {
+            reportAnswerFailure(requestQuestion, gatewayFailureKind(data, res.status), llmErrorMessage(data), {
+              status: res.status,
+              startedAt: askStartedAt,
+              endpoint: 'repo.compare',
+            });
+          }
           result.innerHTML = `
             <div class="error-box">
               <h2>Comparison Error</h2>
@@ -5904,6 +5912,10 @@
           `;
           return;
         }
+        reportAnswerFailure(requestQuestion, 'network', String(error), {
+          startedAt: askStartedAt,
+          endpoint: 'repo.compare',
+        });
         result.innerHTML = `
           <div class="error-box">
             <h2>Request Failed</h2>
@@ -6003,6 +6015,35 @@
       });
     }
 
+    // Tells the server about an ask that failed where only the browser can see
+    // it (a gateway cutting the request off, a dropped connection). Errors the
+    // server returned itself are already recorded there. Never throws.
+    function reportAnswerFailure(question, kind, message, extra = {}) {
+      try {
+        fetch('/auth/me/answer-failure', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          keepalive: true,
+          body: JSON.stringify({
+            question,
+            workspace: extra.workspace || WORKSPACE || null,
+            endpoint: extra.endpoint || null,
+            kind,
+            message: String(message || '').slice(0, 1000),
+            status_code: extra.status || null,
+            duration_ms: extra.startedAt ? Date.now() - extra.startedAt : null,
+            llm_mode: LLM_MODE || null,
+          }),
+        }).catch(() => {});
+      } catch (e) {}
+    }
+
+    function gatewayFailureKind(data, status) {
+      return [408, 504].includes(status) || /timed out|timeout/i.test(String(data?.detail || ''))
+        ? 'timeout'
+        : 'no_response';
+    }
+
     // ---------- Retrying a question that got no answer ----------
     const RETRYABLE_QUESTIONS = new Map();
     let RETRY_COUNTER = 0;
@@ -6050,6 +6091,7 @@
 
     async function submitQuestion(requestQuestion, options = {}) {
       const resultContainer = document.getElementById('result');
+      const askStartedAt = Date.now();
       const productFlowSummary = Boolean(
         options.flowSummary && effectiveAnswerUserType() === 'product_team'
       );
@@ -6161,6 +6203,13 @@
 
         if (!res.ok) {
           const errorMessage = llmErrorMessage(data);
+          if (data.non_json_response && !options.flowSummary) {
+            reportAnswerFailure(requestQuestion, gatewayFailureKind(data, res.status), errorMessage, {
+              status: res.status,
+              startedAt: askStartedAt,
+              endpoint: options.groupSlug ? 'repo.group' : 'repo.ask',
+            });
+          }
           result.innerHTML = `
             <div class="error-box">
               <h2>LLM Error</h2>
@@ -6326,6 +6375,12 @@
             </div>
           `;
           return;
+        }
+        if (!options.flowSummary) {
+          reportAnswerFailure(requestQuestion, 'network', String(error), {
+            startedAt: askStartedAt,
+            endpoint: options.groupSlug ? 'repo.group' : 'repo.ask',
+          });
         }
         result.innerHTML = `
           <div class="error-box">

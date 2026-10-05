@@ -335,6 +335,35 @@
     .feedback-satisfaction.liked { color:var(--ok); border-color:rgba(95,227,154,.38); }
     .feedback-satisfaction.disliked { color:#ff9a9a; border-color:rgba(255,90,90,.35); }
     .feedback-satisfaction.unrated { color:var(--muted); }
+    .failure-dialog { width:min(1240px, 96vw); }
+    .failure-tools {
+      display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 12px;
+    }
+    .failure-tools select, .failure-tools input { width:auto; min-width:0; }
+    .failure-tools input { flex:1 1 220px; }
+    .failure-chip {
+      display:inline-flex; align-items:center; gap:6px; padding:4px 10px; cursor:pointer;
+      border:1px solid var(--line); border-radius:999px; background:transparent;
+      color:var(--muted); font-size:11px; font-weight:700;
+    }
+    .failure-chip b { color:var(--fg); }
+    .failure-chip.active { border-color:var(--accent); color:var(--accent); }
+    .failure-table { min-width:1040px; table-layout:fixed; }
+    .failure-table th:nth-child(1), .failure-table td:nth-child(1) { width:128px; }
+    .failure-table th:nth-child(2), .failure-table td:nth-child(2) { width:120px; }
+    .failure-table th:nth-child(3), .failure-table td:nth-child(3) { width:130px; }
+    .failure-table th:nth-child(4), .failure-table td:nth-child(4) { width:30%; }
+    .failure-table th:nth-child(5), .failure-table td:nth-child(5) { width:150px; }
+    .failure-table th:nth-child(6), .failure-table td:nth-child(6) { width:80px; }
+    .failure-table td { vertical-align:top; overflow-wrap:anywhere; }
+    .failure-error { color:var(--muted); font-size:12px; line-height:1.45; white-space:pre-wrap; }
+    .failure-kind {
+      display:inline-flex; padding:3px 8px; border:1px solid var(--line);
+      border-radius:999px; font-size:11px; font-weight:700; color:var(--muted);
+    }
+    .failure-kind.timeout, .failure-kind.no_response, .failure-kind.network { color:var(--warn); border-color:rgba(255,190,80,.4); }
+    .failure-kind.provider_error, .failure-kind.no_provider { color:#ff9a9a; border-color:rgba(255,90,90,.35); }
+    .failure-kind.rate_limited, .failure-kind.capacity { color:#c4b5fd; border-color:rgba(167,139,250,.4); }
     .user-edit-error { min-height:18px; color:#ff9a9a; font-size:12px; }
     .hidden { display: none; }
     pre { white-space: pre-wrap; background:var(--input-bg); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; font-family:"JetBrains Mono", ui-monospace, Menlo, monospace; }
@@ -496,6 +525,10 @@
         <button id="answerFeedbackBtn" class="activity-fab hidden" type="button"
           title="Answer feedback" aria-label="Open anonymous answer feedback">
           Answer feedback
+        </button>
+        <button id="failureQuestionsBtn" class="activity-fab hidden" type="button"
+          title="Failure questions" aria-label="Open failed questions">
+          Failure questions
         </button>
         <button id="repoActivityBtn" class="activity-fab hidden" type="button" title="Repo Activity" aria-label="Open repo activity">
           Repo Activity
@@ -1026,6 +1059,25 @@
     </div>
   </div>
 
+  <div id="failureModal" style="display:none;position:fixed;inset:0;z-index:125;place-items:center;background:rgba(3,6,12,0.72);padding:18px;">
+    <div class="panel feedback-dialog failure-dialog" role="dialog" aria-modal="true" aria-labelledby="failureTitle">
+      <div class="activity-head">
+        <div>
+          <h2 id="failureTitle">Failure questions</h2>
+          <p id="failureSummary" class="muted">Questions that timed out or errored, newest first, with the user who asked.</p>
+        </div>
+        <button type="button" class="ghost" id="failureClose">Dismiss</button>
+      </div>
+      <div class="failure-tools">
+        <select id="failureKindFilter" aria-label="Filter by error type"></select>
+        <input id="failureSearch" type="search" placeholder="Filter by user, repository or question"
+          aria-label="Filter failed questions" autocomplete="off" />
+      </div>
+      <div id="failureChips" class="failure-tools"></div>
+      <div id="failureSheet" class="feedback-sheet"></div>
+    </div>
+  </div>
+
   <div id="answerFeedbackModal" style="display:none;position:fixed;inset:0;z-index:125;place-items:center;background:rgba(3,6,12,0.72);padding:18px;">
     <div class="panel feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="answerFeedbackTitle">
       <div class="activity-head">
@@ -1369,6 +1421,137 @@ function openRepoActivityDialog() {
 
 function closeRepoActivityDialog() {
   $("repoActivityModal").style.display = "none";
+}
+
+const FAILURE_KIND_LABELS = {
+  timeout: "Timed out",
+  rate_limited: "Rate limited",
+  capacity: "Server busy",
+  no_provider: "No LLM available",
+  provider_error: "Provider error",
+  not_ready: "Repo or branch not ready",
+  no_response: "No response (browser)",
+  network: "Network error",
+  other: "Other",
+};
+const FAILURE_SOURCE_LABELS = { web: "Web", "web-client": "Web (browser report)", slack: "Slack" };
+const FAILURE_ENDPOINT_LABELS = {
+  "repo.ask": "Single repo", "repo.compare": "Compare branches", "repo.group": "Repo group",
+};
+let FAILURE_ROWS = [];
+
+function failureTime(value) {
+  if (!value) return "";
+  const raw = String(value).trim().replace(" ", "T");
+  const date = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function failureDuration(ms) {
+  if (ms === null || ms === undefined || ms === "") return "–";
+  const seconds = Number(ms) / 1000;
+  return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
+}
+
+function closeFailureDialog() {
+  $("failureModal").style.display = "none";
+}
+
+function renderFailureSheet() {
+  const kindFilter = $("failureKindFilter").value;
+  const needle = $("failureSearch").value.trim().toLowerCase();
+  const counts = {};
+  FAILURE_ROWS.forEach(row => { counts[row.error_kind] = (counts[row.error_kind] || 0) + 1; });
+  const kinds = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+
+  // Keep the dropdown and the chips in step with the kinds present.
+  $("failureKindFilter").innerHTML = '<option value="">All error types</option>'
+    + kinds.map(kind => `<option value="${esc(kind)}">${esc(FAILURE_KIND_LABELS[kind] || kind)} (${counts[kind]})</option>`).join("");
+  $("failureKindFilter").value = kinds.includes(kindFilter) ? kindFilter : "";
+  const activeKind = $("failureKindFilter").value;
+  $("failureChips").innerHTML = kinds.map(kind => `
+    <button type="button" class="failure-chip${kind === activeKind ? " active" : ""}" data-kind="${esc(kind)}">
+      ${esc(FAILURE_KIND_LABELS[kind] || kind)} <b>${counts[kind]}</b>
+    </button>
+  `).join("");
+
+  const rows = FAILURE_ROWS.filter(row => {
+    if (activeKind && row.error_kind !== activeKind) return false;
+    if (!needle) return true;
+    return [row.username, row.repo_slug, row.question, row.error]
+      .some(value => String(value || "").toLowerCase().includes(needle));
+  });
+  $("failureSummary").textContent = FAILURE_ROWS.length
+    ? `${rows.length} of ${FAILURE_ROWS.length} failed question${FAILURE_ROWS.length === 1 ? "" : "s"}, newest first`
+    : "Questions that timed out or errored, newest first, with the user who asked.";
+  const sheet = $("failureSheet");
+  if (!FAILURE_ROWS.length) {
+    sheet.innerHTML = '<div class="activity-empty">No failed questions have been recorded yet.</div>';
+    return;
+  }
+  if (!rows.length) {
+    sheet.innerHTML = '<div class="activity-empty">No failed questions match these filters.</div>';
+    return;
+  }
+  sheet.innerHTML = `
+    <section class="feedback-repo">
+      <div class="feedback-table-wrap">
+        <table class="feedback-table failure-table">
+          <thead><tr>
+            <th>When</th><th>User</th><th>Repository</th><th>Question</th>
+            <th>What happened</th><th>Took</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(row => {
+              const kind = row.error_kind || "other";
+              const how = [
+                FAILURE_SOURCE_LABELS[row.source] || row.source,
+                FAILURE_ENDPOINT_LABELS[row.endpoint] || row.endpoint,
+              ].filter(Boolean).join(" · ");
+              const error = String(row.error || "");
+              return `
+                <tr>
+                  <td>${esc(failureTime(row.created_at))}</td>
+                  <td>${esc(row.username || "unknown")}</td>
+                  <td>${esc(row.repo_slug || row.workspace || "–")}<div class="muted" style="font-size:11px">${esc(how)}</div></td>
+                  <td class="feedback-question">${esc(row.question || "")}</td>
+                  <td>
+                    <span class="failure-kind ${esc(kind)}">${esc(FAILURE_KIND_LABELS[kind] || kind)}</span>
+                    ${row.status_code ? `<span class="muted" style="font-size:11px"> HTTP ${esc(row.status_code)}</span>` : ""}
+                    ${error ? `<div class="failure-error" title="${esc(error)}">${esc(error.length > 160 ? error.slice(0, 160) + "…" : error)}</div>` : ""}
+                  </td>
+                  <td>${esc(failureDuration(row.duration_ms))}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+async function openFailureDialog() {
+  $("failureModal").style.display = "grid";
+  $("failureSheet").innerHTML = '<div class="activity-empty">Loading failed questions…</div>';
+  try {
+    const rows = [];
+    let offset = 0;
+    let total = 1;
+    while (offset < total) {
+      const data = await api(`/auth/admin/answer-failures?limit=500&offset=${encodeURIComponent(offset)}`);
+      const page = Array.isArray(data.failures) ? data.failures : [];
+      rows.push(...page);
+      total = Math.max(0, Number(data.total) || 0);
+      if (!page.length) break;
+      offset += page.length;
+    }
+    FAILURE_ROWS = rows;
+    renderFailureSheet();
+  } catch (error) {
+    $("failureSheet").innerHTML = `<div class="activity-empty">${esc(error.message)}</div>`;
+  }
 }
 
 function closeAnswerFeedbackDialog() {
@@ -1814,6 +1997,7 @@ function showAuth(bootstrapped) {
   $("analyticsDashboard").classList.add("hidden");
   $("analyticsBtn").classList.add("hidden");
   $("answerFeedbackBtn").classList.add("hidden");
+  $("failureQuestionsBtn").classList.add("hidden");
   $("repoActivityBtn").classList.add("hidden");
   $("authPanel").classList.remove("hidden");
   setAuthPasswordVisibility(false);
@@ -1852,6 +2036,7 @@ async function showConsole(me) {
   $("authPanel").classList.add("hidden");
   $("analyticsBtn").classList.remove("hidden");
   $("answerFeedbackBtn").classList.remove("hidden");
+  $("failureQuestionsBtn").classList.remove("hidden");
   $("repoActivityBtn").classList.remove("hidden");
   setAdminView("console");
   renderSiteVisitors(me.site_visitors || 0);
@@ -1859,6 +2044,16 @@ async function showConsole(me) {
   $("logoutBtn").onclick = async () => { await api("/auth/logout", { method: "POST" }); boot(); };
   $("answerFeedbackBtn").onclick = openAnswerFeedbackDialog;
   $("answerFeedbackClose").onclick = closeAnswerFeedbackDialog;
+  $("failureQuestionsBtn").onclick = openFailureDialog;
+  $("failureClose").onclick = closeFailureDialog;
+  $("failureKindFilter").onchange = renderFailureSheet;
+  $("failureSearch").oninput = renderFailureSheet;
+  $("failureChips").onclick = event => {
+    const chip = event.target.closest(".failure-chip");
+    if (!chip) return;
+    $("failureKindFilter").value = chip.classList.contains("active") ? "" : chip.dataset.kind;
+    renderFailureSheet();
+  };
   $("repoActivityBtn").onclick = openRepoActivityDialog;
   $("repoActivityClose").onclick = closeRepoActivityDialog;
   $("analyticsBtn").onclick = openAnalyticsDashboard;
@@ -2264,6 +2459,9 @@ document.addEventListener("keydown", event => {
   }
   if (event.key === "Escape" && $("repoActivityModal").style.display === "grid") {
     closeRepoActivityDialog();
+  }
+  if (event.key === "Escape" && $("failureModal").style.display === "grid") {
+    closeFailureDialog();
   }
   if (event.key === "Escape" && $("answerFeedbackModal").style.display === "grid") {
     closeAnswerFeedbackDialog();

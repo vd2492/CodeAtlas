@@ -292,6 +292,18 @@ class AnswerFeedbackRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class AnswerFailureReport(BaseModel):
+    """A failure only the browser can see (gateway timeout, dropped connection)."""
+    question: str
+    workspace: Optional[str] = None
+    endpoint: Optional[str] = None
+    kind: str = "no_response"
+    message: Optional[str] = None
+    status_code: Optional[int] = None
+    duration_ms: Optional[int] = None
+    llm_mode: Optional[str] = None
+
+
 def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
     """Return a bounded, plain-data chat payload safe to retain in SQLite."""
     if not CHAT_ID_RE.fullmatch(chat_id or ""):
@@ -647,6 +659,55 @@ def list_users(admin: dict = Depends(require_admin)):
 @router.get("/admin/audit")
 def list_audit(admin: dict = Depends(require_admin), limit: int = 100):
     return {"audit": db.list_audit(limit)}
+
+
+@router.post("/me/answer-failure")
+def report_answer_failure(
+    report: AnswerFailureReport,
+    user: dict = Depends(require_user),
+):
+    """The browser's own account of an ask that never got a usable reply.
+
+    A gateway can cut a long request off before CodeAtlas answers, so the server
+    never sees an error. The user comes from the session, never the payload.
+    """
+    question = report.question.strip()
+    if not question or len(question) > 20_000:
+        raise HTTPException(status_code=400, detail="Invalid question.")
+    if db.recent_client_failure_reports(user["id"]) >= db.CLIENT_FAILURE_REPORTS_PER_HOUR:
+        # A broken connection can fail repeatedly; don't let it flood the table.
+        return {"recorded": False}
+    kind = report.kind if report.kind in {"timeout", "network", "no_response"} else "no_response"
+    workspace = (report.workspace or "")[:512] or None
+    repo = db.get_repo_by_workspace(workspace) if workspace else None
+    db.record_answer_failure(
+        user_id=user["id"],
+        username=user["username"],
+        repo_slug=repo["slug"] if repo else None,
+        workspace=workspace,
+        endpoint=(report.endpoint or "")[:64] or None,
+        source="web-client",
+        question=question,
+        status_code=report.status_code,
+        error_kind=kind,
+        error=(report.message or "")[:2000],
+        duration_ms=report.duration_ms,
+        llm_mode=report.llm_mode,
+    )
+    return {"recorded": True}
+
+
+@router.get("/admin/answer-failures")
+def get_answer_failures(
+    admin: dict = Depends(require_admin),
+    limit: int = 200,
+    offset: int = 0,
+):
+    """Failed asks with the user who hit them, newest first."""
+    return {
+        "failures": db.list_answer_failures(limit=limit, offset=offset),
+        "total": db.answer_failure_count(),
+    }
 
 
 @router.get("/admin/answer-feedback")

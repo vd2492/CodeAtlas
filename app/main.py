@@ -60,6 +60,8 @@ from .llm.client import (
     FollowUpNeedsEvidence,
     PRODUCT_TEAM_QUERY_SUFFIX,
     PRODUCT_TEAM_RESPONSE_INSTRUCTION,
+    product_query_suffix,
+    product_response_instruction,
     collect_token_usage,
     generate,
     generate_fast_follow_up,
@@ -2548,12 +2550,12 @@ def answer_from_cached_audience_evidence(
     context = copy.deepcopy((cached_response or {}).get("context") or {})
     preview = context.setdefault("llm_context_preview", {})
     response_style_instruction = (
-        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        product_response_instruction(question)
         if user_type == "product_team"
         else ""
     )
     llm_question = (
-        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        f"{question.rstrip()}\n\n{product_query_suffix(question)}"
         if user_type == "product_team"
         else question
     )
@@ -2935,12 +2937,12 @@ def build_compare_context(
         "comparison_repositories": [left_payload, right_payload],
     })
     response_style_instruction = (
-        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        product_response_instruction(question)
         if user_type == "product_team"
         else ""
     )
     llm_question = (
-        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        f"{question.rstrip()}\n\n{product_query_suffix(question)}"
         if user_type == "product_team"
         else question
     )
@@ -3135,12 +3137,12 @@ def answer_compare_follow_up(
     context = copy.deepcopy(state.context or {})
     preview = context.setdefault("llm_context_preview", {})
     response_style_instruction = (
-        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        product_response_instruction(question)
         if user_type == "product_team"
         else ""
     )
     llm_question = (
-        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        f"{question.rstrip()}\n\n{product_query_suffix(question)}"
         if user_type == "product_team"
         else question
     )
@@ -3290,12 +3292,12 @@ def answer_question(question: str, workspace: str = DEFAULT_WORKSPACE,
         toolbox.tool_definitions = tool_definitions_without_ask_user()
     retrieval_ms = round((time.perf_counter() - retrieval_started_at) * 1000, 1)
     response_style_instruction = (
-        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        product_response_instruction(question)
         if user_type == "product_team"
         else ""
     )
     llm_question = (
-        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        f"{question.rstrip()}\n\n{product_query_suffix(question)}"
         if user_type == "product_team"
         else question
     )
@@ -3375,12 +3377,12 @@ def answer_follow_up(
     context = copy.deepcopy(state.context or {})
     preview = context.setdefault("llm_context_preview", {})
     response_style_instruction = (
-        PRODUCT_TEAM_RESPONSE_INSTRUCTION
+        product_response_instruction(question)
         if user_type == "product_team"
         else ""
     )
     llm_question = (
-        f"{question.rstrip()}\n\n{PRODUCT_TEAM_QUERY_SUFFIX}"
+        f"{question.rstrip()}\n\n{product_query_suffix(question)}"
         if user_type == "product_team"
         else question
     )

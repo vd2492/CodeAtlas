@@ -157,6 +157,26 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS answer_failures (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    username    TEXT,
+    repo_slug   TEXT,
+    workspace   TEXT,
+    endpoint    TEXT,
+    source      TEXT NOT NULL DEFAULT 'web',
+    question    TEXT,
+    status_code INTEGER,
+    error_kind  TEXT NOT NULL DEFAULT 'other',
+    error       TEXT,
+    duration_ms INTEGER,
+    llm_mode    TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_answer_failures_created
+ON answer_failures(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS token_usage_events (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id             INTEGER,
@@ -1356,6 +1376,85 @@ def _usage_int(value) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+ANSWER_FAILURE_KINDS = {
+    "timeout", "rate_limited", "capacity", "no_provider", "provider_error",
+    "not_ready", "no_response", "network", "other",
+}
+
+
+def record_answer_failure(
+    *,
+    user_id: int = None,
+    username: str = None,
+    repo_slug: str = None,
+    workspace: str = None,
+    endpoint: str = None,
+    source: str = "web",
+    question: str = None,
+    status_code: int = None,
+    error_kind: str = "other",
+    error: str = None,
+    duration_ms: int = None,
+    llm_mode: str = None,
+) -> None:
+    """Persist one failed ask (error, timeout, refusal to start) for admin review."""
+    kind = error_kind if error_kind in ANSWER_FAILURE_KINDS else "other"
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO answer_failures "
+            "(user_id, username, repo_slug, workspace, endpoint, source, question, "
+            "status_code, error_kind, error, duration_ms, llm_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                username,
+                repo_slug,
+                workspace,
+                endpoint,
+                source or "web",
+                (question or "")[:4000],
+                status_code,
+                kind,
+                (error or "")[:2000],
+                duration_ms,
+                (llm_mode or "")[:64] or None,
+            ),
+        )
+        # Keep the table (and the questions in it) from growing without bound.
+        conn.execute(
+            "DELETE FROM answer_failures WHERE created_at < datetime('now', ?)",
+            (f"-{ANSWER_FAILURE_RETENTION_DAYS} days",),
+        )
+
+
+ANSWER_FAILURE_RETENTION_DAYS = 90
+CLIENT_FAILURE_REPORTS_PER_HOUR = 30
+
+
+def recent_client_failure_reports(user_id: int) -> int:
+    """How many browser-reported failures this user filed in the last hour."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM answer_failures WHERE user_id = ? "
+            "AND source = 'web-client' AND created_at > datetime('now', '-1 hour')",
+            (user_id,),
+        ).fetchone()[0]
+
+
+def list_answer_failures(limit: int = 200, offset: int = 0) -> List[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM answer_failures ORDER BY id DESC LIMIT ? OFFSET ?",
+            (max(1, min(int(limit), 1000)), max(0, int(offset))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def answer_failure_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM answer_failures").fetchone()[0]
 
 
 def record_token_usage(

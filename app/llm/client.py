@@ -201,6 +201,165 @@ PRODUCT_TEAM_QUERY_SUFFIX = (
     "in the response and keep it concise, clear and simple"
 )
 
+# Product-team answers stay plain-language, with one exception: when the reader
+# asks for technical specifics (an API's URL and parameters, or how a column or
+# field is mapped), those facts must be given in full. Detected from the
+# question, so every other answer is unchanged.
+PRODUCT_API_QUESTION_RE = re.compile(
+    r"""\b(?:
+        apis? | endpoints? | webhooks? | swagger | openapi | restful | graphql
+        | (?:request|response)\s+(?:body|payload|params?|parameters?|fields?|headers?|schema|json)
+        | (?:query|path|body|header|url)\s+(?:params?|parameters?)
+        | payloads? | urls?
+        | http\s+(?:method|verb|status) | status\s+codes?
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+PRODUCT_DATA_QUESTION_RE = re.compile(
+    r"""\b(?:
+        columns?
+        | (?:table|field|column|data|db|database)\s+mapping
+        | mapping\s+of\s+(?:a|an|the|each|every)?\s*(?:column|field)s?
+        | map(?:s|ped|ping)?\s+(?:the\s+|each\s+|all\s+)?(?:fields?|columns?)
+        | (?:db|database)\s+(?:tables?|fields?|schema)
+        | data\s*types?
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+PRODUCT_API_EXCEPTION = (
+    "API DETAILS EXCEPTION (this question asks about an API): give complete, "
+    "exact API facts. For those facts only, this overrides the rule against "
+    "endpoints, APIs and technical terms. For each relevant API state: the HTTP "
+    "method; the complete endpoint URL (base URL or host plus path, with path "
+    "variables shown like {orderId}; take the base URL from configuration or "
+    "constants in the repository when it is there, otherwise give the full path "
+    "and say plainly where the host comes from); every request parameter, path "
+    "or query parameter, header and request body field; and every response body "
+    "field, each with its name, data type, whether it is required or optional, "
+    "and a one-line plain-language meaning. Present them in clear lists or "
+    "tables. Verify every URL, name and type against the code, never invent "
+    "one, and say what could not be verified. Everything else stays in simple "
+    "everyday language: no file names, file paths, line numbers, class or "
+    "function names, source citations, or code snippets."
+)
+
+PRODUCT_DATA_EXCEPTION = (
+    "DATA MAPPING EXCEPTION (this question asks how data is mapped or stored): "
+    "give complete, exact mapping facts. For those facts only, this overrides the "
+    "rule against technical terms and code identifiers. For each relevant item "
+    "state where it comes from (a screen field, an API field or another input) "
+    "and where it ends up (the database table and column, or the destination "
+    "field), with each column or field's exact name, data type, whether it can be "
+    "empty, any fixed or allowed values, and any rename, default, conversion or "
+    "formatting applied on the way, plus a one-line plain-language meaning. "
+    "Present them as clear tables, one row per mapping. Verify every name and "
+    "type against the code, never invent one, and say what could not be "
+    "verified. If part of the mapping cannot be found, say exactly which part "
+    "and what was searched for, instead of a blanket statement that no code was "
+    "found. Everything else stays in simple everyday language: no file names, "
+    "file paths, line numbers, class or function names, source citations, or "
+    "code snippets."
+)
+
+_PRODUCT_DETAIL_INTRO = (
+    "The final answer is for a product-team reader who asked for technical "
+    "specifics. Keep the explanation clear, well organised and in everyday "
+    "language, except that the requested details must be complete and exact. "
+)
+
+PRODUCT_TEAM_API_RESPONSE_INSTRUCTION = _PRODUCT_DETAIL_INTRO + PRODUCT_API_EXCEPTION
+PRODUCT_TEAM_DATA_RESPONSE_INSTRUCTION = _PRODUCT_DETAIL_INTRO + PRODUCT_DATA_EXCEPTION
+PRODUCT_TEAM_API_DATA_RESPONSE_INSTRUCTION = (
+    _PRODUCT_DETAIL_INTRO + PRODUCT_API_EXCEPTION + " " + PRODUCT_DATA_EXCEPTION
+)
+_PRODUCT_DETAIL_INSTRUCTIONS = {
+    PRODUCT_TEAM_API_RESPONSE_INSTRUCTION,
+    PRODUCT_TEAM_DATA_RESPONSE_INSTRUCTION,
+    PRODUCT_TEAM_API_DATA_RESPONSE_INSTRUCTION,
+}
+
+_PRODUCT_DETAIL_QUERY_STYLE = (
+    "you are talking to a product manager so explain in clear, simple words, but "
+    "because they asked for technical specifics give "
+)
+_PRODUCT_DETAIL_QUERY_END = (
+    "; don't provide class names, file names, line numbers, source citations or "
+    "code snippets"
+)
+PRODUCT_TEAM_API_QUERY_SUFFIX = (
+    _PRODUCT_DETAIL_QUERY_STYLE
+    + "the complete endpoint URL with its HTTP method and every parameter and "
+    "field with its data type"
+    + _PRODUCT_DETAIL_QUERY_END
+)
+PRODUCT_TEAM_DATA_QUERY_SUFFIX = (
+    _PRODUCT_DETAIL_QUERY_STYLE
+    + "the exact source and destination of each field, with table, column, data "
+    "type and any conversion, and say which part could not be found"
+    + _PRODUCT_DETAIL_QUERY_END
+)
+PRODUCT_TEAM_API_DATA_QUERY_SUFFIX = (
+    _PRODUCT_DETAIL_QUERY_STYLE
+    + "the complete endpoint URL with its HTTP method, every parameter and field "
+    "with its data type, and the exact source and destination of each field "
+    "with table, column and conversion"
+    + _PRODUCT_DETAIL_QUERY_END
+)
+
+PRODUCT_DETAIL_PROMPT_NOTE = (
+    "For an API or data-mapping question, the DETAILS EXCEPTION in the audience "
+    "requirements overrides the earlier prohibition on APIs, endpoint paths and "
+    "technical terms."
+)
+
+
+def is_product_api_question(question: str) -> bool:
+    return bool(PRODUCT_API_QUESTION_RE.search(str(question or "")))
+
+
+# "two column layout" is about screen design, not a database column.
+_UI_COLUMN_RE = re.compile(
+    r"\b(?:one|two|three|four|multi|single|left|right|first|second|last)[\s-]+columns?\b"
+    r"|\bcolumns?\s+(?:layout|view|grid|width|header|chart)s?\b",
+    re.IGNORECASE,
+)
+
+
+def is_product_data_question(question: str) -> bool:
+    text = _UI_COLUMN_RE.sub(" ", str(question or ""))
+    return bool(PRODUCT_DATA_QUESTION_RE.search(text))
+
+
+def product_response_instruction(question: str) -> str:
+    api = is_product_api_question(question)
+    data = is_product_data_question(question)
+    if api and data:
+        return PRODUCT_TEAM_API_DATA_RESPONSE_INSTRUCTION
+    if api:
+        return PRODUCT_TEAM_API_RESPONSE_INSTRUCTION
+    if data:
+        return PRODUCT_TEAM_DATA_RESPONSE_INSTRUCTION
+    return PRODUCT_TEAM_RESPONSE_INSTRUCTION
+
+
+def product_query_suffix(question: str) -> str:
+    api = is_product_api_question(question)
+    data = is_product_data_question(question)
+    if api and data:
+        return PRODUCT_TEAM_API_DATA_QUERY_SUFFIX
+    if api:
+        return PRODUCT_TEAM_API_QUERY_SUFFIX
+    if data:
+        return PRODUCT_TEAM_DATA_QUERY_SUFFIX
+    return PRODUCT_TEAM_QUERY_SUFFIX
+
+
+def _detail_instruction(instruction) -> bool:
+    return str(instruction or "").strip() in _PRODUCT_DETAIL_INSTRUCTIONS
+
+
 PRODUCT_TEAM_SYSTEM_PROMPT = (
     "You are CodeAtlas investigating an indexed repository for a product-team "
     "reader. Use repository evidence internally, but keep implementation details "
@@ -346,10 +505,22 @@ def _product_answer_context(context: dict) -> bool:
     )
 
 
-def _clean_product_answer(answer: str) -> str:
-    """Best-effort guardrail so product-team answers do not expose source refs."""
+PRODUCT_URL_RE = re.compile(r"https?://[^\s)>\]`'\"]+")
+
+
+def _clean_product_answer(answer: str, keep_urls: bool = False) -> str:
+    """Best-effort guardrail so product-team answers do not expose source refs.
+
+    keep_urls is for API answers, where a URL such as https://host/v1/orders.json
+    is the answer and must not be read as a file path. Other answers are cleaned
+    exactly as before.
+    """
     if not answer:
         return answer
+    urls = PRODUCT_URL_RE.findall(answer) if keep_urls else []
+    if urls:
+        for index, url in enumerate(urls):
+            answer = answer.replace(url, f"URLHOLDER{index}X", 1)
     cleaned = SOURCE_REFERENCE_RE.sub("repository evidence", answer)
     cleaned = LINE_REFERENCE_RE.sub("repository evidence", cleaned)
     cleaned = re.sub(
@@ -363,13 +534,18 @@ def _clean_product_answer(answer: str) -> str:
     cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    for index, url in enumerate(urls):
+        cleaned = cleaned.replace(f"URLHOLDER{index}X", url, 1)
     return cleaned.strip()
 
 
 def _final_answer(answer: str, provider: str, context: dict = None) -> str:
     answer = _require_answer(answer, provider)
     if context and _product_answer_context(context):
-        return _clean_product_answer(answer)
+        return _clean_product_answer(
+            answer,
+            keep_urls=_detail_instruction(context.get("response_style_instruction")),
+        )
     return answer
 
 
@@ -434,6 +610,8 @@ def _agent_system_prompt(toolbox) -> str:
             "how the final answer is presented; continue using the same repository "
             f"tools and evidence internally.\n{response_instruction}"
         )
+        if _detail_instruction(response_instruction):
+            prompt += f"\n\n{PRODUCT_DETAIL_PROMPT_NOTE}"
     return prompt
 
 
@@ -981,6 +1159,13 @@ def _require_follow_up_answer(answer: str, provider: str) -> str:
 
 
 def _system_prompt(context: dict) -> str:
+    prompt = _base_system_prompt(context)
+    if _detail_instruction(context.get("response_style_instruction")):
+        prompt += f"\n\n{PRODUCT_DETAIL_PROMPT_NOTE}"
+    return prompt
+
+
+def _base_system_prompt(context: dict) -> str:
     if context.get("group_mode"):
         return (
             PRODUCT_TEAM_GROUP_SYSTEM_PROMPT
@@ -1217,14 +1402,28 @@ def _final_openai_answer(
     )
 
 
-def _product_toolbox_answer(toolbox) -> bool:
+def _product_toolbox_answer(toolbox):
+    """Truthy for product-team answers; the string "detail" marks a question that
+    asks for API or data-mapping specifics."""
+    if _detail_instruction(getattr(toolbox, "response_style_instruction", "")):
+        return "detail"
     return bool(
         getattr(toolbox, "product_flow_summary", False)
         or str(getattr(toolbox, "response_style_instruction", "") or "").strip()
     )
 
 
-def _budget_exhausted_prompt(product_answer: bool = False) -> str:
+def _budget_exhausted_prompt(product_answer=False) -> str:
+    if product_answer == "detail":
+        return (
+            "The investigation budget is exhausted. Answer now using the evidence "
+            "already collected. Keep the explanation product-friendly, but give the "
+            "complete technical specifics you verified (full endpoint URLs and HTTP "
+            "methods, parameters and fields, tables, columns and mappings, each with "
+            "its data type), and say exactly what you could not verify or find. Do "
+            "not include file names, file paths, line numbers, source citations, "
+            "class or function names, or code snippets."
+        )
     if product_answer:
         return (
             "The investigation budget is exhausted. Answer now using the evidence "
@@ -1241,12 +1440,24 @@ def _budget_exhausted_prompt(product_answer: bool = False) -> str:
 def _agent_question(
     question: str,
     agent_context: str = "",
-    product_answer: bool = False,
+    product_answer=False,
 ) -> str:
     """Build a follow-up prompt without forcing a redundant repository search."""
     if not agent_context:
         return question
     if product_answer:
+        closing = (
+            "Keep the final answer product-friendly, but because this question "
+            "asks for technical specifics give the complete endpoint URLs, HTTP "
+            "methods, parameters, fields, tables, columns and mappings you verified, "
+            "each with its data type, and say what could not be found; do not "
+            "include file names, line numbers, source citations, class or function "
+            "names, or code snippets."
+            if product_answer == "detail"
+            else "Keep the final answer product-friendly and do not include file "
+            "names, line numbers, source citations, code identifiers, APIs, endpoints, "
+            "or code snippets."
+        )
         return (
             "This is a follow-up in an existing grounded repository conversation.\n\n"
             "Previously verified conversation and repository evidence:\n"
@@ -1258,9 +1469,8 @@ def _agent_question(
             "as independent proof. If any concrete claim requires evidence that is "
             "missing or potentially stale, use the repository tools before answering. "
             "If the question changes topic, investigate it with the tools as a new "
-            "question. Keep the final answer product-friendly and do not include file "
-            "names, line numbers, source citations, code identifiers, APIs, endpoints, "
-            "or code snippets."
+            "question. "
+            + closing
         )
     return (
         "This is a follow-up in an existing grounded repository conversation.\n\n"
