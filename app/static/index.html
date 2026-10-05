@@ -667,6 +667,45 @@
       max-height: 160px;
     }
     #groupQuestion::placeholder { color: var(--faint); }
+    .custom-repos {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 8px 14px;
+      margin: -2px 0 12px;
+      padding: 10px 12px;
+      border-radius: 11px;
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg);
+    }
+    .custom-repos[hidden] { display: none; }
+    .custom-repos label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .custom-repos label.disabled { opacity: 0.5; cursor: not-allowed; }
+    .custom-repo { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .custom-repo select {
+      width: 100%;
+      min-width: 0;
+      padding: 7px 10px;
+      border-radius: 9px;
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .custom-repo select:disabled { cursor: default; opacity: 0.7; }
+    .custom-repos span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .compare-hint {
       margin: 8px 2px 0;
       color: var(--faint);
@@ -2332,7 +2371,7 @@
         role="tab" aria-selected="false" aria-controls="groupAskFlow"
         onclick="setAskMode('group')" hidden>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17.5 14v7M14 17.5h7"></path></svg>
-        Ask a repo group
+        <span id="groupAskModeLabel">Ask a repo group</span>
       </button>
       <button id="adminReturnBtn" type="button" class="ask-mode-tab admin-return-btn"
         onclick="goBackToAdminConsole()" hidden>Go back to admin console</button>
@@ -2472,7 +2511,7 @@
     <section id="groupAskFlow" class="card compare-card group-flow span-2" hidden>
       <div class="card-head">
         <span class="card-dot"></span>
-        <h2 class="card-title">Ask a repo group</h2>
+        <h2 id="groupAskTitle" class="card-title">Ask a repo group</h2>
         <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
           <button type="button" class="answer-style-option" data-answer-style="dev_team"
             role="radio" aria-checked="true" onclick="selectAnswerStyle('dev_team')">
@@ -2486,14 +2525,16 @@
           </button>
         </div>
       </div>
-      <p class="compare-copy">Ask one question across a group of related repositories your admin has connected.</p>
-      <div class="compare-controls">
+      <p id="groupAskCopy" class="compare-copy">Ask one question across a group of related repositories your admin has connected.</p>
+      <div id="groupControls" class="compare-controls">
         <label for="groupPicker">
           Repo group
           <select id="groupPicker" aria-label="Repo group to ask about"
             onchange="onGroupChange()"></select>
         </label>
       </div>
+      <div id="customRepos" class="custom-repos" role="group"
+        aria-label="Repositories to ask about" hidden></div>
       <div class="compare-box">
         <textarea id="groupQuestion" rows="1"
           placeholder="Ask how a flow, feature, or API works across these repositories…"
@@ -2604,6 +2645,15 @@
     let ASK_MODE = 'single';
     let GROUP_SLUG = null;
     let USER_GROUPS = [];
+    let USABLE_REPOS = [];
+    let CUSTOM_REPOS = [];
+    let CUSTOM_BRANCHES = {};   // repo slug -> pinned branch id (only non-default picks)
+    const REPO_BRANCHES = {};   // repo slug -> branches the account can see
+    const REPO_BRANCHES_LOADING = new Set();
+    const CUSTOM_GROUP_PREFIX = 'adhoc:';
+    const CUSTOM_GROUP_VALUE = '__custom__';
+    const CUSTOM_REPOS_MIN = 2;
+    const CUSTOM_REPOS_MAX = 6;
     let ACTIVE_REQUEST_CONTROLLER = null;
     let ACTIVE_ACTIVITY_POLL = null;
     let AUTH_CONFIG = {};
@@ -3209,7 +3259,7 @@
           onmouseenter="showChatPreview(this, this.dataset.chatId)"
           onmouseleave="hideChatPreview()">
           <button type="button" class="chat-list-open"
-            onclick="switchChat(this.closest('.chat-list-item').dataset.chatId)"
+            onclick="switchChat(this.closest('.chat-list-item').dataset.chatId, { syncRepo: true })"
             onfocus="showChatPreview(this.closest('.chat-list-item'), this.closest('.chat-list-item').dataset.chatId)"
             onblur="hideChatPreview()"
             aria-label="Open chat ${escapeHtml(chat.title)}">
@@ -3279,6 +3329,17 @@
       if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
       hideChatPreview();
       ACTIVE_CHAT_ID = chat.id;
+      // Opening a chat from another repository moves the Ask UI to that repo,
+      // so follow-ups go where the conversation happened.
+      if (
+        options.syncRepo
+        && chat.askMode !== 'group'
+        && chat.workspace
+        && chat.workspace !== WORKSPACE
+        && USABLE_REPOS.some(repo => repo.workspace === chat.workspace)
+      ) {
+        applyRepoSelection(chat.workspace, chat.branchId);
+      }
       if (chat.askMode === 'group' && chat.groupSlug && groupAvailable(chat.groupSlug)) {
         selectGroup(chat.groupSlug);
       }
@@ -3583,7 +3644,7 @@
     function setAskMode(mode, options = {}) {
       ASK_MODE = mode === 'compare'
         ? 'compare'
-        : (mode === 'group' && USER_GROUPS.length ? 'group' : 'single');
+        : (mode === 'group' && groupModeAvailable() ? 'group' : 'single');
       const isCompare = ASK_MODE === 'compare';
       const isGroup = ASK_MODE === 'group';
       document.querySelectorAll('.single-repo-flow').forEach(item => {
@@ -3631,20 +3692,225 @@
     }
 
     // ---------- Repo groups ----------
+    // Besides admin-defined groups, a user can tick 2-6 of their own repos.
+    // That selection is encoded as "adhoc:<slug>,<slug>" in GROUP_SLUG so chats,
+    // follow-ups and feedback keep working without a stored group.
+    function isCustomGroup(slug) {
+      return String(slug || '').startsWith(CUSTOM_GROUP_PREFIX);
+    }
+
+    function customGroupTokens(slug) {
+      return String(slug).slice(CUSTOM_GROUP_PREFIX.length).split(',').filter(Boolean);
+    }
+
+    function customGroupSlugs(slug) {
+      return customGroupTokens(slug).map(token => token.split('@')[0]);
+    }
+
+    function customGroupSlug(slugs) {
+      const unique = [...new Set(slugs)].sort();
+      return unique.length >= CUSTOM_REPOS_MIN && unique.length <= CUSTOM_REPOS_MAX
+        ? CUSTOM_GROUP_PREFIX + unique
+          .map(item => CUSTOM_BRANCHES[item] ? `${item}@${CUSTOM_BRANCHES[item]}` : item)
+          .join(',')
+        : null;
+    }
+
+    function defaultBranchOf(branches) {
+      return branches.find(branch => branch.is_default && branch.available)
+        || branches.find(branch => branch.is_legacy && branch.available)
+        || branches.find(branch => branch.available)
+        || null;
+    }
+
+    function refreshCustomGroupSlug() {
+      GROUP_SLUG = customGroupSlug(CUSTOM_REPOS);
+    }
+
+    // Loads the branches a ticked repo offers; a pin that is no longer
+    // available (or equals the default) is dropped so the default is used.
+    async function ensureRepoBranches(slug) {
+      const repo = USABLE_REPOS.find(item => item.slug === slug);
+      if (!repo || REPO_BRANCHES[slug] || REPO_BRANCHES_LOADING.has(slug)) return;
+      REPO_BRANCHES_LOADING.add(slug);
+      try {
+        const res = await fetch(`/repo/branches?workspace=${encodeURIComponent(repo.workspace)}`);
+        if (handle401(res)) return;
+        const data = await res.json();
+        if (!res.ok) return;
+        REPO_BRANCHES[slug] = data.branches || [];
+      } catch (e) {
+        return;
+      } finally {
+        REPO_BRANCHES_LOADING.delete(slug);
+      }
+      const pinned = CUSTOM_BRANCHES[slug];
+      const branches = REPO_BRANCHES[slug];
+      const defaultBranch = defaultBranchOf(branches);
+      if (pinned && (!branches.some(b => b.id === pinned && b.available)
+        || (defaultBranch && defaultBranch.id === pinned))) {
+        delete CUSTOM_BRANCHES[slug];
+        if (customGroupSelected()) refreshCustomGroupSlug();
+      }
+      if (customGroupSelected()) {
+        renderCustomRepos();
+        renderGroupHint();
+      }
+    }
+
+    function customReposAvailable() {
+      return USABLE_REPOS.length >= CUSTOM_REPOS_MIN;
+    }
+
+    function groupModeAvailable() {
+      return USER_GROUPS.length > 0 || customReposAvailable();
+    }
+
+    function customGroupSelected() {
+      const picker = document.getElementById('groupPicker');
+      return Boolean(picker && picker.value === CUSTOM_GROUP_VALUE);
+    }
+
     function groupAvailable(slug) {
+      if (isCustomGroup(slug)) {
+        const slugs = customGroupSlugs(slug);
+        return customReposAvailable()
+          && slugs.length >= CUSTOM_REPOS_MIN
+          && slugs.length <= CUSTOM_REPOS_MAX
+          && new Set(slugs).size === slugs.length
+          && slugs.every(item => USABLE_REPOS.some(repo => repo.slug === item))
+          && customGroupTokens(slug).every(token => /^[^@]+(@\d+)?$/.test(token));
+      }
       return USER_GROUPS.some(group => group.slug === slug);
+    }
+
+    function customBranchSelect(repo) {
+      if (!CUSTOM_REPOS.includes(repo.slug)) return '';
+      const branches = REPO_BRANCHES[repo.slug];
+      if (!branches) return '';
+      const usable = branches.filter(branch => branch.available);
+      if (!usable.length) return '';
+      const current = CUSTOM_BRANCHES[repo.slug] || (defaultBranchOf(branches) || {}).id;
+      const options = branches.map(branch => `
+        <option value="${branch.id}" ${branch.id === current ? 'selected' : ''}
+          ${branch.available ? '' : 'disabled'}>${escapeHtml(branch.name)}${
+            branch.indexed_commit_sha ? ` · ${escapeHtml(branch.indexed_commit_sha.slice(0, 8))}` : ' · not indexed'
+          }</option>
+      `).join('');
+      return `<select aria-label="Branch of ${escapeHtml(repo.name)}"
+        title="Branch to search in ${escapeHtml(repo.name)}"
+        ${usable.length <= 1 ? 'disabled' : ''}
+        onchange="onCustomBranchChange('${escapeHtml(repo.slug)}', this.value)">${options}</select>`;
+    }
+
+    function renderCustomRepos() {
+      const box = document.getElementById('customRepos');
+      if (!box) return;
+      const show = customGroupSelected();
+      box.hidden = !show;
+      if (!show) return;
+      const focused = box.contains(document.activeElement)
+        ? document.activeElement.closest('.custom-repo input[type="checkbox"]')?.value
+        : null;
+      box.innerHTML = USABLE_REPOS.map(repo => `
+        <div class="custom-repo">
+          <label>
+            <input type="checkbox" value="${escapeHtml(repo.slug)}"
+              ${CUSTOM_REPOS.includes(repo.slug) ? 'checked' : ''}
+              onchange="onCustomRepoToggle()" />
+            <span title="${escapeHtml(repo.name)}">${escapeHtml(repo.name)}</span>
+          </label>
+          ${customBranchSelect(repo)}
+        </div>
+      `).join('');
+      syncCustomRepoLimit();
+      if (focused) {
+        Array.from(box.querySelectorAll('input[type="checkbox"]'))
+          .find(input => input.value === focused)?.focus();
+      }
+      CUSTOM_REPOS.forEach(ensureRepoBranches);
+    }
+
+    function onCustomBranchChange(slug, value) {
+      const branches = REPO_BRANCHES[slug] || [];
+      const branchId = Number(value) || null;
+      const defaultBranch = defaultBranchOf(branches);
+      if (!branchId || (defaultBranch && defaultBranch.id === branchId)) {
+        delete CUSTOM_BRANCHES[slug];
+      } else {
+        CUSTOM_BRANCHES[slug] = branchId;
+      }
+      refreshCustomGroupSlug();
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      renderGroupHint();
+    }
+
+    function syncCustomRepoLimit() {
+      const box = document.getElementById('customRepos');
+      if (!box) return;
+      const full = CUSTOM_REPOS.length >= CUSTOM_REPOS_MAX;
+      box.querySelectorAll('input[type="checkbox"]').forEach(input => {
+        input.disabled = full && !input.checked;
+        input.closest('label').classList.toggle('disabled', input.disabled);
+      });
+    }
+
+    function onCustomRepoToggle() {
+      const box = document.getElementById('customRepos');
+      if (!box) return;
+      CUSTOM_REPOS = Array.from(box.querySelectorAll('input:checked'))
+        .map(input => input.value)
+        .slice(0, CUSTOM_REPOS_MAX);
+      Object.keys(CUSTOM_BRANCHES).forEach(slug => {
+        if (!CUSTOM_REPOS.includes(slug)) delete CUSTOM_BRANCHES[slug];
+      });
+      refreshCustomGroupSlug();
+      CONVERSATION_ID = null;
+      LAST_FOLLOW_UP_QUESTION = '';
+      renderCustomRepos();
+      renderGroupHint();
     }
 
     function selectGroup(slug) {
       const picker = document.getElementById('groupPicker');
-      if (picker) picker.value = slug;
+      if (isCustomGroup(slug)) {
+        CUSTOM_REPOS = customGroupSlugs(slug);
+        CUSTOM_BRANCHES = {};
+        customGroupTokens(slug).forEach(token => {
+          const [repoSlug, branchId] = token.split('@');
+          if (branchId) CUSTOM_BRANCHES[repoSlug] = Number(branchId);
+        });
+        if (picker) picker.value = CUSTOM_GROUP_VALUE;
+      } else if (picker) {
+        picker.value = slug;
+      }
       GROUP_SLUG = slug || null;
+      renderCustomRepos();
+      renderGroupHint();
+    }
+
+    function selectCustomGroup() {
+      const picker = document.getElementById('groupPicker');
+      if (picker) picker.value = CUSTOM_GROUP_VALUE;
+      refreshCustomGroupSlug();
+      renderCustomRepos();
       renderGroupHint();
     }
 
     function renderGroupHint() {
       const hint = document.getElementById('groupHint');
       if (!hint) return;
+      if (customGroupSelected()) {
+        const chosen = USABLE_REPOS.filter(repo => CUSTOM_REPOS.includes(repo.slug));
+        hint.textContent = GROUP_SLUG
+          ? `Searches ${chosen.length} repositories together: ${chosen.map(repo => {
+            const pinned = (REPO_BRANCHES[repo.slug] || []).find(b => b.id === CUSTOM_BRANCHES[repo.slug]);
+            return pinned ? `${repo.name} (${pinned.name})` : repo.name;
+          }).join(', ')}.`
+          : `Select ${CUSTOM_REPOS_MIN} to ${CUSTOM_REPOS_MAX} repositories to ask across.`;
+        return;
+      }
       const group = USER_GROUPS.find(item => item.slug === GROUP_SLUG);
       if (!group) {
         hint.textContent = '';
@@ -3657,9 +3923,12 @@
 
     function onGroupChange() {
       const picker = document.getElementById('groupPicker');
-      GROUP_SLUG = picker && picker.value ? picker.value : null;
+      GROUP_SLUG = customGroupSelected()
+        ? customGroupSlug(CUSTOM_REPOS)
+        : (picker && picker.value ? picker.value : null);
       CONVERSATION_ID = null;
       LAST_FOLLOW_UP_QUESTION = '';
+      renderCustomRepos();
       renderGroupHint();
     }
 
@@ -3677,23 +3946,53 @@
       if (picker) {
         picker.innerHTML = USER_GROUPS
           .map(group => `<option value="${escapeHtml(group.slug)}">${escapeHtml(group.name)}</option>`)
-          .join('');
+          .join('')
+          + (customReposAvailable()
+            ? `<option value="${CUSTOM_GROUP_VALUE}">Select repositories…</option>`
+            : '');
       }
-      if (button) button.hidden = USER_GROUPS.length === 0;
+      if (button) button.hidden = !groupModeAvailable();
+      const label = USER_GROUPS.length ? 'Ask a repo group' : 'Ask multiple repos';
+      const buttonLabel = document.getElementById('groupAskModeLabel');
+      const cardTitle = document.getElementById('groupAskTitle');
+      if (buttonLabel) buttonLabel.textContent = label;
+      if (cardTitle) cardTitle.textContent = label;
+      // With no saved groups the picker would only offer "Select repositories".
+      const controls = document.getElementById('groupControls');
+      if (controls) controls.hidden = USER_GROUPS.length === 0;
+      const copy = document.getElementById('groupAskCopy');
+      if (copy) {
+        copy.textContent = USER_GROUPS.length
+          ? 'Ask one question across a group of related repositories your admin has connected.'
+          : 'Ask one question across the repositories you choose below.';
+      }
       if (!groupAvailable(GROUP_SLUG)) GROUP_SLUG = null;
-      if (USER_GROUPS.length) selectGroup(GROUP_SLUG || USER_GROUPS[0].slug);
+      if (GROUP_SLUG) selectGroup(GROUP_SLUG);
+      else if (USER_GROUPS.length) selectGroup(USER_GROUPS[0].slug);
+      else if (customReposAvailable()) selectCustomGroup();
       else if (ASK_MODE === 'group') setAskMode('single', { focus: false });
+    }
+
+    function requireGroupSelection() {
+      if (GROUP_SLUG) return true;
+      const custom = customGroupSelected();
+      document.getElementById('result').innerHTML = custom
+        ? `<div class="error-box"><h2>Select repositories</h2><p>Choose ${CUSTOM_REPOS_MIN} to ${CUSTOM_REPOS_MAX} repositories before asking a question.</p></div>`
+        : '<div class="error-box"><h2>Select a repo group</h2><p>Choose a repo group before asking a question.</p></div>';
+      return false;
+    }
+
+    function groupAskUrl(slug) {
+      return isCustomGroup(slug)
+        ? `/repo/group/ask?repos=${encodeURIComponent(customGroupTokens(slug).join(','))}`
+        : `/repo/group/ask?group=${encodeURIComponent(slug)}`;
     }
 
     async function askGroup() {
       const input = document.getElementById('groupQuestion');
       const question = input ? input.value.trim() : '';
       if (!question) return;
-      if (!GROUP_SLUG) {
-        document.getElementById('result').innerHTML =
-          '<div class="error-box"><h2>Select a repo group</h2><p>Choose a repo group before asking a question.</p></div>';
-        return;
-      }
+      if (!requireGroupSelection()) return;
       const followUp = Boolean(CONVERSATION_ID);
       input.value = '';
       autoResizeTextarea(input);
@@ -4036,10 +4335,13 @@
         updateBranchStatus();
         return;
       }
+      const requestedWorkspace = WORKSPACE;
       try {
         const res = await fetch(`/repo/branches?workspace=${encodeURIComponent(WORKSPACE)}`);
         if (handle401(res)) return;
         const data = await res.json();
+        // The user switched repositories while this was loading.
+        if (requestedWorkspace !== WORKSPACE) return;
         if (!res.ok) throw new Error(data.detail || 'Unable to load branches');
         BRANCHES = data.branches || [];
         const previous = BRANCH_ID || Number(rememberedBranchId()) || null;
@@ -4068,6 +4370,7 @@
           BRANCH_POLL_TIMER = setTimeout(loadBranches, 1500);
         }
       } catch (error) {
+        if (requestedWorkspace !== WORKSPACE) return;
         BRANCH_ID = null;
         BRANCHES = [];
         picker.style.display = 'none';
@@ -4148,6 +4451,11 @@
     function populateRepos(repos) {
       const picker = document.getElementById('repoPicker');
       const usable = (repos || []).filter(r => r.status === 'published');
+      USABLE_REPOS = usable.map(repo => ({
+        slug: repo.slug,
+        name: repo.name,
+        workspace: repo.workspace,
+      }));
       const hasGrantedRepositories = (repos || []).length > 0;
       const requested = requestedRepoIdentity();
       const requestedRepo = usable.find(
@@ -4173,15 +4481,24 @@
         usable.length === 1 && !requested ? usable[0] : null
       );
 
+      // Every repository this account can use is switchable from the picker.
+      const appendRepoOptions = () => {
+        usable.forEach(repo => {
+          const o = document.createElement('option');
+          o.value = repo.workspace;
+          o.textContent = repo.name;
+          o.dataset.slug = repo.slug;
+          picker.appendChild(o);
+        });
+      };
+
       if (scopedRepo) {
-        const o = document.createElement('option');
-        o.value = scopedRepo.workspace;
-        o.textContent = scopedRepo.name;
-        o.dataset.slug = scopedRepo.slug;
-        picker.appendChild(o);
+        appendRepoOptions();
         picker.value = scopedRepo.workspace;
-        picker.disabled = true;
-        picker.title = `Scoped to ${scopedRepo.name}`;
+        picker.disabled = usable.length <= 1;
+        picker.title = usable.length > 1
+          ? 'Switch repository'
+          : `Scoped to ${scopedRepo.name}`;
         WORKSPACE = scopedRepo.workspace;
         rememberSelectedRepo(scopedRepo);
       } else {
@@ -4192,8 +4509,10 @@
           : 'Select a repo on the home page';
         placeholder.selected = true;
         picker.appendChild(placeholder);
-        picker.disabled = true;
-        picker.title = 'Select a repository from the home page';
+        appendRepoOptions();
+        picker.value = '';
+        picker.disabled = false;
+        picker.title = 'Select a repository';
         WORKSPACE = null;
         BRANCH_ID = null;
         rememberSelectedRepo(null);
@@ -4256,22 +4575,45 @@
       updateCompareBranchStatus();
     }
 
-    function onRepoChange() {
+    // Points the Ask UI at another repository the account can use. Callers own
+    // the chat and result area; this only moves the repo, branch and tools.
+    function applyRepoSelection(workspace, branchId = null) {
       const picker = document.getElementById('repoPicker');
-      WORKSPACE = picker.value || null;
-      BRANCH_ID = null;
+      if (picker && picker.value !== (workspace || '')) picker.value = workspace || '';
+      WORKSPACE = workspace || null;
+      BRANCH_ID = branchId || null;
       CONVERSATION_ID = null;
-      const selectedOption = picker.selectedOptions[0];
+      LAST_FOLLOW_UP_QUESTION = '';
+      const selectedOption = picker ? picker.selectedOptions[0] : null;
       const selectedRepo = WORKSPACE ? {
-        slug: selectedOption.dataset.slug || WORKSPACE,
+        slug: (selectedOption && selectedOption.dataset.slug) || WORKSPACE,
         workspace: WORKSPACE,
       } : null;
       rememberSelectedRepo(selectedRepo);
       document.getElementById('summary').innerHTML = '';
       document.getElementById('searchResults').innerHTML = '';
-      document.getElementById('result').innerHTML =
-        '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question about this repository, or use a tool to explore the graph.</p></div>';
       loadBranches().then(loadFlowButtons);
+    }
+
+    function onRepoChange() {
+      const picker = document.getElementById('repoPicker');
+      if (ACTIVE_REQUEST_CONTROLLER) ACTIVE_REQUEST_CONTROLLER.abort();
+      applyRepoSelection(picker.value || null);
+      // A chat belongs to one repository, so a repo that already has turns in
+      // the open chat starts a fresh one. The unsent draft is kept.
+      const question = document.getElementById('question');
+      const draft = question ? question.value : '';
+      const chatHasTurns = QUESTION_HISTORY.some(item => item.chatId === ACTIVE_CHAT_ID);
+      if (chatHasTurns) {
+        startNewChat();
+        if (question) {
+          question.value = draft;
+          autoResizeTextarea(question);
+        }
+      }
+      document.getElementById('result').innerHTML = WORKSPACE
+        ? '<div class="empty-state"><div class="eyebrow">Ready</div><p>Ask a question about this repository, or use a tool to explore the graph.</p></div>'
+        : '<div class="error-box"><h2>Select a repository</h2><p>Choose one of your repositories from the picker to start asking questions.</p></div>';
     }
 
     function repositoryAccessError(repos) {
@@ -5218,9 +5560,11 @@
       target.innerHTML = '<span class="src">Loading flows...</span>';
 
       try {
+        const requestedWorkspace = WORKSPACE;
         const res = await fetch(wsUrl('/repo/flows'));
         if (handle401(res)) return;
         const data = await res.json();
+        if (requestedWorkspace !== WORKSPACE) return;
 
         if (!res.ok) {
           target.innerHTML = '<span class="src">Unable to load flows.</span>';
@@ -5586,6 +5930,7 @@
       const question = input ? input.value.trim() : '';
       if (!question) return;
       if (ASK_MODE === 'group') {
+        if (!requireGroupSelection()) return;
         await submitQuestion(question, { followUp: true, groupSlug: GROUP_SLUG });
         return;
       }
@@ -5613,6 +5958,7 @@
         return;
       }
       if (ASK_MODE === 'group') {
+        if (!requireGroupSelection()) return;
         await submitQuestion(LAST_FOLLOW_UP_QUESTION, {
           followUp: true,
           deepInvestigation: true,
@@ -5709,7 +6055,7 @@
       try {
         const res = await fetch(
           options.groupSlug
-            ? `/repo/group/ask?group=${encodeURIComponent(options.groupSlug)}`
+            ? groupAskUrl(options.groupSlug)
             : wsUrl(options.endpoint || '/repo/ask-llm'),
           {
           method: 'POST',

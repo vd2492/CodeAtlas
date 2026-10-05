@@ -264,6 +264,7 @@ class ChatTurnPayload(BaseModel):
 
 
 GROUP_FEEDBACK_PREFIX = "group:"
+ADHOC_FEEDBACK_PREFIX = "adhoc:"
 
 
 class UserChatRequest(BaseModel):
@@ -580,14 +581,24 @@ def save_answer_feedback(
 
     if workspace.startswith(GROUP_FEEDBACK_PREFIX):
         # Answers from a repo group are rated against the group itself.
-        group = db.get_repo_group_by_slug(workspace[len(GROUP_FEEDBACK_PREFIX):])
-        if not group:
-            raise HTTPException(status_code=404, detail="Repository group not found.")
-        if not db.user_can_access_repo_group(user, group):
-            raise HTTPException(
-                status_code=403,
-                detail="You do not have access to every repository in this group.",
+        group_ref = workspace[len(GROUP_FEEDBACK_PREFIX):]
+        if group_ref.startswith(ADHOC_FEEDBACK_PREFIX):
+            # Repos the user picked for one question; there is no stored group.
+            from ..repos.groups import adhoc_group_for_user
+
+            group = adhoc_group_for_user(
+                group_ref[len(ADHOC_FEEDBACK_PREFIX):], user
             )
+            workspace = f"{GROUP_FEEDBACK_PREFIX}{group['slug']}"
+        else:
+            group = db.get_repo_group_by_slug(group_ref)
+            if not group:
+                raise HTTPException(status_code=404, detail="Repository group not found.")
+            if not db.user_can_access_repo_group(user, group):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You do not have access to every repository in this group.",
+                )
         db.upsert_answer_feedback(
             request.feedback_id,
             workspace,

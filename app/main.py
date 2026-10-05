@@ -3608,10 +3608,20 @@ def compare_repos_endpoint(
 @app.post("/repo/group/ask")
 def group_ask_endpoint(
     request: GroupAskRequest,
-    group: str = Query(...),
+    group: Optional[str] = Query(None),
+    repos: Optional[str] = Query(None),
     user: dict = Depends(require_user),
 ):
-    resolved = group_service.require_group_for_user(group, user)
+    if bool(group) == bool(repos):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either a repo group or a list of repositories.",
+        )
+    resolved = (
+        group_service.adhoc_group_for_user(repos, user)
+        if repos
+        else group_service.require_group_for_user(group, user)
+    )
     return group_ask.answer_group_request(request, resolved, user)
 
 

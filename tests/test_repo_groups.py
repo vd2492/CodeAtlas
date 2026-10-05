@@ -146,6 +146,92 @@ class GroupAccessTests(GroupTestBase):
         self.assertEqual(unindexed.exception.status_code, 409)
 
 
+class AdhocGroupTests(GroupTestBase):
+    def setUp(self):
+        super().setUp()
+        self.user = db.create_user("dev", "x", role="user")
+        self.dev = {"id": self.user["id"], "role": "user"}
+
+    def test_user_can_pick_only_repos_they_hold(self):
+        db.grant_access(self.dev["id"], self.repos["figwit"]["id"])
+        db.grant_access(self.dev["id"], self.repos["erebor"]["id"])
+        group = groups.adhoc_group_for_user("figwit,erebor", self.dev)
+        self.assertEqual([m["repo_slug"] for m in group["members"]], ["erebor", "figwit"])
+        self.assertEqual([t["slug"] for t in groups.resolve_group_members(group)],
+                         ["erebor", "figwit"])
+        for forbidden in ("figwit,smaug", "figwit,nope"):
+            with self.assertRaises(HTTPException) as denied:
+                groups.adhoc_group_for_user(forbidden, self.dev)
+            self.assertEqual(denied.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as missing:
+            groups.adhoc_group_for_user("figwit,nope", self.admin)
+        self.assertEqual(missing.exception.status_code, 404)
+
+    def test_selection_size_and_identity(self):
+        for bad in ("", "figwit", "figwit,figwit", "a,b,c,d,e,f,g"):
+            with self.assertRaises(HTTPException) as invalid:
+                groups.adhoc_group_for_user(bad, self.admin)
+            self.assertEqual(invalid.exception.status_code, 400)
+        first = groups.adhoc_group_for_user("figwit, erebor", self.admin)
+        second = groups.adhoc_group_for_user("erebor,figwit,erebor", self.admin)
+        other = groups.adhoc_group_for_user("figwit,smaug", self.admin)
+        self.assertEqual(first["slug"], second["slug"])
+        self.assertNotEqual(first["slug"], other["slug"])
+        self.assertTrue(first["slug"].startswith("adhoc-"))
+        self.assertEqual(db.list_repo_groups(), [])
+
+    def test_branch_can_be_pinned_per_repo(self):
+        branch_ws = "figwit-dev"
+        graph = config.graph_path(branch_ws)
+        graph.parent.mkdir(parents=True)
+        graph.write_text(json.dumps({"nodes": [], "links": []}))
+        dev_branch = db.create_repo_branch(
+            self.repos["figwit"]["id"], "dev", workspace=branch_ws, index_status="ready"
+        )
+        pending = db.create_repo_branch(
+            self.repos["figwit"]["id"], "wip", workspace=None
+        )
+        foreign = db.create_repo_branch(
+            self.repos["smaug"]["id"], "other", workspace="smaug-other", index_status="ready"
+        )
+        pinned = groups.adhoc_group_for_user(f"figwit@{dev_branch['id']},erebor", self.admin)
+        default = groups.adhoc_group_for_user("figwit,erebor", self.admin)
+        self.assertNotEqual(pinned["slug"], default["slug"])
+        targets = {t["slug"]: t["workspace"] for t in groups.resolve_group_members(pinned)}
+        self.assertEqual(targets["figwit"], branch_ws)
+        self.assertEqual(targets["erebor"], "erebor")
+        for bad, code in (
+            (f"figwit@{foreign['id']},erebor", 404),
+            ("figwit@999,erebor", 404),
+            ("figwit@x,erebor", 400),
+            (f"figwit@{dev_branch['id']},figwit,erebor", 400),
+        ):
+            with self.assertRaises(HTTPException) as invalid:
+                groups.adhoc_group_for_user(bad, self.admin)
+            self.assertEqual(invalid.exception.status_code, code, bad)
+        not_ready = groups.adhoc_group_for_user(f"figwit@{pending['id']},erebor", self.admin)
+        with self.assertRaises(HTTPException) as unindexed:
+            groups.resolve_group_members(not_ready)
+        self.assertEqual(unindexed.exception.status_code, 409)
+
+    def test_branch_pin_does_not_bypass_repo_grants(self):
+        branch = db.create_repo_branch(
+            self.repos["smaug"]["id"], "dev", workspace="smaug", index_status="ready"
+        )
+        db.grant_access(self.dev["id"], self.repos["figwit"]["id"])
+        db.grant_access(self.dev["id"], self.repos["erebor"]["id"])
+        with self.assertRaises(HTTPException) as denied:
+            groups.adhoc_group_for_user(f"figwit,smaug@{branch['id']}", self.dev)
+        self.assertEqual(denied.exception.status_code, 403)
+
+    def test_unpublished_repo_is_rejected_when_resolving(self):
+        db.set_repo_status("smaug", "indexed")
+        group = groups.adhoc_group_for_user("figwit,smaug", self.admin)
+        with self.assertRaises(HTTPException) as unpublished:
+            groups.resolve_group_members(group)
+        self.assertEqual(unpublished.exception.status_code, 409)
+
+
 class GroupToolboxTests(unittest.TestCase):
     def test_calls_route_to_the_named_member_only(self):
         members = [
