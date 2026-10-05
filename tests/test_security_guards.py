@@ -107,15 +107,14 @@ class SecurityGuardTests(unittest.TestCase):
              patch.object(main.secrets, "token_urlsafe", return_value="visitor-token"):
             response = main.root(request)
 
-        delete_session.assert_called_once_with("session-token")
+        delete_session.assert_not_called()
         record_site_visit.assert_called_once_with("visitor-token")
         set_cookie = "\n".join(
             value.decode("latin-1")
             for key, value in response.raw_headers
             if key == b"set-cookie"
         )
-        self.assertIn("ca_session=", set_cookie)
-        self.assertIn("Max-Age=0", set_cookie)
+        self.assertNotIn("ca_session=", set_cookie)
         self.assertIn("ca_site_visitor=visitor-token", set_cookie)
         self.assertEqual(response.headers["cache-control"], "no-store")
 

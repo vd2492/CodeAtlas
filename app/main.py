@@ -1043,12 +1043,11 @@ def repo_summary_dynamic_from_loaded(nodes: list[dict], links: list[dict]) -> di
 
 @app.get("/")
 def root(request: Request):
-    """Marketing page. Visiting home always starts a signed-out session."""
-    db.delete_session(request.cookies.get(COOKIE_NAME))
+    """Marketing page. Visiting home keeps any existing session signed in; it
+    ends only on explicit sign-out or when the session expires."""
     visitor_key = request.cookies.get(VISITOR_COOKIE_NAME) or secrets.token_urlsafe(24)
     db.record_site_visit(visitor_key)
     response = FileResponse(STATIC_DIR / "home.html")
-    clear_session_cookie(response)
     response.set_cookie(
         VISITOR_COOKIE_NAME,
         visitor_key,

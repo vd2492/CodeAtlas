@@ -193,17 +193,6 @@
   .foot-tag{color:var(--dim);font-size:13px;font-family:"JetBrains Mono",monospace;}
 </style>
 <script>
-  // Browser Back can restore this page without requesting "/" again. In that
-  // case, explicitly end any session created after the cached page was left.
-  window.addEventListener("pageshow", function(event) {
-    if (!event.persisted) return;
-    fetch("/auth/logout", {
-      method: "POST",
-      credentials: "same-origin",
-      keepalive: true,
-    }).catch(function() {});
-  });
-
   // Apply saved (or system) theme before paint to avoid a flash of the wrong theme.
   (function(){
     try{
@@ -398,6 +387,9 @@
   const fmt = (n) => (n || 0).toLocaleString();
   const escHtml = (s) => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
   let selectedRepoSlug = null;
+  // Slugs the signed-in account may open; null when signed out or unknown.
+  let grantedSlugs = null;
+  const hasAccess = (slug) => grantedSlugs === null || grantedSlugs.has(slug);
 
   try {
     selectedRepoSlug =
@@ -462,13 +454,19 @@
       c.innerHTML = `
         <div class="repo-top">
           <span class="repo-name"><span class="lang-dot" style="background:${color};box-shadow:0 0 8px ${color}66"></span>${escHtml(r.name)}</span>
-          <span class="pill">authorized</span>
+          <span class="pill">${hasAccess(r.slug) ? "authorized" : "no access"}</span>
         </div>
         <div class="repo-meta"><span>${r.slug}</span><span class="sep">·</span><span>${meta}</span></div>`;
       const openSelectedRepo = () => {
+        if (!hasAccess(r.slug)) {
+          // Signed in, but this repo isn't granted: say so here instead of
+          // sending them into the app.
+          scoped.innerHTML = `// <span style="color:#e3677a">You do not have access to ${escHtml(r.name)}</span> — ask an admin to grant it`;
+          return;
+        }
         document.querySelectorAll(".repo-card").forEach(x => {
           x.classList.remove("sel");
-          const p = x.querySelector(".pill"); if (p) p.textContent = "authorized";
+          const p = x.querySelector(".pill"); if (p) p.textContent = hasAccess(x.dataset.repoSlug) ? "authorized" : "no access";
         });
         c.classList.add("sel");
         c.querySelector(".pill").textContent = "selected";
@@ -485,14 +483,14 @@
       };
       grid.appendChild(c);
 
-      if (selectedRepoSlug === r.slug) {
+      if (selectedRepoSlug === r.slug && hasAccess(r.slug)) {
         c.classList.add("sel");
         c.querySelector(".pill").textContent = "selected";
         scoped.innerHTML = `// scoped to <span class="on">${escHtml(r.name)}</span> — sign in to start asking`;
       }
     });
 
-    if (selectedRepoSlug && !repos.some(repo => repo.slug === selectedRepoSlug)) {
+    if (selectedRepoSlug && (!repos.some(repo => repo.slug === selectedRepoSlug) || !hasAccess(selectedRepoSlug))) {
       setSelectedRepo(null);
       scoped.textContent = "// select a repository to scope your questions";
     } else {
@@ -500,9 +498,22 @@
     }
   }
 
-  fetch("/public/catalog")
+  // A returning signed-in user keeps their session, so find out which repos
+  // they can open before drawing the catalogue.
+  const accessLookup = fetch("/auth/me", { credentials: "same-origin", cache: "no-store" })
     .then(r => r.json())
-    .then(renderCatalog)
+    .then(me => {
+      if (me && me.user) {
+        grantedSlugs = new Set((me.repos || []).filter(x => x.status === "published").map(x => x.slug));
+      }
+    })
+    .catch(() => {});
+
+  Promise.all([
+    fetch("/public/catalog").then(r => r.json()),
+    accessLookup,
+  ])
+    .then(([catalog]) => renderCatalog(catalog))
     .catch(() => renderCatalog({ repos: [], totals: { repos: 0, nodes: 0 } }));
 
   // ---------- how it works ----------

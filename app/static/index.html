@@ -2262,8 +2262,8 @@
       <button class="theme-toggle" onclick="logout()" aria-label="Sign out and go to home page" title="Sign out">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
       </button>
-      <button class="brand-logout" type="button" onclick="logout()"
-        aria-label="Sign out and go to home page" title="Sign out and go home">
+      <button class="brand-logout" type="button" onclick="goHome()"
+        aria-label="Go to home page" title="Go to home page">
         <span class="logo-mark" aria-hidden="true"></span>
       </button>
       <div class="brand">
@@ -4069,7 +4069,7 @@
         });
         const data = await res.json();
         if (!res.ok) { errEl.textContent = data.detail || 'Google login failed'; return; }
-        await initAuth();
+        await initAuth(true);
       } catch (e) { errEl.textContent = String(e); }
     }
 
@@ -4085,6 +4085,11 @@
     }
 
     function closeLogin() {
+      window.location.href = '/';
+    }
+
+    // The logo only navigates; the sign-out button is the one that ends the session.
+    function goHome() {
       window.location.href = '/';
     }
 
@@ -4200,7 +4205,7 @@
         });
         const data = await res.json();
         if (!res.ok) { errEl.textContent = data.detail || 'Login failed'; return; }
-        await initAuth();
+        await initAuth(true);
       } catch (e) { errEl.textContent = String(e); }
     }
 
@@ -4656,7 +4661,10 @@
       }
     }
 
-    async function initAuth() {
+    // freshLogin: the user just signed in on this page. A returning visitor
+    // with a live session goes straight in, even if the repo in the URL isn't
+    // granted to them (the picker then explains it).
+    async function initAuth(freshLogin = false) {
       const [authConfig, uiConfig] = await Promise.all([
         fetch('/auth/config', { cache: 'no-store' })
           .then(res => res.json())
@@ -4672,7 +4680,8 @@
       const data = await res.json();
       if (!data.user) { showLogin(true); return false; }
       const accessError = repositoryAccessError(data.repos);
-      if (accessError) {
+      const hasUsableRepos = (data.repos || []).some(repo => repo.status === 'published');
+      if (accessError && (freshLogin || !hasUsableRepos)) {
         document.getElementById('loginErr').textContent = accessError;
         showLogin(true);
         return false;

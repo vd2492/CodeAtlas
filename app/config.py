@@ -18,7 +18,7 @@ SQLITE_BUSY_TIMEOUT_MS = max(
     0, int(os.environ.get("CODEATLAS_SQLITE_BUSY_TIMEOUT_MS", "10000"))
 )
 SESSION_MAX_AGE_SECONDS = int(
-    os.environ.get("CODEATLAS_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 30))
+    os.environ.get("CODEATLAS_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24))
 )
 BRANCH_SYNC_MAX_WORKERS = max(
     1, int(os.environ.get("CODEATLAS_BRANCH_SYNC_MAX_WORKERS", "2"))
