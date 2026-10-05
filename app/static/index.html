@@ -667,6 +667,18 @@
       max-height: 160px;
     }
     #groupQuestion::placeholder { color: var(--faint); }
+    .retry-btn {
+      margin-top: 10px;
+      padding: 7px 14px;
+      border-radius: 9px;
+      border: 1px solid var(--border-strong);
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .retry-btn:hover { border-color: var(--green, #5fe39a); }
     .custom-repos {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -3090,7 +3102,12 @@
               answer
                 ? `<div class="answer">${renderAnswer(answer)}</div>
                   ${answerFeedbackControls(item.id, item.question)}`
-                : '<p class="empty-state">This response was not completed.</p>'
+                : `<p class="empty-state">This response was not completed.</p>${
+                  (CHAT_SESSIONS.find(chat => chat.id === item.chatId)?.askMode === 'compare'
+                    || item.type === 'Repository tool' || item.type === 'Flow summary')
+                    ? ''
+                    : `<button type="button" class="retry-btn" onclick="retryRestoredTurn('${escapeHtml(item.id)}')">Try again</button>`
+                }`
             }
           </div>
         </section>
@@ -3990,9 +4007,10 @@
 
     async function askGroup() {
       const input = document.getElementById('groupQuestion');
-      const question = input ? input.value.trim() : '';
+      let question = input ? input.value.trim() : '';
       if (!question) return;
       if (!requireGroupSelection()) return;
+      question = questionToRetry(question) || question;
       const followUp = Boolean(CONVERSATION_ID);
       input.value = '';
       autoResizeTextarea(input);
@@ -5925,9 +5943,10 @@
 
     async function ask() {
       const input = document.getElementById('question');
-      const question = input.value.trim();
+      let question = input.value.trim();
       if (!question) return;
       if (!requireWorkspace()) return;
+      question = questionToRetry(question) || question;
       const followUp = Boolean(CONVERSATION_ID);
       input.value = '';
       autoResizeTextarea(input);
@@ -5936,8 +5955,9 @@
 
     async function askFollowUp() {
       const input = document.getElementById('followUpQuestion');
-      const question = input ? input.value.trim() : '';
+      let question = input ? input.value.trim() : '';
       if (!question) return;
+      if (ASK_MODE !== 'compare') question = questionToRetry(question) || question;
       if (ASK_MODE === 'group') {
         if (!requireGroupSelection()) return;
         await submitQuestion(question, { followUp: true, groupSlug: GROUP_SLUG });
@@ -5981,6 +6001,51 @@
         deepInvestigation: true,
         feedbackHistoryId: sourceTurn?.id || null,
       });
+    }
+
+    // ---------- Retrying a question that got no answer ----------
+    const RETRYABLE_QUESTIONS = new Map();
+    let RETRY_COUNTER = 0;
+    const RETRY_PHRASE = /^\s*(?:please\s+)?(?:(?:try|ask|run|do)(?:\s+(?:it|that|this))?\s+again|retry(?:\s+(?:it|that|this))?)\s*[.!?]*\s*$/i;
+
+    function retryButton(question, groupSlug) {
+      const id = `retry-${++RETRY_COUNTER}`;
+      RETRYABLE_QUESTIONS.set(id, { question, groupSlug: groupSlug || null });
+      return `<button type="button" class="retry-btn" onclick="retryQuestion('${id}')">Try again</button>`;
+    }
+
+    async function retryQuestion(id) {
+      const entry = RETRYABLE_QUESTIONS.get(id);
+      if (!entry || ACTIVE_REQUEST_CONTROLLER) return;
+      if (entry.groupSlug) {
+        if (!requireGroupSelection()) return;
+        await submitQuestion(entry.question, { followUp: Boolean(CONVERSATION_ID), groupSlug: GROUP_SLUG });
+        return;
+      }
+      if (!requireWorkspace()) return;
+      await submitQuestion(entry.question, { followUp: Boolean(CONVERSATION_ID) });
+    }
+
+    // A restored turn the server never answered (reload, timeout, failure).
+    function retryRestoredTurn(historyId) {
+      const item = QUESTION_HISTORY.find(entry => entry.id === historyId);
+      if (!item || ACTIVE_REQUEST_CONTROLLER) return;
+      const chat = CHAT_SESSIONS.find(entry => entry.id === item.chatId);
+      const id = `retry-${++RETRY_COUNTER}`;
+      RETRYABLE_QUESTIONS.set(id, {
+        question: item.question,
+        groupSlug: chat && chat.askMode === 'group' ? (chat.groupSlug || GROUP_SLUG) : null,
+      });
+      retryQuestion(id);
+    }
+
+    // "try again" typed on its own means the last question that got no answer,
+    // since a failed question leaves no conversation for the server to recall.
+    function questionToRetry(text) {
+      if (ACTIVE_REQUEST_CONTROLLER || !RETRY_PHRASE.test(String(text || ''))) return null;
+      const last = [...QUESTION_HISTORY].reverse().find(item => item.chatId === ACTIVE_CHAT_ID);
+      if (!last || last.answer || last.type === 'Repository tool') return null;
+      return last.question;
     }
 
     async function submitQuestion(requestQuestion, options = {}) {
@@ -6100,6 +6165,7 @@
             <div class="error-box">
               <h2>LLM Error</h2>
               <p>${escapeHtml(errorMessage)}</p>
+              ${options.flowSummary ? '' : retryButton(requestQuestion, options.groupSlug)}
             </div>
           `;
           return;
@@ -6256,6 +6322,7 @@
             <div class="cancelled-box">
               <h2>Query Cancelled</h2>
               <p>You cancelled this query before it finished.</p>
+              ${options.flowSummary ? '' : retryButton(requestQuestion, options.groupSlug)}
             </div>
           `;
           return;
@@ -6264,6 +6331,7 @@
           <div class="error-box">
             <h2>Request Failed</h2>
             <pre>${escapeHtml(String(error))}</pre>
+            ${options.flowSummary ? '' : retryButton(requestQuestion, options.groupSlug)}
           </div>
         `;
       } finally {
