@@ -1,5 +1,5 @@
 fastapi>=0.110
-uvicorn[standard]>=0.29
+uvicorn[standard]>=0.54.0
 pydantic>=2.6
 requests>=2.31
 cryptography>=42
