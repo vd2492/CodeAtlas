@@ -66,6 +66,18 @@ LOGIN_RATE_WINDOW_SECONDS = int(
     os.environ.get("CODEATLAS_LOGIN_RATE_WINDOW_SECONDS", "300")
 )
 _login_failures: "dict[str, list[float]]" = defaultdict(list)
+# Failures per client address across all usernames, so one source cannot
+# spray passwords over many accounts. Deliberately roomy: clients behind one
+# shared address (an office NAT or a proxy that hides the real address) must
+# not lock each other out.
+LOGIN_ADDRESS_RATE_LIMIT = int(
+    os.environ.get("CODEATLAS_LOGIN_ADDRESS_RATE_LIMIT", "50")
+)
+_login_address_failures: "dict[str, list[float]]" = defaultdict(list)
+_LOGIN_ADDRESS_MAX_TRACKED = 10_000
+# Verified when the username is unknown (or has no password) so a failed login
+# takes the same time whether or not the account exists.
+_DUMMY_PASSWORD_HASH = hash_password("codeatlas-timing-equalizer")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
 FEEDBACK_ID_RE = re.compile(r"^feedback-[A-Za-z0-9_-]{12,119}$")
@@ -106,6 +118,48 @@ def record_login_failure(username: str) -> None:
 def clear_login_failures(username: str) -> None:
     key = (username or "").strip().lower()
     _login_failures.pop(key, None)
+
+
+def _client_address(request: Optional[Request]) -> str:
+    client = getattr(request, "client", None)
+    return str(getattr(client, "host", "") or "")
+
+
+def enforce_login_address_limit(address: str) -> None:
+    if not address:
+        return
+    now = time.monotonic()
+    hits = [
+        timestamp
+        for timestamp in _login_address_failures[address]
+        if now - timestamp < LOGIN_RATE_WINDOW_SECONDS
+    ]
+    if hits:
+        _login_address_failures[address] = hits
+    else:
+        _login_address_failures.pop(address, None)
+    if len(hits) >= LOGIN_ADDRESS_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Too many failed login attempts. Please wait "
+                f"{LOGIN_RATE_WINDOW_SECONDS} seconds and retry."
+            ),
+        )
+
+
+def record_login_address_failure(address: str) -> None:
+    if not address:
+        return
+    if len(_login_address_failures) >= _LOGIN_ADDRESS_MAX_TRACKED:
+        # Bound memory: drop addresses whose failures have all expired.
+        now = time.monotonic()
+        for key in [
+            key for key, stamps in _login_address_failures.items()
+            if not any(now - stamp < LOGIN_RATE_WINDOW_SECONDS for stamp in stamps)
+        ]:
+            _login_address_failures.pop(key, None)
+    _login_address_failures[address].append(time.monotonic())
 
 
 def password_login_enabled() -> bool:
@@ -434,13 +488,23 @@ def bootstrap(creds: Credentials, response: Response):
 
 
 @router.post("/login")
-def login(creds: Credentials, response: Response):
+def login(creds: Credentials, response: Response, request: Request = None):
     if not password_login_enabled():
         raise HTTPException(status_code=403, detail="Credential login is disabled.")
+    address = _client_address(request)
+    enforce_login_address_limit(address)
     enforce_login_rate_limit(creds.username)
     user = db.get_user_by_username(creds.username)
-    if not user or not verify_password(creds.password, user["password_hash"]):
+    stored_hash = str((user or {}).get("password_hash") or "")
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        password_ok = verify_password(creds.password, stored_hash)
+    else:
+        # Unknown user or no password set: still do the work of one check.
+        verify_password(creds.password, _DUMMY_PASSWORD_HASH)
+        password_ok = False
+    if not user or not password_ok:
         record_login_failure(creds.username)
+        record_login_address_failure(address)
         db.record_audit(creds.username, "login_failed")
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     clear_login_failures(creds.username)

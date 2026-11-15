@@ -102,6 +102,15 @@ app.include_router(slack_router)
 async def add_noindex_header(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Robots-Tag", "noindex, nofollow, noarchive")
+    # Keep the app from being framed by other sites (clickjacking) and from
+    # having responses reinterpreted as another content type.
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if COOKIE_SECURE:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000"
+        )
     return response
 
 
