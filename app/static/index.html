@@ -1275,6 +1275,44 @@
     }
     @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 
+    /* Compact "working" line shown while an answer is generated. */
+    .ai-status {
+      display: flex; align-items: center; gap: 10px; min-width: 0;
+      margin: 4px 0; font-size: 15px;
+    }
+    .ai-status-glyph {
+      width: 18px; height: 18px; flex: none; color: var(--accent);
+      animation: aiGlyph 1.8s ease-in-out infinite;
+    }
+    .ai-status-verb {
+      font-weight: 600;
+      color: var(--text);
+      background: linear-gradient(90deg, var(--muted) 0%, var(--text) 45%, var(--muted) 90%);
+      background-size: 220% 100%;
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: aiShimmer 2.2s linear infinite;
+    }
+    .ai-status-time {
+      color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+    }
+    @keyframes aiShimmer {
+      0% { background-position: 220% 0; }
+      100% { background-position: -120% 0; }
+    }
+    @keyframes aiGlyph {
+      0% { transform: rotate(0deg) scale(0.8); opacity: 0.65; }
+      50% { transform: rotate(45deg) scale(1.1); opacity: 1; }
+      100% { transform: rotate(90deg) scale(0.8); opacity: 0.65; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ai-status-glyph { animation: none; }
+      .ai-status-verb {
+        animation: none; background: none;
+        -webkit-text-fill-color: currentColor; color: var(--text);
+      }
+    }
+
     .answer-activity {
       margin-top: 16px;
     }
@@ -5332,9 +5370,62 @@
       return `activity-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
     }
 
+    // One shared 1s timer keeps the elapsed time on every visible status line
+    // and stops itself once none are on the page.
+    let AI_STATUS_TIMER = null;
+
+    function tickAiStatus() {
+      const items = document.querySelectorAll('.ai-status');
+      if (!items.length) {
+        window.clearInterval(AI_STATUS_TIMER);
+        AI_STATUS_TIMER = null;
+        return;
+      }
+      items.forEach(item => {
+        const seconds = Math.max(0, Math.floor((Date.now() - Number(item.dataset.started)) / 1000));
+        const time = item.querySelector('.ai-status-time');
+        if (time) time.textContent = seconds >= 2 ? `${seconds}s` : '';
+      });
+    }
+
+    function loadingStatus(verb) {
+      if (!AI_STATUS_TIMER) AI_STATUS_TIMER = window.setInterval(tickAiStatus, 1000);
+      return `
+        <div class="ai-status" role="status" data-started="${Date.now()}">
+          <svg class="ai-status-glyph" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2c.6 6 4 9.4 10 10-6 .6-9.4 4-10 10-.6-6-4-9.4-10-10 6-.6 9.4-4 10-10z"></path>
+          </svg>
+          <span class="ai-status-verb">${escapeHtml(verb)}…</span>
+          <span class="ai-status-time" aria-hidden="true"></span>
+        </div>
+      `;
+    }
+
+    // The real retrieval stage drives the wording, so the line reflects what
+    // CodeAtlas is actually doing instead of a canned rotation.
+    const AI_STATUS_VERBS = {
+      searching_source: 'Searching the code',
+      matching_source_files: 'Matching files',
+      ranking_graph_nodes: 'Ranking relevant symbols',
+      expanding_relations: 'Following relationships',
+      reading_source: 'Reading the source',
+      using_conversation_evidence: 'Reusing earlier findings',
+      generating_answer: 'Writing the answer',
+      answered_from_cache: 'Reusing a verified answer',
+    };
+
+    function updateAiStatusVerb(stage) {
+      const verb = AI_STATUS_VERBS[stage];
+      if (!verb) return;
+      document.querySelectorAll('.ai-status .ai-status-verb').forEach(item => {
+        const text = `${verb}…`;
+        if (item.textContent !== text) item.textContent = text;
+      });
+    }
+
     function answerActivityPanel() {
       return `
-        <details class="answer-activity" id="answerActivityPanel" open>
+        <details class="answer-activity" id="answerActivityPanel">
           <summary>Graph activity <span class="badge">live</span></summary>
           <div class="details-body" id="answerActivityBody">
             <div class="activity-stage done"><span class="stage-dot"></span>Understanding query</div>
@@ -5372,7 +5463,8 @@
 	      const stages = stage === 'answered_from_cache' || stage === 'using_conversation_evidence'
 	        ? ['using_conversation_evidence', 'generating_answer']
 	        : retrievalStages;
-	      let currentStageIndex = stages.indexOf(stage);
+	      updateAiStatusVerb(stage);
+      let currentStageIndex = stages.indexOf(stage);
 	      if (currentStageIndex === -1) currentStageIndex = 0;
 	      const stageLabels = {
 	        understanding_query: 'Understanding query',
@@ -5973,31 +6065,19 @@
       const activityRequestId = createActivityRequestId();
       result.innerHTML = deepInvestigation
         ? `
-          <h2>Investigating comparison deeply…</h2>
-          <div class="loading-steps">
-            <div class="step"><span class="spinner"></span> Running fresh investigations on both branches…</div>
-            <div class="step"><span class="dot-pulse"></span> Verifying branch-specific files, symbols, and behavior…</div>
-          </div>
+          ${loadingStatus('Investigating both branches')}
           ${answerActivityPanel()}
         `
         : followUpWithContext
           ? `
             <div class="loading-heading-row">
-              <h2>Thinking…</h2>
+              ${loadingStatus('Reusing earlier findings')}
               <button type="button" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request">&times;</button>
-            </div>
-            <div class="loading-steps">
-              <div class="step"><span class="spinner"></span> Reusing verified comparison evidence…</div>
-              <div class="step"><span class="dot-pulse"></span> Checking whether fresh branch investigation is needed…</div>
             </div>
             ${answerActivityPanel()}
           `
           : `
-            <h2>Comparing branches…</h2>
-            <div class="loading-steps">
-              <div class="step"><span class="spinner"></span> Retrieving evidence from both branches…</div>
-              <div class="step"><span class="dot-pulse"></span> Preparing a side-by-side comparison…</div>
-            </div>
+            ${loadingStatus('Comparing branches')}
             ${answerActivityPanel()}
           `;
       (activeTurn?.turn || result).scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -6280,39 +6360,23 @@
       const activityRequestId = productFlowSummary ? null : createActivityRequestId();
       result.innerHTML = productFlowSummary
         ? `
-          <h2>Thinking…</h2>
-          <div class="loading-steps">
-            <div class="step"><span class="spinner"></span> Understanding the selected flow…</div>
-            <div class="step"><span class="dot-pulse"></span> Preparing a brief summary…</div>
-          </div>
+          ${loadingStatus('Preparing the summary')}
         `
         : deepInvestigation
           ? `
-            <h2>Investigating deeply…</h2>
-          <div class="loading-steps">
-            <div class="step"><span class="spinner"></span> Running a fresh repository investigation…</div>
-            <div class="step"><span class="dot-pulse"></span> Verifying related files, symbols, and behavior…</div>
-          </div>
+          ${loadingStatus('Investigating deeply')}
           ${answerActivityPanel()}
         `
         : followUpWithContext
           ? `
             <div class="loading-heading-row">
-              <h2>Thinking…</h2>
+              ${loadingStatus('Reusing earlier findings')}
               <button type="button" class="cancel-btn" onclick="cancelActiveRequest()" aria-label="Cancel request" title="Cancel request">&times;</button>
-            </div>
-            <div class="loading-steps">
-              <div class="step"><span class="spinner"></span> Reusing verified evidence from this conversation…</div>
-              <div class="step"><span class="dot-pulse"></span> Checking whether more repository investigation is needed…</div>
             </div>
             ${answerActivityPanel()}
           `
         : `
-          <h2>Thinking…</h2>
-          <div class="loading-steps">
-            <div class="step"><span class="spinner"></span> Investigating source and graph evidence…</div>
-            <div class="step"><span class="dot-pulse"></span> Following relevant files and symbols…</div>
-          </div>
+          ${loadingStatus('Thinking')}
           ${answerActivityPanel()}
         `;
 
