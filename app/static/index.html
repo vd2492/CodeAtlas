@@ -2652,7 +2652,8 @@
     let TOAST_TIMER = null;
     let CONVERSATION_ID = null;
     let CURRENT_USER_TYPE = 'dev_team';
-    let PRODUCT_ANSWER_OVERRIDE = false;
+    // Dev-team accounts start on product-style answers and can switch to dev.
+    let PRODUCT_ANSWER_OVERRIDE = true;
     let LAST_FOLLOW_UP_QUESTION = '';
     let ASK_MODE = 'single';
     let GROUP_SLUG = null;
@@ -4757,7 +4758,7 @@
       BRANCH_ID = null;
       CURRENT_USER_TYPE = 'dev_team';
       CURRENT_USER_ID = null;
-      PRODUCT_ANSWER_OVERRIDE = false;
+      PRODUCT_ANSWER_OVERRIDE = true;
       stopBranchPolling();
       CONVERSATION_ID = null;
       QUESTION_HISTORY = [];
