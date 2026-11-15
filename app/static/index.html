@@ -419,6 +419,18 @@
     .answer-style-option:disabled {
       cursor:not-allowed; opacity:.48;
     }
+    .compare-chip {
+      display:inline-flex; align-items:center; gap:6px; min-height:26px; flex:none;
+      padding:2px 9px; border:1px solid var(--border); border-radius:999px;
+      background:var(--card); color:var(--muted); font-size:10px; font-weight:700;
+      letter-spacing:0.04em; text-transform:uppercase; box-shadow:none;
+      cursor:pointer; user-select:none; white-space:nowrap;
+    }
+    .compare-chip:hover {
+      color:var(--text); border-color:rgba(95, 227, 154, 0.45); transform:none;
+    }
+    .compare-chip.unavailable { opacity:.55; }
+    .compare-chip[hidden] { display:none; }
     .answer-style-check {
       width:13px; height:13px; flex:none; display:grid; place-items:center;
       border:1.5px solid currentColor; border-radius:3px; font-size:10px;
@@ -2042,9 +2054,10 @@
     .composer-dock .hero { margin: 0; }
     .composer-context {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 6px 10px;
       padding: 8px 12px;
       border: 1px solid var(--border);
       border-bottom: 0;
@@ -2054,7 +2067,9 @@
     .composer-context .header-context {
       display: flex;
       flex: 1;
-      gap: 7px;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 7px;
       min-width: 0;
     }
     .composer-context .repo-picker {
@@ -2158,7 +2173,7 @@
       .ask-welcome { min-height: 280px; }
       .composer-dock { position: sticky; bottom: 0; padding: 8px 16px 16px; }
       .composer-context { align-items: stretch; flex-direction: column; }
-      .composer-context .header-context { order: initial; width: 100%; }
+      .composer-context .header-context { order: initial; width: 100%; flex-wrap: wrap; align-items: center; }
       .composer-context .header-context .repo-picker { width: 50%; max-width: none; }
       .composer-context .hero-heading { width: 100%; justify-content: flex-start; }
     }
@@ -2429,6 +2444,16 @@
         <div class="header-context single-repo-flow">
           <select id="repoPicker" class="repo-picker" onchange="onRepoChange()" title="Active repository"></select>
           <select id="branchPicker" class="repo-picker" onchange="onBranchChange()" title="Indexed branch" style="display:none;"></select>
+          <button id="compareChip" type="button" class="compare-chip" onclick="openCompareFromComposer()"
+            title="Compare two branches of this repository" aria-label="Compare two branches">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3"></path><path d="m9 8-4 4 4 4m6-8 4 4-4 4"></path></svg>
+            Compare
+          </button>
+          <button id="multiRepoChip" type="button" class="compare-chip" onclick="openGroupFromComposer()"
+            title="Ask across several repositories" aria-label="Ask across several repositories" hidden>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><path d="M17.5 14v7M14 17.5h7"></path></svg>
+            <span id="multiRepoChipLabel">Multi-repo</span>
+          </button>
         </div>
       <div class="hero-heading">
         <div class="hero-label">Ask CodeAtlas</div>
@@ -2478,6 +2503,11 @@
       <div class="card-head">
         <span class="card-dot"></span>
         <h2 class="card-title">Compare branches</h2>
+        <button type="button" class="compare-chip" onclick="openSingleFromCompare()"
+          title="Go back to asking a single branch" aria-label="Ask a single branch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
+          Single branch
+        </button>
         <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
           <button type="button" class="answer-style-option" data-answer-style="dev_team"
             role="radio" aria-checked="true" onclick="selectAnswerStyle('dev_team')">
@@ -2524,6 +2554,11 @@
       <div class="card-head">
         <span class="card-dot"></span>
         <h2 id="groupAskTitle" class="card-title">Ask a repo group</h2>
+        <button type="button" class="compare-chip" onclick="openSingleFromGroup()"
+          title="Go back to asking a single branch" aria-label="Ask a single branch">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
+          Single branch
+        </button>
         <div class="answer-style-selector" role="radiogroup" aria-label="Answer style">
           <button type="button" class="answer-style-option" data-answer-style="dev_team"
             role="radio" aria-checked="true" onclick="selectAnswerStyle('dev_team')">
@@ -3679,6 +3714,83 @@
       setQuestionHistoryOpen(false);
     }
 
+    // The Compare chip in the single-branch composer is a shortcut to the same
+    // compare mode as the sidebar tab, carrying the draft question and the
+    // branch the user is already on.
+    function updateCompareChip(usableBranchCount) {
+      const chip = document.getElementById('compareChip');
+      if (!chip) return;
+      const unavailable = usableBranchCount < 2;
+      chip.classList.toggle('unavailable', unavailable);
+      chip.title = unavailable
+        ? 'Needs two indexed branches'
+        : 'Compare two branches of this repository';
+    }
+
+    function moveDraftQuestion(fromId, toId) {
+      const from = document.getElementById(fromId);
+      const to = document.getElementById(toId);
+      if (!from || !to || !from.value.trim() || to.value.trim()) return;
+      to.value = from.value;
+      from.value = '';
+      autoResizeTextarea(to);
+      autoResizeTextarea(from);
+    }
+
+    function openCompareFromComposer() {
+      if (!requireWorkspace()) return;
+      const usable = BRANCHES.filter(branch => branch.available);
+      if (usable.length < 2) {
+        showToast('Comparison needs two indexed branches.');
+        return;
+      }
+      setAskMode('compare', { focus: false });
+      const left = document.getElementById('compareBranchA');
+      const right = document.getElementById('compareBranchB');
+      if (left && right && usable.some(branch => branch.id === BRANCH_ID)) {
+        left.value = String(BRANCH_ID);
+        if (right.value === left.value) {
+          const other = usable.find(branch => branch.id !== BRANCH_ID);
+          if (other) right.value = String(other.id);
+        }
+        updateCompareBranchStatus();
+      }
+      moveDraftQuestion('question', 'compareQuestion');
+      const input = document.getElementById('compareQuestion');
+      if (input) input.focus();
+    }
+
+    function openGroupFromComposer() {
+      if (!groupModeAvailable()) return;
+      setAskMode('group', { focus: false });
+      if (ASK_MODE !== 'group') return;
+      // With nothing ticked yet, start from the repository the user is on.
+      const current = USABLE_REPOS.find(repo => repo.workspace === WORKSPACE);
+      if (customGroupSelected() && current && !CUSTOM_REPOS.length) {
+        CUSTOM_REPOS = [current.slug];
+        refreshCustomGroupSlug();
+        renderCustomRepos();
+        renderGroupHint();
+      }
+      moveDraftQuestion('question', 'groupQuestion');
+      const input = document.getElementById('groupQuestion');
+      if (input) input.focus();
+    }
+
+    function openSingleFromGroup() {
+      setAskMode('single', { focus: false });
+      moveDraftQuestion('groupQuestion', 'question');
+      const input = document.getElementById('question');
+      if (input) input.focus();
+    }
+
+    function openSingleFromCompare() {
+      setAskMode('single', { focus: false });
+      moveDraftQuestion('compareQuestion', 'question');
+      const input = document.getElementById('question');
+      if (input) input.focus();
+    }
+
     function setAskMode(mode, options = {}) {
       ASK_MODE = mode === 'compare'
         ? 'compare'
@@ -3990,6 +4102,10 @@
             : '');
       }
       if (button) button.hidden = !groupModeAvailable();
+      const multiRepoChip = document.getElementById('multiRepoChip');
+      if (multiRepoChip) multiRepoChip.hidden = !groupModeAvailable();
+      const chipLabel = document.getElementById('multiRepoChipLabel');
+      if (chipLabel) chipLabel.textContent = USER_GROUPS.length ? 'Repo group' : 'Multi-repo';
       const label = USER_GROUPS.length ? 'Ask a repo group' : 'Ask multiple repos';
       const buttonLabel = document.getElementById('groupAskModeLabel');
       const cardTitle = document.getElementById('groupAskTitle');
@@ -4575,6 +4691,7 @@
       const button = document.getElementById('compareAskBtn');
       if (!left || !right) return;
       const usable = (branches || []).filter(branch => branch.available);
+      updateCompareChip(usable.length);
       left.replaceChildren();
       right.replaceChildren();
       const addOption = (select, branch, label = null) => {
