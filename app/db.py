@@ -1380,7 +1380,7 @@ def _usage_int(value) -> int:
 
 ANSWER_FAILURE_KINDS = {
     "timeout", "rate_limited", "capacity", "no_provider", "provider_error",
-    "not_ready", "no_response", "network", "other",
+    "not_ready", "no_response", "network", "provider_auth", "other",
 }
 
 

@@ -104,6 +104,25 @@ class AnswerFailureTests(unittest.TestCase):
         self.assertEqual(classify(502, "bad gateway"), "provider_error")
         self.assertEqual(classify(400, "bad input"), "other")
 
+    def test_rejected_provider_keys_get_their_own_bucket(self):
+        classify = ask_service.classify_answer_failure
+        raw = '[401] {"error": {"message": "Invalid API Key", "code": "401"}}'
+        self.assertEqual(classify(400, raw), "provider_auth")
+        self.assertEqual(classify(401, "unauthorized"), "provider_auth")
+        self.assertEqual(classify(403, "forbidden"), "provider_auth")
+        self.assertEqual(classify(400, "[403] key not allowed"), "provider_auth")
+        # A rate limit or timeout must still win over the new bucket.
+        self.assertEqual(classify(400, "[429] rate limited"), "rate_limited")
+        self.assertIn("provider_auth", db.ANSWER_FAILURE_KINDS)
+
+    def test_a_provider_auth_failure_is_stored_under_its_kind(self):
+        db.record_answer_failure(
+            repo_slug="alpha", question="q", error_kind="provider_auth",
+            error='[401] {"error": {"message": "Invalid API Key"}}',
+        )
+        (row,) = db.list_answer_failures()
+        self.assertEqual(row["error_kind"], "provider_auth")
+
     def test_browser_report_uses_the_session_user(self):
         auth_routes.report_answer_failure(
             auth_routes.AnswerFailureReport(

@@ -261,6 +261,8 @@ class ChatTurnPayload(BaseModel):
     feedbackId: Optional[str] = None
     feedbackRating: Optional[str] = None
     feedbackReason: Optional[str] = None
+    # Why an unanswered turn failed, so a restored chat can say so.
+    failureReason: Optional[str] = None
 
 
 GROUP_FEEDBACK_PREFIX = "group:"
@@ -344,6 +346,8 @@ def validated_chat_payload(chat_id: str, request: UserChatRequest) -> dict:
             or (turn.answeredAt is not None and len(turn.answeredAt) > 64)
         ):
             raise HTTPException(status_code=400, detail="Invalid chat turn timestamp.")
+        if turn.failureReason is not None and len(turn.failureReason) > 300:
+            raise HTTPException(status_code=400, detail="Chat turn failure reason is too long.")
         if turn.feedbackId is not None and not FEEDBACK_ID_RE.fullmatch(turn.feedbackId):
             raise HTTPException(status_code=400, detail="Invalid answer feedback id.")
         if turn.feedbackRating not in {None, "liked", "disliked"}:

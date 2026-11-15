@@ -2722,6 +2722,7 @@
                   .includes(item.feedbackReason)
                 ? item.feedbackReason
                 : null,
+              failureReason: item.failureReason ? String(item.failureReason).slice(0, 300) : null,
             }))
           : [];
         const storedChats = JSON.parse(
@@ -2810,6 +2811,7 @@
             .includes(item.feedbackReason)
           ? item.feedbackReason
           : null,
+        failureReason: item.failureReason ? String(item.failureReason).slice(0, 300) : null,
       };
     }
 
@@ -2862,6 +2864,7 @@
             feedbackId,
             feedbackRating,
             feedbackReason,
+            failureReason,
           }) => ({
             id,
             question,
@@ -2872,6 +2875,7 @@
             feedbackId: feedbackId || null,
             feedbackRating: feedbackRating || null,
             feedbackReason: feedbackReason || null,
+            failureReason: failureReason || null,
           })),
       };
     }
@@ -3102,7 +3106,11 @@
               answer
                 ? `<div class="answer">${renderAnswer(answer)}</div>
                   ${answerFeedbackControls(item.id, item.question)}`
-                : `<p class="empty-state">This response was not completed.</p>${
+                : `<p class="empty-state">${
+                  item.failureReason
+                    ? `This response was not completed: ${escapeHtml(item.failureReason)}`
+                    : 'This response was not completed.'
+                }</p>${
                   (CHAT_SESSIONS.find(chat => chat.id === item.chatId)?.askMode === 'compare'
                     || item.type === 'Repository tool' || item.type === 'Flow summary')
                     ? ''
@@ -3540,6 +3548,7 @@
         feedbackId: createAnswerFeedbackId(),
         feedbackRating: null,
         feedbackReason: null,
+        failureReason: null,
       };
       QUESTION_HISTORY.push(item);
       const chat = ensureActiveChatSession();
@@ -3554,12 +3563,23 @@
       return item.id;
     }
 
+    // Remember why a turn got no answer, so a restored chat can say so.
+    function recordQuestionHistoryFailure(historyId, reason) {
+      if (!historyId) return;
+      const item = QUESTION_HISTORY.find(entry => entry.id === historyId);
+      if (!item || item.answer) return;
+      const text = String(reason || '').replace(/^\[\d{3}\]\s*/, '').replace(/\s+/g, ' ').trim();
+      item.failureReason = text ? text.slice(0, 240) : null;
+      updateActiveChatSession({});
+    }
+
     function updateQuestionHistoryAnswer(historyId, answer) {
       if (!historyId) return;
       const item = QUESTION_HISTORY.find(entry => entry.id === historyId);
       if (!item) return;
       item.answer = String(answer || '').trim().slice(0, 20000);
       item.answeredAt = new Date().toISOString();
+      item.failureReason = null;
       updateActiveChatSession({
         preview: item.answer || item.question,
         conversationId: CONVERSATION_ID,
@@ -5099,11 +5119,19 @@
       updateLlmModeUi();
     }
 
-    function llmErrorMessage(data) {
+    function usingSharedLlm() {
+      return String(LLM_MODE || '').startsWith('shared:');
+    }
+
+    function llmErrorMessage(data, options = {}) {
       const detail = String(data?.detail || data?.error || 'LLM request failed.');
       const providerMessage = detail.match(/"message"\s*:\s*"([^"]+)"/);
       const message = providerMessage ? providerMessage[1] : detail;
       if (/invalid api key/i.test(message)) {
+        // A shared model's key is the admins' to fix; the user can only switch.
+        if (options.sharedModel) {
+          return "The selected AI model's key is invalid. Try another model, or tell an admin.";
+        }
         return `${message}. Re-enter the key and select the matching provider endpoint. `
           + 'MiMo tp- keys require a regional Token Plan endpoint; MiMo sk- keys '
           + 'require MiMo pay-as-you-go.';
@@ -5885,10 +5913,12 @@
               endpoint: 'repo.compare',
             });
           }
+          const compareError = llmErrorMessage(data, { sharedModel: usingSharedLlm() });
+          recordQuestionHistoryFailure(historyId, compareError);
           result.innerHTML = `
             <div class="error-box">
               <h2>Comparison Error</h2>
-              <p>${escapeHtml(llmErrorMessage(data))}</p>
+              <p>${escapeHtml(compareError)}</p>
             </div>
           `;
           return;
@@ -5912,6 +5942,9 @@
           `;
           return;
         }
+        recordQuestionHistoryFailure(
+          historyId, 'The connection was lost before an answer arrived. Try again.'
+        );
         reportAnswerFailure(requestQuestion, 'network', String(error), {
           startedAt: askStartedAt,
           endpoint: 'repo.compare',
@@ -6202,7 +6235,8 @@
         const data = await readResponseData(res);
 
         if (!res.ok) {
-          const errorMessage = llmErrorMessage(data);
+          const errorMessage = llmErrorMessage(data, { sharedModel: usingSharedLlm() });
+          recordQuestionHistoryFailure(historyId, errorMessage);
           if (data.non_json_response && !options.flowSummary) {
             reportAnswerFailure(requestQuestion, gatewayFailureKind(data, res.status), errorMessage, {
               status: res.status,
@@ -6376,6 +6410,9 @@
           `;
           return;
         }
+        recordQuestionHistoryFailure(
+          historyId, 'The connection was lost before an answer arrived. Try again.'
+        );
         if (!options.flowSummary) {
           reportAnswerFailure(requestQuestion, 'network', String(error), {
             startedAt: askStartedAt,

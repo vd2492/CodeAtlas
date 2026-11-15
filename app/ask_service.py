@@ -125,6 +125,13 @@ def classify_answer_failure(status_code: Optional[int], message: str) -> str:
         return "rate_limited"
     if status_code == 503:
         return "capacity"
+    if (
+        status_code in {401, 403}
+        or re.search(r"\[40[13]\]", text)
+        or "invalid api key" in text
+    ):
+        # The provider rejected the key; an admin or the key's owner must fix it.
+        return "provider_auth"
     if "no llm provider succeeded" in text:
         return "no_provider"
     if status_code in {409, 404}:

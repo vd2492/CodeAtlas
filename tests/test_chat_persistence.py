@@ -126,6 +126,25 @@ class UserChatPersistenceTests(unittest.TestCase):
             auth_routes.save_my_chat("chat-1", oversized, self.alice)
         self.assertEqual(invalid_payload.exception.status_code, 400)
 
+    def test_failure_reason_is_saved_with_the_turn_and_old_turns_still_load(self):
+        request = self.chat_request(answer="")
+        request.turns[0].failureReason = "The AI provider is rate limited right now."
+        auth_routes.save_my_chat("chat-1", request, self.alice)
+        auth_routes.save_my_chat("chat-2", self.chat_request(), self.alice)
+        chats = {c["id"]: c for c in auth_routes.get_my_chats(self.alice)["chats"]}
+        self.assertEqual(
+            chats["chat-1"]["turns"][0]["failureReason"],
+            "The AI provider is rate limited right now.",
+        )
+        self.assertIsNone(chats["chat-2"]["turns"][0].get("failureReason"))
+
+    def test_oversized_failure_reason_is_rejected(self):
+        request = self.chat_request(answer="")
+        request.turns[0].failureReason = "x" * 301
+        with self.assertRaises(HTTPException) as raised:
+            auth_routes.save_my_chat("chat-1", request, self.alice)
+        self.assertEqual(raised.exception.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

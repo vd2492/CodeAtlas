@@ -362,7 +362,7 @@
       border-radius:999px; font-size:11px; font-weight:700; color:var(--muted);
     }
     .failure-kind.timeout, .failure-kind.no_response, .failure-kind.network { color:var(--warn); border-color:rgba(255,190,80,.4); }
-    .failure-kind.provider_error, .failure-kind.no_provider { color:#ff9a9a; border-color:rgba(255,90,90,.35); }
+    .failure-kind.provider_error, .failure-kind.no_provider, .failure-kind.provider_auth { color:#ff9a9a; border-color:rgba(255,90,90,.35); }
     .failure-kind.rate_limited, .failure-kind.capacity { color:#c4b5fd; border-color:rgba(167,139,250,.4); }
     .user-edit-error { min-height:18px; color:#ff9a9a; font-size:12px; }
     .hidden { display: none; }
@@ -1429,6 +1429,7 @@ const FAILURE_KIND_LABELS = {
   capacity: "Server busy",
   no_provider: "No LLM available",
   provider_error: "Provider error",
+  provider_auth: "Provider key rejected",
   not_ready: "Repo or branch not ready",
   no_response: "No response (browser)",
   network: "Network error",
