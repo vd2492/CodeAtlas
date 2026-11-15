@@ -711,6 +711,8 @@ def get_answer_failures(
     return {
         "failures": db.list_answer_failures(limit=limit, offset=offset),
         "total": db.answer_failure_count(),
+        # Rejected provider keys in the last day, for the admin alert badge.
+        "provider_auth_24h": db.recent_answer_failure_count("provider_auth", 24),
     }
 
 

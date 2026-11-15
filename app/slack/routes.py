@@ -53,6 +53,10 @@ CALLBACK_FOLLOW_UP = "codeatlas_follow_up_submit"
 ACTION_FOLLOW_UP = "codeatlas_follow_up"
 ACTION_DEEP = "codeatlas_investigate_deeply"
 ACTION_NEW = "codeatlas_new_question"
+ACTION_RATE_UP = "codeatlas_rate_up"
+ACTION_RATE_DOWN = "codeatlas_rate_down"
+ACTION_RATE_REASON = "codeatlas_rate_reason"
+RATING_BLOCK_PREFIX = "codeatlas_rating"
 RELAY_SECRET_HEADER = "x-codeatlas-relay-secret"
 
 _executor = ThreadPoolExecutor(
@@ -1140,7 +1144,30 @@ def _mrkdwn_chunks(text: str, limit: int = 2900) -> list[str]:
     return chunks or [""]
 
 
-def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
+def _rating_buttons_block(feedback_id: str) -> dict:
+    return {
+        "type": "actions",
+        "block_id": f"{RATING_BLOCK_PREFIX}_buttons",
+        "elements": [
+            {
+                "type": "button",
+                "text": _plain("\U0001F44D Helpful"),
+                "action_id": ACTION_RATE_UP,
+                "value": feedback_id,
+            },
+            {
+                "type": "button",
+                "text": _plain("\U0001F44E Not helpful"),
+                "action_id": ACTION_RATE_DOWN,
+                "value": feedback_id,
+            },
+        ],
+    }
+
+
+def _answer_text_blocks(
+    response: dict, topic: dict, feedback_id: Optional[str] = None
+) -> list[dict]:
     answer = str(response.get("answer") or "No answer was returned.").strip()
     question = str(response.get("question") or topic.get("question") or "").strip()
     header = _topic_label(topic)
@@ -1188,6 +1215,8 @@ def _answer_text_blocks(response: dict, topic: dict) -> list[dict]:
         "type": "actions",
         "elements": actions,
     })
+    if feedback_id and ask_service._FEEDBACK_ID_RE.fullmatch(feedback_id):
+        blocks.append(_rating_buttons_block(feedback_id))
     return blocks
 
 
@@ -1387,9 +1416,10 @@ def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = Fa
             "branch": branch["name"],
             "branch_workspace": workspace,
         }
+    feedback_id = f"feedback-{uuid.uuid4()}"
     request = main.AskRequest(
         question=values["question"],
-        feedback_id=f"feedback-{uuid.uuid4()}",
+        feedback_id=feedback_id,
         llm_mode=_llm_mode(),
         conversation_id=values.get("conversation_id") if follow_up else None,
         follow_up=follow_up,
@@ -1415,7 +1445,7 @@ def _run_single_answer(values: dict, *, follow_up: bool = False, deep: bool = Fa
     _send_user_message(
         topic,
         "CodeAtlas answer",
-        _answer_text_blocks(response, topic),
+        _answer_text_blocks(response, topic, feedback_id),
     )
 
 
@@ -1472,9 +1502,10 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
         "compare_branch": compare["name"],
         "compare_branch_workspace": compare["workspace"],
     })
+    feedback_id = f"feedback-{uuid.uuid4()}"
     request = main.CompareRequest(
         question=values["question"],
-        feedback_id=f"feedback-{uuid.uuid4()}",
+        feedback_id=feedback_id,
         left_branch=base["id"],
         right_branch=compare["id"],
         llm_mode=_llm_mode(),
@@ -1505,7 +1536,7 @@ def _run_compare_answer(values: dict, *, follow_up: bool = False, deep: bool = F
     _send_user_message(
         topic,
         "CodeAtlas comparison",
-        _answer_text_blocks(response, topic),
+        _answer_text_blocks(response, topic, feedback_id),
     )
 
 
@@ -1518,9 +1549,10 @@ def _run_group_answer(values: dict, *, follow_up: bool = False, deep: bool = Fal
     actor = ask_service.slack_actor_user(
         values["team_id"], values["slack_user_id"], values.get("user_type")
     )
+    feedback_id = f"feedback-{uuid.uuid4()}"
     request = main.GroupAskRequest(
         question=values["question"],
-        feedback_id=f"feedback-{uuid.uuid4()}",
+        feedback_id=feedback_id,
         llm_mode=_llm_mode(),
         conversation_id=values.get("conversation_id") if follow_up else None,
         follow_up=follow_up,
@@ -1545,7 +1577,7 @@ def _run_group_answer(values: dict, *, follow_up: bool = False, deep: bool = Fal
     _send_user_message(
         topic,
         "CodeAtlas answer",
-        _answer_text_blocks(response, topic),
+        _answer_text_blocks(response, topic, feedback_id),
     )
 
 
@@ -1824,12 +1856,97 @@ def _validate_group_ask_values(values: dict) -> dict:
     return errors
 
 
+def _rating_note_block(text: str) -> dict:
+    return {
+        "type": "context",
+        "block_id": f"{RATING_BLOCK_PREFIX}_note",
+        "elements": [_mrkdwn(text)],
+    }
+
+
+def _replace_rating_blocks(payload: dict, new_blocks: list[dict]) -> None:
+    """Swap the rating row of the clicked message for `new_blocks`.
+
+    Best effort: the rating is already saved, so a failed message update only
+    leaves the old buttons showing."""
+    try:
+        response_url = payload.get("response_url")
+        message = payload.get("message") or {}
+        blocks = message.get("blocks")
+        if not response_url or not isinstance(blocks, list):
+            return
+        kept = [
+            block for block in blocks
+            if not str(block.get("block_id") or "").startswith(RATING_BLOCK_PREFIX)
+        ]
+        requests.post(
+            response_url,
+            json={
+                "replace_original": True,
+                "text": message.get("text") or "CodeAtlas answer",
+                "blocks": kept + new_blocks,
+            },
+            timeout=10,
+        )
+    except Exception:
+        logger.exception("Unable to update the Slack rating buttons")
+
+
+def _handle_rating_action(payload: dict, action: dict) -> dict:
+    """Record a thumbs up/down (and the reason for a thumbs down)."""
+    from ..auth.routes import ANSWER_FEEDBACK_REASONS
+
+    action_id = action.get("action_id")
+    value = str(action.get("value") or "")
+    feedback_id, _, reason = value.partition("|")
+    if not ask_service._FEEDBACK_ID_RE.fullmatch(feedback_id):
+        return {}
+    if action_id == ACTION_RATE_UP:
+        satisfaction, reason = "liked", None
+        replacement = [_rating_note_block("Thanks for the feedback \U0001F44D")]
+    elif action_id == ACTION_RATE_DOWN:
+        satisfaction, reason = "disliked", None
+        replacement = [
+            _rating_note_block("Sorry about that. What was off?"),
+            {
+                "type": "actions",
+                "block_id": f"{RATING_BLOCK_PREFIX}_reasons",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": _plain(label),
+                        "action_id": f"{ACTION_RATE_REASON}_{key}",
+                        "value": f"{feedback_id}|{key}",
+                    }
+                    for key, label in ANSWER_FEEDBACK_REASONS.items()
+                ],
+            },
+        ]
+    else:
+        if reason not in ANSWER_FEEDBACK_REASONS:
+            return {}
+        satisfaction = "disliked"
+        replacement = [_rating_note_block("Thanks for the feedback.")]
+    try:
+        if not db.rate_answer_feedback(feedback_id, satisfaction, reason):
+            return {}
+    except Exception:
+        logger.exception("Unable to save Slack answer feedback")
+        return {}
+    _executor.submit(_replace_rating_blocks, payload, replacement)
+    return {}
+
+
 def _handle_block_actions(payload: dict) -> dict:
     actions = payload.get("actions") or []
     if not actions:
         return {}
     action = actions[0]
     action_id = action.get("action_id")
+    if action_id in {ACTION_RATE_UP, ACTION_RATE_DOWN} or str(action_id or "").startswith(
+        f"{ACTION_RATE_REASON}_"
+    ):
+        return _handle_rating_action(payload, action)
     if action_id == ACTION_NEW:
         metadata = _load_metadata(action.get("value") or "")
         metadata["question"] = ""

@@ -73,7 +73,8 @@
       color:#1b1100; font-size:10px; font-weight:700; line-height:17px;
       box-shadow:0 6px 14px rgba(0,0,0,0.25);
     }
-    .activity-fab.running .activity-badge { display:grid; }
+    .activity-fab.running .activity-badge,
+    .activity-fab.alert .activity-badge { display:grid; }
     @keyframes activityPulse {
       0%, 100% { transform:translateY(0); opacity:1; }
       50% { transform:translateY(-1px); opacity:.72; }
@@ -529,6 +530,7 @@
         <button id="failureQuestionsBtn" class="activity-fab hidden" type="button"
           title="Failure questions" aria-label="Open failed questions">
           Failure questions
+          <span id="failureAuthBadge" class="activity-badge">0</span>
         </button>
         <button id="repoActivityBtn" class="activity-fab hidden" type="button" title="Repo Activity" aria-label="Open repo activity">
           Repo Activity
@@ -1533,6 +1535,22 @@ function renderFailureSheet() {
   `;
 }
 
+// Flag rejected provider keys on the button so a broken key is noticed
+// without opening the list. Best effort: never blocks the console.
+let failureAuthBadgeTimer = null;
+async function refreshFailureAuthBadge() {
+  try {
+    const data = await api("/auth/admin/answer-failures?limit=1");
+    const count = Math.max(0, Number(data.provider_auth_24h) || 0);
+    const button = $("failureQuestionsBtn");
+    $("failureAuthBadge").textContent = String(count);
+    button.classList.toggle("alert", count > 0);
+    button.title = count
+      ? `Failure questions - ${count} rejected provider key error${count === 1 ? "" : "s"} in the last 24 hours`
+      : "Failure questions";
+  } catch (error) {}
+}
+
 async function openFailureDialog() {
   $("failureModal").style.display = "grid";
   $("failureSheet").innerHTML = '<div class="activity-empty">Loading failed questions…</div>';
@@ -1999,6 +2017,10 @@ function showAuth(bootstrapped) {
   $("analyticsBtn").classList.add("hidden");
   $("answerFeedbackBtn").classList.add("hidden");
   $("failureQuestionsBtn").classList.add("hidden");
+  if (failureAuthBadgeTimer) {
+    clearInterval(failureAuthBadgeTimer);
+    failureAuthBadgeTimer = null;
+  }
   $("repoActivityBtn").classList.add("hidden");
   $("authPanel").classList.remove("hidden");
   setAuthPasswordVisibility(false);
@@ -2046,6 +2068,10 @@ async function showConsole(me) {
   $("answerFeedbackBtn").onclick = openAnswerFeedbackDialog;
   $("answerFeedbackClose").onclick = closeAnswerFeedbackDialog;
   $("failureQuestionsBtn").onclick = openFailureDialog;
+  refreshFailureAuthBadge();
+  if (!failureAuthBadgeTimer) {
+    failureAuthBadgeTimer = setInterval(refreshFailureAuthBadge, 5 * 60 * 1000);
+  }
   $("failureClose").onclick = closeFailureDialog;
   $("failureKindFilter").onchange = renderFailureSheet;
   $("failureSearch").oninput = renderFailureSheet;

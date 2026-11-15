@@ -726,6 +726,21 @@ def list_answer_feedback(limit: int = 500, offset: int = 0) -> List[dict]:
         return [dict(row) for row in rows]
 
 
+def rate_answer_feedback(
+    feedback_id: str, satisfaction: str, reason: str = None
+) -> bool:
+    """Rate an already-recorded question; never creates a feedback row.
+
+    Returns False when the id is unknown, so a forged id cannot add rows."""
+    with connect() as conn:
+        cursor = conn.execute(
+            "UPDATE answer_feedback SET satisfaction = ?, reason = ?, "
+            "updated_at = datetime('now') WHERE feedback_id = ?",
+            (satisfaction, reason, feedback_id),
+        )
+        return cursor.rowcount > 0
+
+
 def answer_feedback_count() -> int:
     with connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM answer_feedback").fetchone()[0]
@@ -1455,6 +1470,16 @@ def list_answer_failures(limit: int = 200, offset: int = 0) -> List[dict]:
 def answer_failure_count() -> int:
     with connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM answer_failures").fetchone()[0]
+
+
+def recent_answer_failure_count(kind: str, hours: int = 24) -> int:
+    """How many failures of one kind were recorded in the last `hours`."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM answer_failures "
+            "WHERE error_kind = ? AND created_at >= datetime('now', ?)",
+            (kind, f"-{max(1, int(hours))} hours"),
+        ).fetchone()[0]
 
 
 def record_token_usage(
