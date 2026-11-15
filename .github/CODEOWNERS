@@ -1,0 +1,8 @@
+# Code owners are asked to review pull requests that touch these paths.
+*                       @vd2492
+/app/auth/              @vd2492
+/app/slack/             @vd2492
+/app/repos/git_auth.py  @vd2492
+/.github/               @vd2492
+/Dockerfile             @vd2492
+/docker-compose.yaml    @vd2492

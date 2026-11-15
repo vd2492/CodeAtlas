@@ -5,15 +5,18 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: write
+# No token permissions by default; the one job below asks for what it needs.
+permissions: {}
 
 jobs:
   update-traffic-badge:
     runs-on: ubuntu-latest
+    # Needed only to commit the refreshed README badge.
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check for traffic analytics token
         id: traffic-token
