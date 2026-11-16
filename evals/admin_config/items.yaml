@@ -1,0 +1,999 @@
+# CodeAtlas - PM admin-config eval set
+# Service: frodo (riderappcontent), Django admin at /riderappcontent/
+#
+# PROVENANCE (two independent sources, deliberately)
+#   Admin surface : live staging admin. Schema from unbound ADD forms; key
+#                   names from the two key-value changelists (RMS.config 194
+#                   rows, rider_app.configparams 17). No values, no records.
+#   Code truth    : frodo repo @ 0bb7d9f32, read by a separate agent session,
+#                   with file:line citations recorded per item.
+#
+#   These disagree more often than expected. Where they do, the disagreement
+#   IS the eval item: the admin shows an editable control, the code ignores it.
+#   Items marked admin_vs_code are that class and are the highest value here.
+#
+# EXTRACTION CAVEAT (learned the hard way)
+#   Two items in the first draft had WRONG gold because the HTML scrape was
+#   read too literally: a hidden input behind a JS upload widget looked like a
+#   missing field, and a DateField rendering as type=text looked like an
+#   unvalidated string. Never promote an admin-only inference to gold without
+#   a code check.
+#
+# GRADING
+#   evidence_paths   -> retrieval recall, scored from the tool trace, no judge
+#   must_not_contain -> regex, no judge
+#   expect.*         -> one binary assertion each, judged
+#   3 reps per item; report pass rate, not pass/fail
+
+meta:
+  repo: frodo
+  source_commit: 0bb7d9f32
+  admin_root: /riderappcontent/
+  audience: product_team
+  caches_bypassed: [session, repo, audience_evidence]
+  run_matrix:
+    - {name: fresh,  audience_cache: off}
+    - {name: cached, audience_cache: on}
+
+items:
+
+# =================================================================
+# admin_vs_code - the admin lies. Highest-value class.
+# =================================================================
+
+- id: kv-dead-disabled-keys
+  status: grounded
+  scope_class: K1
+  kind: admin_vs_code
+  band: B2
+  priority: critical
+  question: "Which cities have the shirt inventory deduction switched off?"
+  expect:
+    answer: >-
+      the *_disbaled_city_ids config keys are not read by any code in this
+      service; editing them has no effect
+    must_mention:
+      - the keys exist in the admin but have zero Python references
+      - they survive only as rows in a test fixture
+    must_not: explain how to edit the key as though it worked
+  retrieval_difficulty: >-
+    the key misspells "disabled" as "disbaled" (all 12 of them), so a
+    correctly-spelled search finds nothing
+  gold_citations:
+    - RiderManagement/test_db_setup/frodo_db_schema_dump.sql:1377-1395
+    - "dropped in commit a7e625137 (removed RMS)"
+  notes: >-
+    The single best item in the set. Tests typo-tolerant retrieval AND the
+    much harder judgement that a visible, editable admin row is dead code.
+    A confidently helpful "edit this key" answer is the expensive failure.
+  evidence_paths: []
+
+- id: s3-deactivate-does-not-disable
+  status: grounded
+  scope_class: S3
+  kind: admin_vs_code
+  band: B3
+  priority: critical
+  question: >-
+    I unticked "is active" on the platform usage fee row for a city and
+    riders are still being charged. Why?
+  expect:
+    answer: >-
+      two things keep the fee going: the cached city amount, and once that is
+      gone, a fallback to a default fee
+    must_mention:
+      - the city amount is cached for up to a day, and the cache ignores the active flag, so unticking and saving the row keeps the old amount in use
+      - when no active city amount is found, the system falls back to a default fee instead of charging nothing
+      - stopping the fee for that city means the default must not apply to it either
+    should_mention: the default path passes the charge check even though no city row is active
+    must_not: claim that unticking "is active" on its own stops the fee
+  gold_citations:
+    - RMS/models.py:4150-4157
+    - common/redis_keys.py:91
+    - RMS/helper.py:1974-2013
+    - RMS/helper.py:1957-1972
+    - RMS/tasks.py:1214-1215
+  notes: >-
+    Corrected 2026-09-24. The old gold described only the fallback and had
+    must_not "attribute it to caching alone", which contradicted
+    s3-cache-ignores-is-active: the cache really does ignore is_active, and
+    saving the row rewrites it. Both models found that bug with no system
+    prompt and scored 0. A complete answer covers the cache and the fallback.
+    The "-1 sentinel" moves to should_mention; it is implementation detail.
+  evidence_paths: ["**/RMS/helper.py", "**/RMS/tasks.py", "**/RMS/models.py", "**/common/redis_keys.py"]
+
+- id: s3-cache-ignores-is-active
+  status: grounded
+  scope_class: S3
+  kind: admin_vs_code
+  band: B3
+  priority: critical
+  question: >-
+    Two rows exist for the same city and fee, one active and one inactive.
+    Which amount do riders actually get charged?
+  expect:
+    answer: whichever row was saved most recently, active or not, for up to 24h
+    must_mention:
+      - the cache key does not include the active flag
+      - saving the inactive row overwrites the cached amount
+      - the database filter on active is bypassed while the cache is warm
+    should_mention: >-
+      editing a row in the admin is exactly the action that triggers this,
+      since the key fields are read-only and only the flag can be changed
+    must_not: answer "the active one" on the basis of the database constraint
+  gold_citations:
+    - common/redis_keys.py:91
+    - RMS/models.py:4150-4157
+    - RMS/models.py:3700-3701
+    - RMS/admin.py:1660-1664
+  notes: >-
+    The DB has unique_together including is_active, so "the active one" is
+    the defensible-sounding answer and it is wrong in practice.
+  evidence_paths: ["**/common/redis_keys.py", "**/RMS/models.py", "**/RMS/admin.py"]
+
+- id: kv-configparams-no-db-fallback
+  status: grounded
+  scope_class: K1
+  kind: admin_vs_code
+  band: B3
+  priority: high
+  question: >-
+    I changed a value under Config params but the app is still using
+    the old one. What is going on?
+  expect:
+    must_mention:
+      - that table is pushed to cache on save and is never read from the
+        database at runtime
+      - a row untouched since the last cache flush is invisible to the app
+      - re-saving the row in the admin republishes it
+    should_mention: the sibling table does have a database fallback, this one does not
+    must_not: describe a timed cache expiry as the cause
+  gold_citations:
+    - rider_app/models.py:599-602
+    - slot/slot_redis_helper.py:53-60
+    - common/redis_helper.py:250-269
+  evidence_paths: ["**/rider_app/models.py", "**/slot/slot_redis_helper.py", "**/common/redis_helper.py"]
+
+- id: rsc-filters-invalid-example
+  status: grounded
+  scope_class: S3b
+  kind: admin_vs_code
+  band: B2
+  priority: high
+  question: "How do I apply a referral surge to specific clients?"
+  expect:
+    answer: 'enter {"clients": [1,2,3]} with double quotes'
+    must_mention:
+      - clients are given as numeric IDs, whether stated or shown in the example value
+      - the example shown on the form uses single quotes and will be rejected
+    must_not: repeat the form's single-quoted example as usable
+  gold_citations:
+    - rider_app/models.py:83
+    - RMS/admin.py:390-429
+  notes: >-
+    The field's own help_text documents an invalid value. Tests whether the
+    answer is copied from the admin or verified against the parser.
+  evidence_paths: ["**/rider_app/models.py", "**/RMS/admin.py"]
+
+# =================================================================
+# K1  key-value config
+# =================================================================
+
+- id: kv-cross-table-collision
+  status: grounded
+  scope_class: K1
+  band: B4
+  priority: high
+  question: "Where do I turn on v2 RMS?"
+  expect:
+    answer: the Configs table, not Config params
+    must_mention:
+      - the same key name exists in both tables
+      - only the Configs copy is read; the other is dead
+  gold_citations: ["RMS/views.py:566"]
+  sibling_cases:
+    chain_slot_config: rider_app.configparams (slot/tasks.py:414)
+    selfie_fraud_detection_config: RMS.config (rider_app/views.py:2329)
+  notes: >-
+    Three keys collide across the two tables and they do NOT all resolve to
+    the same table, so a rule learned from one transfers wrongly to another.
+  evidence_paths: ["**/RMS/views.py", "**/slot/tasks.py", "**/rider_app/views.py"]
+
+- id: kv-new-suffix
+  status: grounded
+  scope_class: K1
+  band: B2
+  priority: high
+  question: "I need to update the OCR auto-activation settings. Which entry do I edit?"
+  expect:
+    answer: the _new suffixed keys are live, the un-suffixed twins are abandoned
+    live: [ocr_auto_activation_configs_new, ocr_auto_activation_config_profile_section_new]
+    dead: [auto_activation_config, auto_activation_config_profile_section]
+    must_mention: the un-suffixed twin has no code references
+    should_mention: >-
+      the suffix means "newer than its twin", not "guaranteed live" - some
+      _new keys are themselves unreferenced
+  gold_citations:
+    - rider_app/viewset/document_verification_helper.py:122
+    - rider_app/serializers.py:1400-1401
+  evidence_paths: ["**/rider_app/viewset/document_verification_helper.py", "**/rider_app/serializers.py"]
+
+- id: kv-aliased-constant-indirection
+  status: grounded
+  scope_class: K1
+  band: B3
+  priority: high
+  question: "Where is the list of websites riders are allowed to open from the app?"
+  expect:
+    answer: >-
+      the whitelisting_websites_external_link_new config key, referenced
+      through a named constant rather than by its literal string
+    must_mention: the key is reached via a constant, so the name does not appear inline
+  retrieval_difficulty: >-
+    a literal grep for the key name misses every call site. Requires following
+    the constant definition. Four keys are aliased this way.
+  gold_citations: ["common/redis_keys.py:1,3,4,5", "common/global_constants.py:825,826,966"]
+  notes: Purpose-built retrieval-depth probe. Expect this to be the weakest item.
+  evidence_paths: ["**/common/redis_keys.py", "**/common/global_constants.py"]
+
+- id: kv-namespaced-family
+  status: grounded
+  scope_class: K1
+  band: B3
+  question: "Where do I adjust what counts as a long break in the command centre?"
+  expect:
+    admin_page: "Configs"
+    key_name: "command_center.long_break_threshold_minutes"
+    must_mention:
+      - command_center.* is a dotted namespace with several related keys
+      - the unit is minutes
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: kv-mechanism-generic
+  status: grounded
+  scope_class: K1
+  band: B2
+  question: "Where do the rider app's tunable settings live, and how do I change one?"
+  expect:
+    admin_page: "Configs"
+    mechanism: key-value table - find the row by name, then edit the value
+    must_mention:
+      - the admin checks only the value's format (its declared type in Configs, valid JSON in Config params), not whether it has the structure the code expects
+      - there are two separate key-value tables that behave differently
+  gold_citations:
+    - RMS/admin.py:1015-1065
+    - rider_app/models.py:591-594
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/admin.py", "**/rider_app/models.py"]
+
+- id: kv-type-mismatch
+  status: grounded
+  scope_class: K1
+  band: B3
+  question: >-
+    Someone changed a setting in the admin and the app started crashing.
+    What could have gone wrong?
+  expect:
+    must_mention:
+      - the admin only checks that a value is well-formed for its declared type (JSON, list, integer), not that it has the structure or meaning the code expects
+      - a well-formed value with the wrong shape or content is the likely cause
+    should_mention: the type of an existing config cannot be changed in the admin
+  gold_citations:
+    - RMS/admin.py:1015-1065
+    - RMS/admin.py:1070-1076
+  notes: >-
+    Corrected 2026-09-23. The original gold said values are unvalidated free
+    text, inferred from the admin HTML (a plain textarea). RMSConfigForm in
+    fact rejects values that do not parse as their declared type, and
+    Config params stores JSON. Caught when a Luna answer described the
+    validation correctly and the judges failed it.
+  evidence_paths: ["**/RMS/admin.py", "**/RMS/models.py"]
+
+- id: kv-nonexistent-abstain   # id kept so earlier run results still line up
+  status: grounded
+  scope_class: N
+  band: B4
+  priority: high
+  question: "How do I change the geofence radius for a specific client?"
+  expect:
+    answer: >-
+      it cannot be changed from the admin or per client; the radius is
+      hardcoded, so changing it needs a code change
+    must_mention:
+      - the pickup geofence radius is a fixed 350 metres
+      - it is applied to Hulk shift reporting and destination locations, not configured per client
+    should_mention: >-
+      a separate hardcoded radius is used to find nearby EV hubs, widening in
+      10 km steps up to 30 km; it is not a geofence setting either
+    must_not: >-
+      claim a per-client or admin-editable geofence setting exists, or map the
+      question onto a zone or city setting
+  gold_citations:
+    - HulkMS/utils.py:24-27
+    - HulkMS/tasks.py:36-46
+    - EVMS/helper.py:833-834
+    - EVMS/helper.py:893-904
+  notes: >-
+    Originally written as a true negative ("no geofence exists in this
+    service"). That was wrong: the Mimo cold run answered with the 350 m
+    constant from HulkMS/utils.py, which is correct, and the old gold would
+    have failed it. Now scope class N (hardcoded, not in the admin).
+  evidence_paths: ["**/HulkMS/utils.py", "**/HulkMS/tasks.py"]
+
+# =================================================================
+# S3  city override tables
+# =================================================================
+
+- id: s3-platform-fee-symptom
+  status: grounded
+  scope_class: S3
+  band: B3
+  question: >-
+    Riders in Hyderabad are being charged the wrong platform fee.
+    How do I fix the amount for just that city?
+  expect:
+    admin_page: "Citywise policy amounts"
+    field: "Amount"
+    scope: per-city row keyed by city id, deduction category and payment mode
+    must_mention:
+      - the city is a numeric id typed by hand, not a dropdown
+      - payment mode is part of the key, so two rows may exist
+    should_mention: the value is cached, so the change is not instant
+  gold_citations: ["RMS/helper.py:1974-2013", "RMS/models.py:3684"]
+  must_not_contain: [".py", "CitywisePolicyAmount", "line "]
+  evidence_paths: ["**/RMS/helper.py", "**/RMS/models.py"]
+
+- id: s3-units
+  status: grounded
+  scope_class: S3
+  band: B2
+  question: "If I set the inventory deduction to 500 for Pune, is that rupees or paise?"
+  expect:
+    answer: rupees
+    must_mention: values carry two decimal places for paise precision
+    must_not: say the unit cannot be determined
+  gold_citations: ["RMS/models.py:3697", "RMS/admin.py:922"]
+  notes: >-
+    Was drafted as an abstention item on admin evidence alone. The code is
+    unambiguous, so hedging is now the failure. Good calibration counterweight
+    to the genuine abstention items.
+  evidence_paths: ["**/RMS/models.py", "**/RMS/admin.py"]
+
+- id: s3-verbatim
+  status: grounded
+  scope_class: S3
+  band: B1
+  question: "How do I change the citywise policy amount for one city?"
+  expect:
+    admin_page: "Citywise policy amounts"
+    field: "Amount"
+    must_mention:
+      - deduction category and payment mode must both be chosen
+      - the row is per-city, so other cities are unaffected
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-city-id-lookup
+  status: grounded
+  scope_class: S3
+  band: B3
+  question: "I know the city name but the form wants a number. What do I put in?"
+  expect:
+    must_mention:
+      - the city field is a bare integer with no lookup on this form
+      - where the id can be found
+    must_not: claim the field accepts a city name
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-scope-axis-mismatch
+  status: grounded
+  scope_class: S3
+  band: B4
+  question: "How do I reduce the platform usage fee for a specific client?"
+  expect:
+    verdict: clarify_or_correct
+    must_say: the policy amount table scopes by city, not by client
+    must_not: answer as though a per-client fee override exists
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-client-axis-exists
+  status: grounded
+  scope_class: S3
+  band: B2
+  question: "Can I set the shirt deduction differently for ECOM versus HL?"
+  expect:
+    answer: yes
+    admin_page: "City wise inventory deduction amounts"
+    must_mention:
+      - client is a dropdown here with HL, ECOM, Hulk and Store
+      - the row is also scoped by city and inventory item
+  notes: >-
+    Counterweight to s3-scope-axis-mismatch. A system that learns "this
+    service scopes by city only" now over-refuses.
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: s3-prepaid-modelling-mismatch
+  status: grounded
+  scope_class: S3
+  band: B4
+  priority: high
+  question: "How do I set a different inventory deduction for prepaid riders in Chennai?"
+  expect:
+    admin_page: "City wise inventory deduction amounts"
+    must_mention:
+      - this table has separate Amount and Prepaid amount columns on one row
+    must_not: >-
+      apply the sibling table's payment-mode dropdown pattern, which splits
+      rows instead and belongs to Citywise policy amounts
+  notes: Two sibling tables model prepaid/postpaid incompatibly.
+  evidence_paths: ["**/RMS/**"]
+
+# =================================================================
+# S3b  referral surge config
+#      NOTE: effectively dead - zero live call sites, and the one live
+#      reader hard-codes None (rider_app/helper.py:1285). Kept because the
+#      admin exposes it and a PM can still ask; a complete answer says so.
+# =================================================================
+
+- id: rsc-documented-but-dead
+  status: grounded
+  scope_class: S3b
+  kind: admin_vs_code
+  band: B2
+  priority: high
+  question: >-
+    I set a referral surge for a group and also for a subclient inside
+    that group. Which one applies?
+  expect:
+    documented_answer: the subclient takes precedence, per the field's own help text
+    actual_answer: >-
+      neither - this config is not consumed by any live code path, so the
+      surge does not apply at all
+    must_mention: both the documented rule and that it is not wired up
+    must_not: give the documented precedence rule as the whole answer
+  gold_citations: ["rider_app/helper.py:1285"]
+  notes: >-
+    The hardest item here. help_text states a clear rule, so the documented
+    answer is easy and incomplete. Rewards reading call sites over docs.
+  evidence_paths: ["**/rider_app/helper.py"]
+
+- id: rsc-count-range-opaque
+  kind: abstention
+  status: grounded
+  scope_class: S3b
+  band: B2
+  question: "Which conversion count range should I pick for a count-based surge?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: >-
+      the dropdown shows only numbered objects with no readable label, so the
+      ranges cannot be told apart from this form
+    must_not: guess which numbered object maps to which range
+  notes: Model has no __str__. Genuine abstention case.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: rsc-areas-blank-crashes
+  status: grounded
+  scope_class: S3b
+  band: B3
+  question: "Can I leave the areas field blank to apply a surge everywhere?"
+  expect:
+    answer: no - saving with it blank raises a server error rather than a validation message
+    must_mention: the field is nullable on the model but the admin form assumes it is set
+    must_not: describe blank as meaning "all areas"
+  gold_citations: ["RMS/admin.py:410"]
+  evidence_paths: ["**/RMS/admin.py"]
+
+- id: rsc-factor-silent-noop
+  status: grounded
+  scope_class: S3b
+  band: B3
+  question: "What does surge factor do, and when does it not apply?"
+  expect:
+    must_mention:
+      - it multiplies the calculated referral bonus
+      - it only applies when surge type is GENERAL
+      - surge amount is added after the factor, if both are set
+  evidence_paths: ["**/rider_app/**"]
+
+# =================================================================
+# C  content
+# =================================================================
+
+- id: c-carousel-image-upload
+  status: grounded
+  scope_class: C
+  band: B3
+  priority: high
+  question: >-
+    The first card riders see when they open the app is out of date.
+    How do I replace the image?
+  expect:
+    answer: >-
+      upload a new image on the carousel row using the file control, which
+      uploads to storage directly and fills in the URL
+    must_mention: the visible control is a file picker, not a URL text box
+    should_mention: ordering is controlled by the sequence field
+    must_not: say the image cannot be set from the admin
+  gold_citations: ["rider_app/models.py:43-44", "common/widgets.py:12-45"]
+  notes: >-
+    CORRECTED. The first draft asserted no image field existed - the HTML
+    scrape missed it because the URL input is hidden behind a JS upload
+    widget. That wrong gold would have penalised correct answers.
+  evidence_paths: ["**/rider_app/models.py", "**/common/widgets.py"]
+
+- id: c-carousel-active-flags
+  status: grounded
+  scope_class: C
+  kind: admin_vs_code
+  band: B2
+  priority: high
+  question: "What is the difference between the two active checkboxes on a carousel image?"
+  expect:
+    answer: >-
+      one controls whether the image is shown at all, the other routes it to
+      the legacy or the optimised onboarding screen
+    must_mention:
+      - the second flag is a variant selector, not an obsolete copy
+      - ticked routes to the legacy screen, unticked to the optimised one
+    must_not: describe it as a deprecated or historical field
+  gold_citations: ["rider_app/onboarding_v5_views.py:70-73"]
+  notes: The name is_active_old invites exactly the wrong inference.
+  evidence_paths: ["**/rider_app/onboarding_v5_views.py"]
+
+- id: c-carousel-stale-cache
+  status: grounded
+  scope_class: C
+  kind: admin_vs_code
+  band: B3
+  question: >-
+    I replaced a carousel image and it updated for some riders but not
+    others. Why?
+  expect:
+    answer: >-
+      the two onboarding variants are cached separately but only one cache
+      entry is cleared on save, so the other serves a stale image for up to
+      an hour
+    must_mention: the optimised variant is the one that goes stale
+  gold_citations: ["rider_app/models.py:54-57"]
+  evidence_paths: ["**/rider_app/models.py"]
+
+- id: c-notice-end-date
+  status: grounded
+  scope_class: C
+  band: B2
+  question: "What format should the end date on a rider notice be in, and what happens if I leave it blank?"
+  expect:
+    answer: a date such as YYYY-MM-DD, validated by the form
+    must_mention:
+      - a malformed date is rejected on save and never reaches the database
+      - leaving it blank means the notice never expires
+    should_mention: the end date is inclusive, so the notice shows on that day
+    must_not: describe it as an unvalidated free-text field
+  gold_citations: ["rider_app/models.py:380", "rider_app/helper.py:1653-1655"]
+  notes: >-
+    CORRECTED. Drafted as "format undocumented" because the widget renders as
+    a text input. It is a real DateField with standard validation.
+  evidence_paths: ["**/rider_app/models.py", "**/rider_app/helper.py"]
+
+- id: c-notice-banner
+  status: grounded
+  scope_class: C
+  band: B3
+  question: "How do I put a banner in the rider app announcing a new policy?"
+  expect:
+    admin_page: "Rider noticess"
+    must_mention:
+      - notice type must be set to banner
+      - sequence and end date are required
+      - status must be Active
+    should_mention: notices are cached, so it is not instant
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: c-notice-vertical-pair
+  status: grounded
+  scope_class: C
+  band: B4
+  question: "How do I show a notice only to e-commerce riders in Bangalore?"
+  expect:
+    must_mention:
+      - vertical type selects e-commerce
+      - vertical value is a bare number whose meaning depends on the type
+    flag_ambiguity: city-level targeting is not clearly expressible on this form
+    must_not: invent a city field on this form
+  evidence_paths: ["**/rider_app/**"]
+
+# =================================================================
+# L / S2
+# =================================================================
+
+- id: l-zone-radius-negative
+  status: grounded
+  scope_class: L
+  band: B4
+  question: "How do I increase the zone radius for Bangalore?"
+  expect:
+    verdict: not_configurable_in_admin
+    must_mention:
+      - there is no admin setting for it; zones in the admin have only a name
+      - the only zone radius is a fixed 5 km used to find nearby zones, the same for every city
+      - changing it, or making Bangalore different, needs a code change
+    should_mention: it widens how far the app looks for a nearby zone; it does not change a zone's boundary
+    must_not: describe an admin or per-city radius setting that can be edited today
+  gold_citations:
+    - RMS/models.py:638-640
+    - rider_app/v6_views.py:231-234
+  notes: >-
+    Corrected 2026-09-24. Originally "zones have only a name, no radius",
+    based on RMS.zone alone. The rider app hardcodes a 5 km nearby-zone search
+    radius for Quick Commerce zones (rider_app/v6_views.py:232). Luna answered
+    with that 5 km and was scored 0 against the old gold; the answer was
+    largely right. No longer an abstention item: the answer is determinable.
+  evidence_paths: ["**/rider_app/v6_views.py", "**/RMS/models.py"]
+
+- id: l-zone-add
+  status: grounded
+  scope_class: L
+  band: B1
+  question: "How do I add a new zone?"
+  expect:
+    admin_page: "Zones"
+    must_mention:
+      - only a name is required
+      - it is limited to 20 characters
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: s2-geo-both-pairs-read
+  status: grounded
+  scope_class: S2
+  kind: admin_vs_code
+  band: B3
+  priority: critical
+  question: "How do I correct the location of the Indore training centre?"
+  expect:
+    answer: >-
+      update BOTH coordinate pairs on the row, the text one and the numeric
+      one, because nothing keeps them in sync
+    must_mention:
+      - there are two pairs and both are used
+      - the numeric pair decides which centres are considered for a rider
+      - the text pair decides the distance shown and is what the app displays
+      - editing one and not the other leaves the record internally inconsistent
+    must_not: treat either pair as obsolete or safe to skip
+  gold_citations:
+    - jobs/models.py:123-134
+    - common/helper.py:265-267
+    - jobs/serializers.py:367
+    - jobs/serializers.py:328-329
+    - "no save() sync, no signals: jobs/models.py:162-167"
+  notes: >-
+    The failure is silent and the UI actively hides it - the app shows the
+    new, correct coordinates from the text pair while the centre was matched
+    to riders using the stale numeric pair.
+  evidence_paths: ["**/jobs/models.py", "**/common/helper.py", "**/jobs/serializers.py"]
+
+- id: s2-geo-newer-field-does-not-win
+  status: grounded
+  scope_class: S2
+  kind: admin_vs_code
+  band: B4
+  priority: critical
+  question: >-
+    The training centre has both a text and a numeric latitude. The numeric
+    one looks like the newer field - can I just use that?
+  expect:
+    answer: no - the older text pair is still the primary read path
+    must_mention:
+      - the numeric pair was added later but only one query uses it
+      - the text pair drives distance, sorting and the API response
+      - the migration that added the numeric pair was never completed
+    must_not: >-
+      apply the convention that the newer field supersedes the older one
+  paired_with: kv-new-suffix
+  gold_citations:
+    - jobs/migrations/0060_auto_20221010_0125.py:15-17
+    - jobs/scripts/latitude_longitude_migration.py:1-13
+  notes: >-
+    Deliberate trap for a rule learned elsewhere in this same set. In
+    kv-new-suffix the newer key wins cleanly; here the newer field lost.
+    Score this against kv-new-suffix - passing both means the rule was
+    checked rather than generalised. Same shape as s3-client-axis-exists.
+  evidence_paths: ["**/jobs/serializers.py", "**/common/helper.py"]
+
+- id: s2-geo-partial-blast-radius
+  status: grounded
+  scope_class: S2
+  kind: admin_vs_code
+  band: B3
+  priority: high
+  question: >-
+    We moved a training centre and updated its address and coordinates.
+    The lead portal shows it correctly but riders nearby are told there
+    is no centre near them. Why?
+  expect:
+    answer: >-
+      only the numeric coordinate pair feeds the rider-facing proximity
+      search, and it was left at the old position
+    must_mention:
+      - the lead portal paths never read the numeric pair, so they stay correct
+      - the rider proximity search filters on a box built from the numeric pair
+      - a centre outside that box is invisible with no error raised
+    should_mention: riders fall back to a default centre instead
+    must_not: suggest a cache or an indexing delay
+  gold_citations:
+    - common/helper.py:265-278
+    - rider_training/core/training_task.py:102
+    - lead_portal/helpers/lead_helper.py:1600-1605
+  notes: >-
+    One edit produces a bug in one flow and correct behaviour in another,
+    simultaneously. "It works over here" is the misleading evidence a PM
+    will bring to the question.
+  evidence_paths: ["**/common/helper.py", "**/rider_training/core/training_task.py", "**/lead_portal/helpers/lead_helper.py"]
+
+
+# =================================================================
+# B1  verbatim baseline
+#     Deliberately easy: the question uses the admin's own label and the
+#     answer is a single verified fact. Near-100% is expected. Their job is
+#     to make a poor B2/B3 score interpretable - without them you cannot
+#     tell a vocabulary gap from a class that is simply broken.
+# =================================================================
+
+- id: b1-add-config-param
+  status: grounded
+  scope_class: K1
+  band: B1
+  question: "How do I add a new config param?"
+  expect:
+    admin_page: "Config paramss"
+    must_mention:
+      - config name is required
+      - the value and description fields are optional on the form
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: b1-config-value-types
+  status: grounded
+  scope_class: K1
+  band: B1
+  question: "What config types can I choose when adding a config?"
+  expect:
+    answer: String, Integer, JSON or List
+    admin_page: "Configs"
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: b1-client-city-mapping
+  status: grounded
+  scope_class: S2
+  band: B1
+  question: "How do I map a client to a city for bike taxi?"
+  expect:
+    admin_page: "Client city mappings"
+    must_mention:
+      - city is entered as a numeric id
+      - an identifier is required
+    should_mention: the client dropdown currently offers only one option
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/bike_taxi/**"]
+
+- id: b1-deactivate-notice
+  status: grounded
+  scope_class: C
+  band: B1
+  question: "How do I deactivate a rider notice?"
+  expect:
+    admin_page: "Rider noticess"
+    answer: set its status to Inactive
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: b1-carousel-order
+  status: grounded
+  scope_class: C
+  band: B1
+  question: "How do I change the order the carousel images appear in?"
+  expect:
+    admin_page: "Rider carousal images"
+    answer: edit the sequence number on each row
+    should_mention: sequence is editable directly from the list page
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/rider_app/**"]
+
+- id: b1-inventory-deduction-add
+  status: grounded
+  scope_class: S3
+  band: B1
+  question: "How do I add an inventory deduction amount for a city?"
+  expect:
+    admin_page: "City wise inventory deduction amounts"
+    must_mention:
+      - city id, client and inventory item are all required
+      - both an amount and a prepaid amount must be given
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/RMS/**"]
+
+- id: b1-training-centre-spoc
+  status: grounded
+  scope_class: S2
+  band: B1
+  question: "How do I update the SPOC phone number for a training centre?"
+  expect:
+    admin_page: "City referral configs"
+    field: "Spoc number"
+    should_mention: it must be a valid 10 digit number or the save is rejected
+  gold_citations: ["jobs/models.py:162-167"]
+  must_not_contain: [".py", "line "]
+  evidence_paths: ["**/jobs/models.py"]
+
+# =================================================================
+# abstention
+#     The correct answer is "this is not determinable here". Each one is
+#     verified absent or undocumented, not merely obscure.
+#
+#     A bare "I don't know" is NOT a pass. Every item requires the
+#     constructive half too - naming where the answer actually lives, or
+#     who to ask. Otherwise the metric rewards unhelpful non-answers, and
+#     you optimise straight into a system that refuses everything.
+#     Read this class against s3-units and s3-client-axis-exists, which
+#     punish exactly that over-refusal.
+# =================================================================
+
+- id: abs-notice-display-filter
+  status: grounded
+  scope_class: C
+  kind: abstention
+  band: B2
+  question: "What do I put in the display filter field on a rider notice?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: the field is free text with no documented format on the form
+    should_say: the expected structure has to come from the code or engineering
+    must_not: invent a schema or example value
+  notes: >-
+    Verified: rider notices carry no help_text on any field. Contrast
+    referral surge config, the one model here that documents its fields.
+  evidence_paths: ["**/rider_app/**"]
+
+- id: abs-config-value-format
+  status: grounded
+  scope_class: K1
+  kind: abstention
+  band: B3
+  question: >-
+    I need to change a config whose description is blank. How do I know
+    what format the value should be in?
+  expect:
+    verdict: partially_determinable
+    must_say:
+      - the declared type decides the syntax (text, integer, JSON or list), and the admin rejects a value that does not match it
+      - with a blank description, the structure or meaning the code expects is not documented anywhere in the admin
+    should_say: the expected structure has to come from the code that reads the key, an existing value, or the owning team
+    must_not: claim the declared type alone tells you everything the value must contain
+  gold_citations:
+    - RMS/admin.py:1015-1065
+  notes: >-
+    Corrected 2026-09-23. Was a pure abstention item built on the belief that
+    the value field is unvalidated free text. Syntax is validated by type;
+    only the expected structure is undocumented.
+  evidence_paths: ["**/RMS/admin.py"]
+
+- id: abs-inventory-none-option
+  status: grounded
+  scope_class: S3
+  kind: abstention
+  band: B2
+  question: >-
+    The inventory dropdown has an option called None alongside shirt and
+    raincoat. What does picking None do?
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: >-
+      None is a selectable option with no explanation on the form, and it is
+      distinct from leaving the field blank
+    should_say: its meaning has to be confirmed in code
+    must_not: assume it means "no inventory" or "not applicable"
+  evidence_paths: ["**/RMS/**"]
+
+- id: abs-hulk-client-meaning
+  status: grounded
+  scope_class: S3
+  kind: abstention
+  band: B2
+  question: "The client dropdown has HL, ECOM, Hulk and Store. What is Hulk?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: the option is an internal name with no explanation in the admin
+    should_say: point to where the choices are defined, or suggest asking the owning team
+    must_not: guess at an expansion of the name
+  notes: Internal vocabulary with no gloss anywhere in the admin surface.
+  evidence_paths: ["**/RMS/**"]
+
+- id: abs-clientcitymapping-identifier
+  status: grounded
+  scope_class: S2
+  kind: abstention
+  band: B2
+  question: "What goes in the identifier field when mapping a client to a city?"
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: >-
+      the field is required free text with no help text, example or format
+      hint on the form
+    should_say: the expected value has to come from the integration or the code
+    must_not: invent a format such as a slug or a city code
+  evidence_paths: ["**/bike_taxi/**"]
+
+- id: abs-surge-time-timezone
+  status: grounded
+  scope_class: S3b
+  kind: abstention
+  band: B3
+  question: >-
+    I want a referral surge to end at midnight. What timezone are the
+    start and expiry times in?
+  expect:
+    verdict: not_determinable_from_admin
+    must_say: the form shows separate date and time inputs with no timezone indicated
+    should_say: the project timezone setting determines it and should be confirmed
+    must_not: assert a timezone from the fact that the business is in India
+  evidence_paths: ["**/rider_app/**"]
+
+- id: abs-notice-slot-date
+  status: grounded
+  scope_class: C
+  kind: abstention
+  band: B3
+  question: >-
+    A rider notice has both an end date and a slot date. What is the
+    difference?
+  expect:
+    verdict: partially_determinable
+    must_say:
+      - the end date governs when the notice stops showing
+      - the slot date has no help text and its role is not stated on the form
+    should_say: the slot date's behaviour needs a code check
+    must_not: describe slot date as a second expiry
+  gold_citations: ["rider_app/helper.py:1653-1655"]
+  notes: >-
+    Half answerable, half not. Tests whether the answer separates the two
+    instead of hedging on both or asserting on both.
+  evidence_paths: ["**/rider_app/helper.py"]
+
+scorecard_template: |
+  Fill in after each run. n = items per row.
+
+  class                    retrieval  facets  audience  abstain   n
+  admin_vs_code                ?        ?        ?        ?       11
+  abstention                   ?        ?        ?        ?        8
+  K1  key-value                ?        ?        ?        ?       11
+  N   hardcoded, not in admin  ?        ?        ?        -        1
+  S3  city override            ?        ?        ?        ?       12
+  S3b referral surge           ?        ?        ?        ?        6
+  C   content                  ?        ?        ?        ?       10
+  S2  per-entity               ?        ?        ?        ?        6
+  L   lookup                   ?        ?        ?        ?        2
+
+  band                     retrieval  facets
+  B1  verbatim                 ?        ?      (9)
+  B2  synonym                  ?        ?
+  B3  symptom                  ?        ?
+  B4  wrong-vocabulary         ?        ?
+
+  Routing:
+    B1 below ~0.9               -> the class is broken, not the vocabulary.
+                                   Fix this before reading any other row.
+    B3 low while B1 high        -> vocabulary gap: synonyms, pre_search_instruction
+    retrieval high, facets low  -> found the page, missed the scoping: prompt or context
+    abstention high BUT s3-units / s3-client-axis-exists failing
+                                -> over-refusal, not calibration. Treat as a
+                                   regression, not a win.
+    admin_vs_code low           -> answering from the admin surface without
+                                   checking call sites. The headline number.
+    kv-new-suffix passes but s2-geo-newer-field-does-not-win fails
+                                -> a convention was generalised, not checked
+    kv-aliased-constant fails   -> retrieval does not follow indirection
