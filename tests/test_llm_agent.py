@@ -451,7 +451,7 @@ class AgentLoopTests(unittest.TestCase):
 
         state = ConversationStore(ttl_seconds=30, max_states=5).create(
             user_id=1,
-            workspace="riderapp",
+            workspace="mobileapp",
             llm_mode="mimo",
             user_type="product_team",
             repository_revision="rev",
@@ -496,14 +496,14 @@ class AgentLoopTests(unittest.TestCase):
             self.addCleanup(item.stop)
 
         # The opening question may still ask for clarification.
-        main.answer_question("what are the main features of earnings screen?", workspace="riderapp")
+        main.answer_question("what are the main features of earnings screen?", workspace="mobileapp")
         self.assertIn(ASK_USER_TOOL_NAME, seen["tools"])
         self.assertNotIn("Do not ask another one", seen["prompt"])
 
         # The reply to that clarification may not.
         main.answer_question(
             "the current earnings view showing daily and weekly totals",
-            workspace="riderapp",
+            workspace="mobileapp",
             conversation_state=state,
         )
         self.assertNotIn(ASK_USER_TOOL_NAME, seen["tools"])

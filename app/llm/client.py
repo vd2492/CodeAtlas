@@ -126,7 +126,7 @@ SYSTEM_PROMPT = (
 )
 
 # possible_ambiguity fires on most searches in a large multi-app repo (11 of 12
-# sampled queries on frodo), because the top hits naturally span apps. Treating
+# sampled queries on one), because the top hits naturally span apps. Treating
 # it as "ask first" made obedient models ask a clarifying question instead of
 # investigating on 30 of 48 eval items. It is a hint to look at both, not a stop.
 def _ask_user_rule(option_style: str) -> str:

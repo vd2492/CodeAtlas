@@ -501,7 +501,7 @@ def _repo_options() -> list[dict]:
 def _repo_reference_match(candidate: str, text: str) -> bool:
     """True if `text` MENTIONS `candidate` (a repo's slug or display name)
     somewhere in it: exactly; as a whole-word fragment of it (e.g.
-    "riderapp" naming "Sfx-Riderapp", so a short reply doesn't need the
+    "mobile" naming "Acme-Mobile", so a short reply doesn't need the
     repo's full name); or with the full candidate appearing as a whole
     word inside a longer `text` (e.g. a full sentence mentioning the repo
     by name). For routing a question to the repo it's about -- NOT for
@@ -540,7 +540,7 @@ _REPO_NAME_WRAP_RE = re.compile(
 def _is_bare_repo_reference(candidate: str, text: str) -> bool:
     """True if `text` IS `candidate` (a repo's slug or display name) and
     nothing else -- the full name/slug, a short fragment of it (e.g.
-    "riderapp" for "Sfx-Riderapp"), optionally wrapped in Slack formatting
+    "mobile" for "Acme-Mobile"), optionally wrapped in Slack formatting
     a copy-paste carries along -- rather than a full sentence that merely
     mentions the repo somewhere in it. Deliberately narrower than
     `_repo_reference_match`: it only checks `text` found within
@@ -1703,14 +1703,14 @@ def _run_mention_job(payload: dict, event: dict) -> None:
                 }],
             )
             return
-        # A bare repo-name reply (e.g. just "sortbuddy", a short fragment
-        # like "riderapp" naming "Sfx-Riderapp", or a copy-pasted
-        # "`Sfx-Riderapp`" carrying the backticks the suggestion list itself
+        # A bare repo-name reply (e.g. just "demoshop", a short fragment
+        # like "mobile" naming "Acme-Mobile", or a copy-pasted
+        # "`Acme-Mobile`" carrying the backticks the suggestion list itself
         # used) to our own "which repository?" prompt, in the same thread,
         # answers that prompt rather than being treated as a new one-word
         # question. Uses the stricter bare-reference check, not the general
         # mention-matcher above: a genuine new question that just happens
-        # to name the repo (e.g. "does gandalf support push notifications?")
+        # to name the repo (e.g. "does nimbus support push notifications?")
         # must be answered as asked, not have its text silently replaced by
         # the old pending question.
         if _is_bare_repo_reference(repo["slug"], question) or _is_bare_repo_reference(repo["name"], question):

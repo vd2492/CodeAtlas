@@ -25,7 +25,7 @@ class GroupTestBase(unittest.TestCase):
         db.init_db()
         self.admin = {"username": "admin", "role": "admin", "id": 1}
         self.repos = {}
-        for slug in ("figwit", "erebor", "smaug"):
+        for slug in ("storefront", "gateway", "warehouse"):
             repo = db.create_repo(
                 slug, slug.title(), f"https://example.test/{slug}.git",
                 "https", slug, status="published",
@@ -40,11 +40,11 @@ class GroupTestBase(unittest.TestCase):
             item.stop()
         self.temp.cleanup()
 
-    def make_group(self, slugs=("figwit", "erebor", "smaug")):
+    def make_group(self, slugs=("storefront", "gateway", "warehouse")):
         request = group_routes.CreateGroupRequest(
             slug="stack",
             name="Stack",
-            description="figwit calls erebor",
+            description="storefront calls gateway",
             members=[group_routes.GroupMember(repo_slug=s) for s in slugs],
         )
         return group_routes.create_group(request, self.admin)["group"]
@@ -54,7 +54,7 @@ class GroupAdminTests(GroupTestBase):
     def test_create_list_update_delete(self):
         group = self.make_group()
         self.assertEqual([m["repo_slug"] for m in group["members"]],
-                         ["figwit", "erebor", "smaug"])
+                         ["storefront", "gateway", "warehouse"])
         self.assertEqual(len(group_routes.list_groups(self.admin)["groups"]), 1)
 
         updated = group_routes.update_group(
@@ -62,8 +62,8 @@ class GroupAdminTests(GroupTestBase):
             group_routes.UpdateGroupRequest(
                 name="Renamed",
                 members=[
-                    group_routes.GroupMember(repo_slug="erebor"),
-                    group_routes.GroupMember(repo_slug="smaug"),
+                    group_routes.GroupMember(repo_slug="gateway"),
+                    group_routes.GroupMember(repo_slug="warehouse"),
                 ],
             ),
             self.admin,
@@ -74,17 +74,17 @@ class GroupAdminTests(GroupTestBase):
         group_routes.delete_group("stack", self.admin)
         self.assertEqual(group_routes.list_groups(self.admin)["groups"], [])
         # Deleting a group never touches the repos themselves.
-        self.assertIsNotNone(db.get_repo_by_slug("figwit"))
+        self.assertIsNotNone(db.get_repo_by_slug("storefront"))
 
     def test_validation(self):
         with self.assertRaises(HTTPException) as too_few:
-            self.make_group(("figwit",))
+            self.make_group(("storefront",))
         self.assertEqual(too_few.exception.status_code, 400)
         with self.assertRaises(HTTPException) as unknown:
-            self.make_group(("figwit", "missing"))
+            self.make_group(("storefront", "missing"))
         self.assertEqual(unknown.exception.status_code, 404)
         with self.assertRaises(HTTPException) as duplicate:
-            self.make_group(("figwit", "figwit"))
+            self.make_group(("storefront", "storefront"))
         self.assertEqual(duplicate.exception.status_code, 400)
         self.make_group()
         with self.assertRaises(HTTPException) as taken:
@@ -93,9 +93,9 @@ class GroupAdminTests(GroupTestBase):
 
     def test_deleting_a_repo_removes_only_its_membership(self):
         self.make_group()
-        db.delete_repo("smaug")
+        db.delete_repo("warehouse")
         members = db.get_repo_group_by_slug("stack")["members"]
-        self.assertEqual([m["repo_slug"] for m in members], ["figwit", "erebor"])
+        self.assertEqual([m["repo_slug"] for m in members], ["storefront", "gateway"])
 
 
 class GroupAccessTests(GroupTestBase):
@@ -107,14 +107,14 @@ class GroupAccessTests(GroupTestBase):
     def test_user_needs_every_member_repo(self):
         user = {"id": self.user["id"], "role": "user"}
         self.assertFalse(db.user_can_access_repo_group(user, self.group))
-        db.grant_access(user["id"], self.repos["figwit"]["id"])
-        db.grant_access(user["id"], self.repos["erebor"]["id"])
+        db.grant_access(user["id"], self.repos["storefront"]["id"])
+        db.grant_access(user["id"], self.repos["gateway"]["id"])
         self.assertFalse(db.user_can_access_repo_group(user, self.group))
         with self.assertRaises(HTTPException) as denied:
             groups.require_group_for_user("stack", user)
         self.assertEqual(denied.exception.status_code, 403)
         self.assertEqual(group_routes.user_list_groups(user)["groups"], [])
-        db.grant_access(user["id"], self.repos["smaug"]["id"])
+        db.grant_access(user["id"], self.repos["warehouse"]["id"])
         self.assertTrue(db.user_can_access_repo_group(user, self.group))
         listed = group_routes.user_list_groups(user)["groups"]
         self.assertEqual([g["slug"] for g in listed], ["stack"])
@@ -134,13 +134,13 @@ class GroupAccessTests(GroupTestBase):
 
     def test_resolve_requires_published_indexed_members(self):
         resolved = groups.resolve_group_members(self.group)
-        self.assertEqual([t["slug"] for t in resolved], ["figwit", "erebor", "smaug"])
-        db.set_repo_status("smaug", "indexed")
+        self.assertEqual([t["slug"] for t in resolved], ["storefront", "gateway", "warehouse"])
+        db.set_repo_status("warehouse", "indexed")
         with self.assertRaises(HTTPException) as unpublished:
             groups.resolve_group_members(db.get_repo_group_by_slug("stack"))
         self.assertEqual(unpublished.exception.status_code, 409)
-        db.set_repo_status("smaug", "published")
-        config.graph_path("smaug").unlink()
+        db.set_repo_status("warehouse", "published")
+        config.graph_path("warehouse").unlink()
         with self.assertRaises(HTTPException) as unindexed:
             groups.resolve_group_members(db.get_repo_group_by_slug("stack"))
         self.assertEqual(unindexed.exception.status_code, 409)
@@ -153,80 +153,80 @@ class AdhocGroupTests(GroupTestBase):
         self.dev = {"id": self.user["id"], "role": "user"}
 
     def test_user_can_pick_only_repos_they_hold(self):
-        db.grant_access(self.dev["id"], self.repos["figwit"]["id"])
-        db.grant_access(self.dev["id"], self.repos["erebor"]["id"])
-        group = groups.adhoc_group_for_user("figwit,erebor", self.dev)
-        self.assertEqual([m["repo_slug"] for m in group["members"]], ["erebor", "figwit"])
+        db.grant_access(self.dev["id"], self.repos["storefront"]["id"])
+        db.grant_access(self.dev["id"], self.repos["gateway"]["id"])
+        group = groups.adhoc_group_for_user("storefront,gateway", self.dev)
+        self.assertEqual([m["repo_slug"] for m in group["members"]], ["gateway", "storefront"])
         self.assertEqual([t["slug"] for t in groups.resolve_group_members(group)],
-                         ["erebor", "figwit"])
-        for forbidden in ("figwit,smaug", "figwit,nope"):
+                         ["gateway", "storefront"])
+        for forbidden in ("storefront,warehouse", "storefront,nope"):
             with self.assertRaises(HTTPException) as denied:
                 groups.adhoc_group_for_user(forbidden, self.dev)
             self.assertEqual(denied.exception.status_code, 403)
         with self.assertRaises(HTTPException) as missing:
-            groups.adhoc_group_for_user("figwit,nope", self.admin)
+            groups.adhoc_group_for_user("storefront,nope", self.admin)
         self.assertEqual(missing.exception.status_code, 404)
 
     def test_selection_size_and_identity(self):
-        for bad in ("", "figwit", "figwit,figwit", "a,b,c,d,e,f,g"):
+        for bad in ("", "storefront", "storefront,storefront", "a,b,c,d,e,f,g"):
             with self.assertRaises(HTTPException) as invalid:
                 groups.adhoc_group_for_user(bad, self.admin)
             self.assertEqual(invalid.exception.status_code, 400)
-        first = groups.adhoc_group_for_user("figwit, erebor", self.admin)
-        second = groups.adhoc_group_for_user("erebor,figwit,erebor", self.admin)
-        other = groups.adhoc_group_for_user("figwit,smaug", self.admin)
+        first = groups.adhoc_group_for_user("storefront, gateway", self.admin)
+        second = groups.adhoc_group_for_user("gateway,storefront,gateway", self.admin)
+        other = groups.adhoc_group_for_user("storefront,warehouse", self.admin)
         self.assertEqual(first["slug"], second["slug"])
         self.assertNotEqual(first["slug"], other["slug"])
         self.assertTrue(first["slug"].startswith("adhoc-"))
         self.assertEqual(db.list_repo_groups(), [])
 
     def test_branch_can_be_pinned_per_repo(self):
-        branch_ws = "figwit-dev"
+        branch_ws = "storefront-dev"
         graph = config.graph_path(branch_ws)
         graph.parent.mkdir(parents=True)
         graph.write_text(json.dumps({"nodes": [], "links": []}))
         dev_branch = db.create_repo_branch(
-            self.repos["figwit"]["id"], "dev", workspace=branch_ws, index_status="ready"
+            self.repos["storefront"]["id"], "dev", workspace=branch_ws, index_status="ready"
         )
         pending = db.create_repo_branch(
-            self.repos["figwit"]["id"], "wip", workspace=None
+            self.repos["storefront"]["id"], "wip", workspace=None
         )
         foreign = db.create_repo_branch(
-            self.repos["smaug"]["id"], "other", workspace="smaug-other", index_status="ready"
+            self.repos["warehouse"]["id"], "other", workspace="warehouse-other", index_status="ready"
         )
-        pinned = groups.adhoc_group_for_user(f"figwit@{dev_branch['id']},erebor", self.admin)
-        default = groups.adhoc_group_for_user("figwit,erebor", self.admin)
+        pinned = groups.adhoc_group_for_user(f"storefront@{dev_branch['id']},gateway", self.admin)
+        default = groups.adhoc_group_for_user("storefront,gateway", self.admin)
         self.assertNotEqual(pinned["slug"], default["slug"])
         targets = {t["slug"]: t["workspace"] for t in groups.resolve_group_members(pinned)}
-        self.assertEqual(targets["figwit"], branch_ws)
-        self.assertEqual(targets["erebor"], "erebor")
+        self.assertEqual(targets["storefront"], branch_ws)
+        self.assertEqual(targets["gateway"], "gateway")
         for bad, code in (
-            (f"figwit@{foreign['id']},erebor", 404),
-            ("figwit@999,erebor", 404),
-            ("figwit@x,erebor", 400),
-            (f"figwit@{dev_branch['id']},figwit,erebor", 400),
+            (f"storefront@{foreign['id']},gateway", 404),
+            ("storefront@999,gateway", 404),
+            ("storefront@x,gateway", 400),
+            (f"storefront@{dev_branch['id']},storefront,gateway", 400),
         ):
             with self.assertRaises(HTTPException) as invalid:
                 groups.adhoc_group_for_user(bad, self.admin)
             self.assertEqual(invalid.exception.status_code, code, bad)
-        not_ready = groups.adhoc_group_for_user(f"figwit@{pending['id']},erebor", self.admin)
+        not_ready = groups.adhoc_group_for_user(f"storefront@{pending['id']},gateway", self.admin)
         with self.assertRaises(HTTPException) as unindexed:
             groups.resolve_group_members(not_ready)
         self.assertEqual(unindexed.exception.status_code, 409)
 
     def test_branch_pin_does_not_bypass_repo_grants(self):
         branch = db.create_repo_branch(
-            self.repos["smaug"]["id"], "dev", workspace="smaug", index_status="ready"
+            self.repos["warehouse"]["id"], "dev", workspace="warehouse", index_status="ready"
         )
-        db.grant_access(self.dev["id"], self.repos["figwit"]["id"])
-        db.grant_access(self.dev["id"], self.repos["erebor"]["id"])
+        db.grant_access(self.dev["id"], self.repos["storefront"]["id"])
+        db.grant_access(self.dev["id"], self.repos["gateway"]["id"])
         with self.assertRaises(HTTPException) as denied:
-            groups.adhoc_group_for_user(f"figwit,smaug@{branch['id']}", self.dev)
+            groups.adhoc_group_for_user(f"storefront,warehouse@{branch['id']}", self.dev)
         self.assertEqual(denied.exception.status_code, 403)
 
     def test_unpublished_repo_is_rejected_when_resolving(self):
-        db.set_repo_status("smaug", "indexed")
-        group = groups.adhoc_group_for_user("figwit,smaug", self.admin)
+        db.set_repo_status("warehouse", "indexed")
+        group = groups.adhoc_group_for_user("storefront,warehouse", self.admin)
         with self.assertRaises(HTTPException) as unpublished:
             groups.resolve_group_members(group)
         self.assertEqual(unpublished.exception.status_code, 409)
@@ -235,8 +235,8 @@ class AdhocGroupTests(GroupTestBase):
 class GroupToolboxTests(unittest.TestCase):
     def test_calls_route_to_the_named_member_only(self):
         members = [
-            {"slug": "figwit", "name": "Figwit", "workspace": "ws-figwit"},
-            {"slug": "erebor", "name": "Erebor", "workspace": "ws-erebor"},
+            {"slug": "storefront", "name": "Storefront", "workspace": "ws-storefront"},
+            {"slug": "gateway", "name": "Gateway", "workspace": "ws-gateway"},
         ]
         with patch("app.agent.tools.RepositoryToolbox") as toolbox_class:
             toolbox_class.side_effect = lambda ws: SimpleNamespace(
@@ -244,17 +244,17 @@ class GroupToolboxTests(unittest.TestCase):
             )
             toolbox_class._trace_summary = lambda result: {"ok": result.get("ok")}
             toolbox = GroupRepositoryToolbox(members)
-            hit = json.loads(toolbox.call("search_code", {"repo": "erebor", "query": "x"}))
-            self.assertEqual(hit["ws"], "ws-erebor")
-            self.assertEqual(hit["repo_slug"], "erebor")
-            by_name = json.loads(toolbox.call("search_code", {"repo": "Figwit"}))
-            self.assertEqual(by_name["ws"], "ws-figwit")
-            bad = json.loads(toolbox.call("search_code", {"repo": "smaug"}))
+            hit = json.loads(toolbox.call("search_code", {"repo": "gateway", "query": "x"}))
+            self.assertEqual(hit["ws"], "ws-gateway")
+            self.assertEqual(hit["repo_slug"], "gateway")
+            by_name = json.loads(toolbox.call("search_code", {"repo": "Storefront"}))
+            self.assertEqual(by_name["ws"], "ws-storefront")
+            bad = json.loads(toolbox.call("search_code", {"repo": "warehouse"}))
             self.assertFalse(bad["ok"])
             missing = json.loads(toolbox.call("search_code", {}))
             self.assertFalse(missing["ok"])
         enum = toolbox.tool_definitions[0]["parameters"]["properties"]["repo"]["enum"]
-        self.assertEqual(enum, ["figwit", "erebor"])
+        self.assertEqual(enum, ["storefront", "gateway"])
 
 
 class GroupAskTests(GroupTestBase):
@@ -297,9 +297,9 @@ class GroupAskTests(GroupTestBase):
         self.assertEqual(response["answer"], "answer")
         self.assertEqual(response["group"]["slug"], "stack")
         self.assertEqual([r["slug"] for r in response["group_repositories"]],
-                         ["figwit", "erebor", "smaug"])
-        self.assertEqual(list(seen["toolbox"].repositories), ["figwit", "erebor", "smaug"])
-        self.assertIn("figwit calls erebor", seen["question"])
+                         ["storefront", "gateway", "warehouse"])
+        self.assertEqual(list(seen["toolbox"].repositories), ["storefront", "gateway", "warehouse"])
+        self.assertIn("storefront calls gateway", seen["question"])
         self.assertEqual(seen["agent_context"], "")
         self.assertTrue(response["conversation_id"])
 

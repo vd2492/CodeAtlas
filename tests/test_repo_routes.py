@@ -42,9 +42,9 @@ class RepositoryCloneRetryTests(unittest.TestCase):
             (clone_path / ".git").mkdir()
 
         request = repo_routes.AddRepoRequest(
-            slug="sortbuddy",
-            name="Sortbuddy",
-            source_url="https://example.test/sortbuddy.git",
+            slug="demoshop",
+            name="Demoshop",
+            source_url="https://example.test/demoshop.git",
             clone_method="https",
         )
         with patch.object(repo_routes, "clone_repo", side_effect=clone), patch.object(
@@ -55,15 +55,15 @@ class RepositoryCloneRetryTests(unittest.TestCase):
 
             self.assertEqual(first_failure.exception.status_code, 400)
             self.assertIn("Cloning failed", first_failure.exception.detail)
-            self.assertEqual(db.get_repo_by_slug("sortbuddy")["status"], "new")
-            self.assertFalse(config.repo_clone_dir("sortbuddy").exists())
+            self.assertEqual(db.get_repo_by_slug("demoshop")["status"], "new")
+            self.assertFalse(config.repo_clone_dir("demoshop").exists())
 
             retried = repo_routes.add_repo(request, self.admin)
 
             self.assertTrue(retried["retried"])
             self.assertEqual(retried["repo"]["status"], "cloned")
             self.assertTrue(
-                config.repo_clone_dir("sortbuddy").joinpath(".git").is_dir()
+                config.repo_clone_dir("demoshop").joinpath(".git").is_dir()
             )
 
             with self.assertRaises(HTTPException) as duplicate:

@@ -572,7 +572,7 @@ class ConversationEndpointTests(unittest.TestCase):
         which screen the user meant, because the fallback dropped the thread."""
         state = ConversationStore(ttl_seconds=30, max_states=10).create(
             user_id=7,
-            workspace="riderapp",
+            workspace="mobileapp",
             llm_mode="mimo",
             user_type="product_team",
             repository_revision="branch:abc123",
@@ -619,7 +619,7 @@ class ConversationEndpointTests(unittest.TestCase):
                 response = main.answer_follow_up(
                     "do we have ads in this screen?",
                     state,
-                    workspace="riderapp",
+                    workspace="mobileapp",
                     llm_mode="mimo",
                     user_type="product_team",
                     deep_investigation=deep,
