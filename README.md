@@ -1,7 +1,7 @@
 # CodeAtlas
 
 <!-- repo-traffic:start -->
-![Unique visitors in the last 14 days](https://img.shields.io/badge/unique%20visitors%20%2814d%29-3-blue)
+![Unique visitors in the last 14 days](https://img.shields.io/badge/unique%20visitors%20%2814d%29-8-blue)
 <!-- repo-traffic:end -->
 
 **Self-hostable codebase intelligence.** Host private repositories, index them
@@ -439,9 +439,9 @@ Slack, two ways:
   - Question
 - **`@codeatlas` mentions and DMs**, no slash command needed. Mention the bot
   in a channel (or just message it directly in a DM) naming the repository and
-  the question, e.g. `@codeatlas how does login work in SortBuddy?`. If the
+  the question, e.g. `@codeatlas how does login work in DemoShop?`. If the
   repo can't be inferred, CodeAtlas asks which one; reply with the repo name
-  (or a recognizable fragment of it, e.g. `riderapp` for `Sfx-Riderapp`) to
+  (or a recognizable fragment of it, e.g. `mobile` for `Acme-Mobile`) to
   resume the original question. Once a thread has an answer, further replies
   in that same thread are treated as follow-up questions too, without needing
   to mention the bot again. CodeAtlas reacts with :eyes: on a question it's
@@ -620,7 +620,7 @@ changing CodeAtlas environment variables, restart the CodeAtlas service.
 **Via `@codeatlas` mention or DM** (no modal, answers visibly in-thread):
 
 1. Mention `@codeatlas` in a channel with a question naming the repository
-   (e.g. `@codeatlas how does login work in SortBuddy?`), or just message the
+   (e.g. `@codeatlas how does login work in DemoShop?`), or just message the
    bot directly in a DM -- no mention needed there.
 2. CodeAtlas reacts :eyes: and answers in the thread using the repo's default
    branch, with the same retrieval, follow-up, and **Investigate deeply**
